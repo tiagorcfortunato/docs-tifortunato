@@ -105,10 +105,9 @@ OUTPUT
 
   // Validate frontmatter keys contain no unquoted colons in values
   const frontmatterBlock = lines.slice(0, dashLines[1] + 1).join("\n")
-  if (/^(title|description):\s*[^"'].*:/m.test(frontmatterBlock)) {
+  if (/^(title|description):\s*[^"'\s\n].*:/m.test(frontmatterBlock)) {
     console.error("[generate] Frontmatter has unquoted colon inside title/description — forcing quotes.")
-    // Auto-fix: wrap title/description values in double quotes if not already quoted
-    mdx = mdx.replace(/^(title|description):\s*([^"'\n].*)$/gm, (_, key, value) => {
+    mdx = mdx.replace(/^(title|description):\s*([^"'\s\n].*)$/gm, (_, key, value) => {
       const escaped = value.replace(/"/g, '\\"')
       return `${key}: "${escaped}"`
     })
