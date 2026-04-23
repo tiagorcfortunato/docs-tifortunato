@@ -88,7 +88,7 @@ const openaiProvider: Provider = {
 }
 
 // ---------- Chain with fallback ----------
-const CHAIN: Provider[] = [groqProvider, geminiProvider, openaiProvider]
+const CHAIN: Provider[] = [geminiProvider, groqProvider, openaiProvider]
 
 function isQuotaError(err: unknown): boolean {
   const msg = (err as Error)?.message?.toLowerCase() ?? ""
