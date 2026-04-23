@@ -40,7 +40,7 @@
         "description": "Frontend overview: Next.js 16 App Router, RSC patterns, Tailwind + shadcn"
       },
       "frontend/app-router.mdx": {
-        "code_files": ["src/app/layout.tsx", "src/app/page.tsx", "src/app/dashboard/layout.tsx", "src/app/(auth)/layout.tsx"],
+        "code_files": ["src/app/layout.tsx", "src/app/(auth)/layout.tsx", "src/app/p/[slug]/page.tsx"],
         "deep_dive_sections": ["4. Deep-Dive per Module", "App Router structure"],
         "description": "How App Router is used: server components, route groups, no middleware"
       },

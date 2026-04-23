@@ -37,9 +37,12 @@ Page: ${pagePath}
 Description: ${page.description}
 
 STAY STRICTLY ON TOPIC
-This page covers ONLY what the Description says. Do not cover adjacent material that belongs in other pages — for example, if the page is about "App Router", do NOT explain the database layer, auth internals, or deployment details in depth. Reference them in one sentence if relevant, but the body must stay on the page's specific topic.
+This page covers ONLY what the Description says. Do not cover adjacent material that belongs in other pages. Examples:
+- If the page is about "App Router", do NOT write sections about database layer, auth internals, or deployment details
+- If the page is about the database schema, do NOT explain API routes
+- At most, reference adjacent concerns in ONE sentence with a brief pointer to where they're covered
 
-EXISTING DOC (replace if only "Coming soon" placeholder; integrate if has real content):
+EXISTING DOC (replace if only "Coming soon" placeholder; integrate if it has real content):
 ${existingDoc}
 
 RELEVANT DEEP-DIVE SECTIONS:
@@ -48,15 +51,31 @@ ${relevantDeepDive || "[no deep-dive sections matched — use code only]"}
 CURRENT CODE (source of truth for facts):
 ${codeSections || "[no code files mapped]"}
 
-OUTPUT REQUIREMENTS
-- Full MDX content starting with YAML frontmatter block (triple dashes)
-- Frontmatter MUST quote any value containing a colon, hash, or special YAML characters
+FRONTMATTER RULES
+- Output MUST start with a YAML frontmatter block: opening \`---\` on line 1, closing \`---\` on its own line
+- \`title\` and \`description\` values MUST be wrapped in double quotes if they contain colons, hashes, quotes, or special YAML characters
+- Example valid frontmatter:
+  \`\`\`
+  ---
+  title: "Next.js 16 App Router"
+  description: "How App Router is used: server components, route groups, no middleware"
+  ---
+  \`\`\`
+
+MDX RULES
+- Escape \`<\` followed by a digit or identifier in prose (e.g. \`\\<15 min\` not \`<15 min\`) — MDX treats \`<\` + letter/digit as JSX start
+- Safe inside backtick code spans and fenced code blocks — no escaping needed there
+
+CONTENT RULES
 - H1 matches the title
-- Stay focused on the Description topic — this is critical
-- Reference file paths where useful, but don't pad with adjacent concerns
-- Include a "Known gaps" or honest-flag section if there are genuine trade-offs IN THIS PAGE'S SCOPE
-- Do NOT invent facts
-- Start response with the frontmatter dashes. End with the last content line. No commentary before or after.`
+- Opening paragraph states what the page covers in plain language
+- Reference specific file paths (e.g. \`src/lib/ratelimit.ts\`) when useful
+- "Known gaps" / "honest flag" section is OPTIONAL — include ONLY if there is a specific, concrete trade-off IN THE CODE scoped to THIS page's topic. Do NOT include generic concerns ("could be better", "requires discipline"), subjective opinions, or gaps that belong on other pages. If no page-scoped gap exists, skip the section entirely.
+- "Why this shape" section at the end is encouraged when design intent is non-obvious
+
+OUTPUT
+- Response starts with the frontmatter opening \`---\` line. Ends with the last content line.
+- NO commentary, preamble, or suffix outside the MDX content.`
 
   console.log(`[generate] ${projectKey}/${pagePath}…`)
   const raw = await callGroq(systemPrompt, userPrompt, { maxTokens: 6000 })
@@ -69,6 +88,30 @@ OUTPUT REQUIREMENTS
     console.error("[generate] Output does not start with frontmatter. Refusing to write.")
     console.error(mdx.slice(0, 500))
     process.exit(2)
+  }
+
+  // Validate frontmatter block — must have opening AND closing triple-dashes
+  const lines = mdx.split("\n")
+  const dashLines = lines
+    .map((line, i) => (line.trim() === "---" ? i : -1))
+    .filter(i => i !== -1)
+
+  if (dashLines.length < 2 || dashLines[0] !== 0) {
+    console.error("[generate] Malformed frontmatter — expected opening --- on line 1 and closing --- after title/description.")
+    console.error("First 20 lines of output:")
+    console.error(lines.slice(0, 20).join("\n"))
+    process.exit(3)
+  }
+
+  // Validate frontmatter keys contain no unquoted colons in values
+  const frontmatterBlock = lines.slice(0, dashLines[1] + 1).join("\n")
+  if (/^(title|description):\s*[^"'].*:/m.test(frontmatterBlock)) {
+    console.error("[generate] Frontmatter has unquoted colon inside title/description — forcing quotes.")
+    // Auto-fix: wrap title/description values in double quotes if not already quoted
+    mdx = mdx.replace(/^(title|description):\s*([^"'\n].*)$/gm, (_, key, value) => {
+      const escaped = value.replace(/"/g, '\\"')
+      return `${key}: "${escaped}"`
+    })
   }
 
   writeFile(docPath, mdx)
