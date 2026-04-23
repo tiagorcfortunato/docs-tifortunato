@@ -22,7 +22,7 @@ async function main() {
 
   const codeSections = page.code_files.map(f => {
     const content = readFile(resolveCodePath(project, f))
-    return `## ${f}\n\n\`\`\`\n${content.slice(0, 10000)}\n\`\`\``
+    return `## ${f}\n\n\`\`\`\n${content.slice(0, 6000)}\n\`\`\``
   }).join("\n\n")
 
   const styleGuide = readSystemPrompt()
