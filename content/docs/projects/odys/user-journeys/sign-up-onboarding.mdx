@@ -1,8 +1,72 @@
 ---
 title: Professional Sign-Up & Onboarding
-description: Professional sign-up and onboarding flow.
+description: How a Brazilian independent professional goes from landing on odys.com.br to having a live public booking page.
 ---
 
-## Coming soon
+# Professional Sign-Up & Onboarding
 
-This section will be filled in together.
+Two phases end-to-end: **account creation with email verification**, then a **multi-step onboarding wizard** that captures enough data to render the booking widget. All auth via Supabase; all state persisted via Drizzle.
+
+## Phase 1 — Account creation
+
+1. The professional lands on `odys.com.br/register` and fills the form.
+2. Client POSTs JSON to `/api/auth/register` (`src/app/api/auth/register/route.ts`).
+3. Handler is **rate-limited** — 5 attempts per rolling hour per IP via `getRegisterLimiter()` in `src/lib/ratelimit.ts` (Upstash `slidingWindow`).
+4. Registration branches on `NODE_ENV`:
+   - **Production** — `supabase.auth.signUp()` with the anon client → Supabase sends a verification email via its own SMTP.
+   - **Development** — `adminClient.auth.admin.createUser({ email_confirm: true })` skips the email round-trip for faster iteration.
+5. Response returns `requiresEmailConfirmation` so the client page renders either "check your inbox" or proceeds.
+
+## Phase 2 — Email verification → session
+
+1. Professional clicks the verification link.
+2. Browser hits `/auth/callback` (`src/app/auth/callback/route.ts`).
+3. `supabase.auth.exchangeCodeForSession(code)` converts the one-time code into a Supabase session.
+4. For `type=client` signups only, the **smart-linking** query runs — backfills `clients.userId` for pre-existing rows whose email matches the new verified user. Gated explicitly on `type === "client"`; professional-flagged signups skip it. The match is email-only, so a single client can be linked across all professionals they've previously booked with.
+5. This only runs **after** verification. Running it before (the old design) allowed the C1 account-takeover finding.
+6. `/auth/redirect` reads `user_metadata.type` and forwards — professionals → `/onboarding`, clients → `/c`.
+
+> The smart-linking placement after verification is the fix for audit finding **C1**. See [Security → Fixed](../security/fixed).
+
+## Phase 3 — Onboarding wizard (professionals only)
+
+The `/onboarding` wizard collects 7 fields, posted as JSON to `/api/onboarding`:
+
+- **Full name** — used to derive the public URL slug
+- **Profession** — one of 29 keys from `src/lib/professions.ts`
+- **WhatsApp** (body key: `phone`) — canonicalized for reply-routing
+- **Session duration** — minutes (integer)
+- **Session price** — cents (integer)
+- **Short bio** — free-form text, optional (the only nullable field)
+- **Weekly availability** — array of `{ dayOfWeek, startTime, endTime }` tuples
+
+### Handler — `/api/onboarding`
+
+1. **Rate-limit** — 3 submissions per rolling hour per IP (`getOnboardingLimiter()`).
+2. **Identity** — `getUser()` returns the authenticated Supabase user.
+3. **Idempotency** — if a `professionals` row already exists for this `user.id`, return it without recreating.
+4. **Slug generation** — `generateUniqueSlug(toSlug(body.name))`:
+   - `toSlug()` normalizes NFD → strips diacritics → lowercase → dash-separated → drops non-alphanumerics
+   - `generateUniqueSlug()` tries the base; on collision, appends `-2`, `-3`, `-4`, … with one DB round-trip per iteration
+5. **Insert professional** — one row.
+6. **Insert availability** — one row per weekday window.
+7. **Set user metadata** — `{ type: "professional" }` so future logins route to the dashboard.
+
+### Outcome
+
+Professional is live at `odys.com.br/p/[slug]`.
+
+## Known gaps (honest flags)
+
+Captured here rather than pretended away — backlog items, not bugs blocking today's users:
+
+- **No Zod validation on the onboarding body.** Unlike `/api/booking` which uses a Zod schema, `/api/onboarding` trusts the client-side form. A malformed request (`sessionPrice` as string, `sessionDuration` negative) would be written to Postgres as-is. Hardening item — wrap the body in a Zod schema before the first real user.
+- **No reserved-slug guard.** `toSlug("Dashboard")` → `dashboard` is accepted unchanged. If a professional's name slugs to a top-level route (`dashboard`, `login`, `register`, `api`, `explore`, `c`, `p`, `onboarding`, `privacidade`, `termos`), `/p/dashboard` would collide with the Next.js route. Hardening item — add a reserved-name blocklist to `generateUniqueSlug()`.
+- **Unbounded slug-collision loop.** One DB query per retry. Fine at MVP scale; pathological only if thousands of pros collide on the same base name.
+
+## Why this shape
+
+- **Two phases (account → onboarding)** mirrors the pattern where initial signup is lightweight but the first-class data model needs structured input. Collecting everything at once kills conversion.
+- **Idempotent onboarding handler** protects against double-click / slow-network duplicate submissions.
+- **Slug generation as a pure function** keeps URL ownership testable and predictable. Professionals don't pick slugs manually — bounded edge case count.
+- **Smart-linking after email verification, not before** is the direct lesson from audit finding C1. Always re-read the threat model when combining signup with auto-link.
