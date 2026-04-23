@@ -43,26 +43,19 @@ The `/onboarding` wizard collects 7 fields, posted as JSON to `/api/onboarding`:
 ### Handler — `/api/onboarding`
 
 1. **Rate-limit** — 3 submissions per rolling hour per IP (`getOnboardingLimiter()`).
-2. **Identity** — `getUser()` returns the authenticated Supabase user.
-3. **Idempotency** — if a `professionals` row already exists for this `user.id`, return it without recreating.
-4. **Slug generation** — `generateUniqueSlug(toSlug(body.name))`:
+2. **Zod validation** — `onboardingSchema` validates: `name` (string min 2), `profession` (string), `phone` (string min 10), `bio` (optional), `sessionDuration` (positive int ≤ 480), `sessionPrice` (non-negative int), `availability` (array with `dayOfWeek` 0-6 and `HH:mm` start/end). Failure → 400 with field errors.
+3. **Identity** — `getUser()` returns the authenticated Supabase user.
+4. **Idempotency** — if a `professionals` row already exists for this `user.id`, return it without recreating.
+5. **Slug generation** — `generateUniqueSlug(toSlug(body.name))`:
    - `toSlug()` normalizes NFD → strips diacritics → lowercase → dash-separated → drops non-alphanumerics
-   - `generateUniqueSlug()` tries the base; on collision, appends `-2`, `-3`, `-4`, … with one DB round-trip per iteration
-5. **Insert professional** — one row.
-6. **Insert availability** — one row per weekday window.
-7. **Set user metadata** — `{ type: "professional" }` so future logins route to the dashboard.
+   - `generateUniqueSlug()` blocks reserved top-level routes (`api`, `auth`, `dashboard`, `login`, `register`, `onboarding`, `explore`, `c`, `p`, `privacidade`, `termos`, `admin`, `monitoring`, `sitemap`, `robots`, `opengraph-image`) — if a professional's name slugs to one of these, the base is skipped and iteration starts at `-2`. Otherwise, tries the base; on collision, appends `-2`, `-3`, `-4`, … with one DB round-trip per iteration
+6. **Insert professional** — one row.
+7. **Insert availability** — one row per weekday window.
+8. **Set user metadata** — `{ type: "professional" }` so future logins route to the dashboard.
 
 ### Outcome
 
 Professional is live at `odys.com.br/p/[slug]`.
-
-## Known gaps (honest flags)
-
-Captured here rather than pretended away — backlog items, not bugs blocking today's users:
-
-- **No Zod validation on the onboarding body.** Unlike `/api/booking` which uses a Zod schema, `/api/onboarding` trusts the client-side form. A malformed request (`sessionPrice` as string, `sessionDuration` negative) would be written to Postgres as-is. Hardening item — wrap the body in a Zod schema before the first real user.
-- **No reserved-slug guard.** `toSlug("Dashboard")` → `dashboard` is accepted unchanged. If a professional's name slugs to a top-level route (`dashboard`, `login`, `register`, `api`, `explore`, `c`, `p`, `onboarding`, `privacidade`, `termos`), `/p/dashboard` would collide with the Next.js route. Hardening item — add a reserved-name blocklist to `generateUniqueSlug()`.
-- **Unbounded slug-collision loop.** One DB query per retry. Fine at MVP scale; pathological only if thousands of pros collide on the same base name.
 
 ## Why this shape
 
@@ -70,3 +63,4 @@ Captured here rather than pretended away — backlog items, not bugs blocking to
 - **Idempotent onboarding handler** protects against double-click / slow-network duplicate submissions.
 - **Slug generation as a pure function** keeps URL ownership testable and predictable. Professionals don't pick slugs manually — bounded edge case count.
 - **Smart-linking after email verification, not before** is the direct lesson from audit finding C1. Always re-read the threat model when combining signup with auto-link.
+- **Slug-collision loop is intentionally simple** — one DB query per retry. At MVP scale the cost is negligible. If thousands of pros ever collide on the same base, swap for a batch query or a dedicated counter column.
