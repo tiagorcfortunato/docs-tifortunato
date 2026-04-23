@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm run types:check
+
+      # Lint step disabled until eslint-plugin-react is compatible with ESLint 10
+      # (`contextOrFilename.getFilename is not a function` — scaffold dep mismatch)
+      # - name: Lint
+      #   run: pnpm run lint
+
+      - name: Build
+        run: pnpm run build
+        env:
+          # Dummy keys for build step — not needed at build time but prevent errors if referenced
+          GROQ_API_KEY: dummy
+          GEMINI_API_KEY: dummy
