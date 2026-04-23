@@ -10,7 +10,8 @@
     "postinstall": "fumadocs-mdx",
     "lint": "eslint",
     "docs:audit": "tsx scripts/audit-drift.ts",
-    "docs:generate": "tsx scripts/generate-page.ts"
+    "docs:generate": "tsx scripts/generate-page.ts",
+    "docs:batch": "tsx scripts/batch-generate.ts"
   },
   "dependencies": {
     "fumadocs-core": "16.8.2",
