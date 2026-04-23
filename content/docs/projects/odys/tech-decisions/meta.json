@@ -1,0 +1,11 @@
+{
+  "title": "Tech Decisions",
+  "pages": [
+    "index",
+    "nextjs-16-app-router",
+    "drizzle-vs-prisma",
+    "supabase",
+    "evolution-api-over-waba",
+    "groq-llama-over-openai"
+  ]
+}

@@ -1,0 +1,4 @@
+{
+  "title": "MCP Server",
+  "pages": ["index", "stdio-transport", "four-tools", "shared-schema"]
+}

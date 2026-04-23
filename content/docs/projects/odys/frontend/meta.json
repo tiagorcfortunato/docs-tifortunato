@@ -1,0 +1,4 @@
+{
+  "title": "Frontend",
+  "pages": ["index", "app-router", "booking-widget", "dashboard"]
+}

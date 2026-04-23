@@ -1,0 +1,4 @@
+{
+  "title": "Payment",
+  "pages": ["index", "stripe-subscription", "pix-flow", "webhook-verification"]
+}

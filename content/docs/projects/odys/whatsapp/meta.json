@@ -1,0 +1,4 @@
+{
+  "title": "WhatsApp",
+  "pages": ["index", "evolution-api", "message-templates", "watchdog-cron"]
+}

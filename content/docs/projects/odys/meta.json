@@ -3,12 +3,18 @@
   "pages": [
     "index",
     "architecture",
+    "user-journeys",
     "frontend",
     "backend",
     "database",
+    "payment",
     "ai-layer",
+    "mcp-server",
+    "whatsapp",
+    "observability",
     "deployment",
-    "lessons-learned",
-    "future-work"
+    "security",
+    "tech-decisions",
+    "lessons-learned"
   ]
 }

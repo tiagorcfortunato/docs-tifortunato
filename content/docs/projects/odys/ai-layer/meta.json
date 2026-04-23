@@ -1,4 +1,4 @@
 {
   "title": "AI Layer",
-  "pages": ["evolution-api", "llm-groq", "tool-calling", "mcp", "agent-flow"]
+  "pages": ["index", "groq-llama", "tool-calling", "dashboard-assistant", "whatsapp-intake"]
 }
