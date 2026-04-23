@@ -1,8 +1,64 @@
 ---
 title: Odys Overview
-description: Overview of the Odys project.
+description: A scheduling SaaS for Brazilian independent professionals, replacing the WhatsApp-thread-as-agenda pattern.
 ---
 
-## Coming soon
+# Odys
 
-This section will be filled in together.
+Odys is a scheduling SaaS for **Brazilian independent professionals** across health, fitness, wellness, beauty, education, and creative services — psychologists, personal trainers, hairdressers, estheticians, nutritionists, photographers, and more. It replaces the chaotic WhatsApp-thread-as-agenda pattern most of them use today.
+
+## The problem
+
+Most Brazilian independent professionals run their agenda through WhatsApp. A client messages asking for a Friday 3pm slot. The professional confirms manually. Payments happen in separate threads, often forgotten. Reminders are typed by hand. No central calendar, no paper trail, no analytics.
+
+Existing tools (Calendly, Simples Agenda) miss the mark:
+
+- Too complex for a solo professional who just wants a booking page
+- Don't speak WhatsApp natively — the actual channel where business happens
+- Designed for English-speaking corporate markets, not Brazilian realities (PIX payments, WhatsApp as primary channel)
+
+## What Odys does
+
+- **Public booking page** at `/p/[slug]` — clients pick a slot, fill details, done
+- **Professional dashboard** to confirm, track, and manage appointments
+- **WhatsApp reminders** sent from the professional's own number via Evolution API (not a corporate bot number)
+- **Stripe subscription billing** for the professional to pay Odys (Basic / Pro / Premium)
+- **PIX payment flow** for client-to-professional payments — Brazilian-native, off-Stripe
+
+## Scope of professions supported
+
+29 professions across 6 categories, defined in `src/lib/professions.ts`:
+
+- **Health** — psychologist, physiotherapist, nutritionist, dentist, therapist, speech therapist
+- **Fitness** — personal trainer, yoga instructor, pilates instructor, dance instructor
+- **Wellness** — massage therapist, acupuncturist, holistic therapist, osteopath
+- **Beauty** — hairdresser, barber, manicure, esthetician, makeup artist, tattoo artist, eyebrow designer, lash designer
+- **Education** — tutor, music instructor, language instructor, coach
+- **Creative** — photographer, personal stylist, personal organizer
+
+The schema is strictly per-individual-professional — there is no `salons` table. A salon owner using Odys would onboard each professional individually.
+
+## Current state (2026-04-23)
+
+- **Deployed** at [odys.com.br](https://odys.com.br) — launch-ready
+- **Zero paying customers yet** — pre-launch, by design
+- Before the first acquisition push, the product has been hardened: real Drizzle schema, working Stripe + PIX payments, a security audit with 15 findings actively being worked, three-runtime Sentry observability, and an MCP server exposing the DB to AI agents
+
+When a section in these docs says *"the system handles X,"* it means the code is in production and tested end-to-end — but has not yet been load-tested by real traffic.
+
+## What's in the rest of these docs
+
+- [Architecture](./architecture) — high-level diagram of how the pieces connect
+- [User Journeys](./user-journeys) — the 3 flows that define the product
+- [Frontend](./frontend) — Next.js 16 App Router structure
+- [Backend](./backend) — the API route tree
+- [Database](./database) — 10-table Drizzle schema on Supabase Postgres
+- [Payment](./payment) — Stripe subscriptions + PIX flow
+- [AI Layer](./ai-layer) — Groq + Llama, tool-calling, dashboard assistant
+- [MCP Server](./mcp-server) — local stdio server with 4 tools
+- [WhatsApp](./whatsapp) — Evolution API + ~20 message templates
+- [Observability](./observability) — Sentry 3-runtime + PostHog
+- [Deployment](./deployment) — Vercel + Railway + GitHub Actions
+- [Security](./security) — the 15-finding audit, what's fixed, what's open
+- [Tech Decisions](./tech-decisions) — the "why" behind every major choice
+- [Lessons Learned](./lessons-learned) — what I'd do differently
