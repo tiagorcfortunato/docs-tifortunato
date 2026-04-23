@@ -19,7 +19,9 @@ From landing on a professional's public page to a confirmed appointment. Client-
 
 ### 3. [Payment Flow](./payment-flow)
 
-Two separate payment paths: **PIX** for client-to-professional session payments (off-Stripe, Brazilian-native, zero fees), and **Stripe Checkout** for professional-to-Odys subscription billing (hosted, out of PCI scope). The split is intentional — both regulatory (avoids BACEN payment-facilitator status) and economic (PIX is free, Stripe fees on R$80-200 service payments would eat 4-6%).
+Two separate payment paths: **PIX** for client-to-professional session payments (off-Stripe, Brazilian-native, zero fees), and **Stripe Checkout** for professional-to-Odys subscription billing (hosted, out of PCI scope). The split is intentional — both regulatory (avoids BACEN payment-facilitator status) and economic (PIX is free, Stripe fees on R$80-200 service payments would eat ~4-5%).
+
+PIX uses a direct static QR code (EMV BR Code pointing to the professional's own PIX key) — zero fees and peer-to-peer settlement, with manual confirmation by the professional after the deposit clears in their bank account.
 
 ## Why these three
 
