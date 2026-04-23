@@ -1,8 +1,36 @@
 ---
-title: User Journeys Overview
-description: Overview of Odys user journeys.
+title: User Journeys
+description: The three flows that define Odys — sign-up & onboarding, customer booking, payments.
 ---
 
-## Coming soon
+# User Journeys
 
-This section will be filled in together.
+Three flows, from different sides of the product, together define the full Odys experience. Each page in this section walks one flow end-to-end — not marketing flavor, but the actual route names, database writes, and edge cases as they're coded.
+
+## The three flows
+
+### 1. [Professional Sign-Up & Onboarding](./sign-up-onboarding)
+
+From `odys.com.br/register` to having a live `/p/[slug]` booking page. Two phases: lightweight account creation with email verification, then a multi-step wizard that captures profession, availability, session duration, and price. Zod-validated body, reserved-slug blocklist, idempotent handler.
+
+### 2. [Customer Booking Flow](./booking-flow)
+
+From landing on a professional's public page to a confirmed appointment. Client-side slot computation for UX speed, server-side overlap check for correctness, Zod validation on submission, plan-limit enforcement, non-blocking WhatsApp + email notifications. Includes honest flags on the non-transactional overlap window and cross-timezone assumptions.
+
+### 3. [Payment Flow](./payment-flow)
+
+Two separate payment paths: **PIX** for client-to-professional session payments (off-Stripe, Brazilian-native, zero fees), and **Stripe Checkout** for professional-to-Odys subscription billing (hosted, out of PCI scope). The split is intentional — both regulatory (avoids BACEN payment-facilitator status) and economic (PIX is free, Stripe fees on R$80-200 service payments would eat 4-6%).
+
+## Why these three
+
+Every SaaS has signup, core action, and payment. In Odys, the **core action** is a booking — which touches three actors (professional, client, Odys platform) — and **payment splits** into session money (client → professional, via PIX) and platform money (professional → Odys, via Stripe). Understanding these three flows is enough to read ~80% of the codebase.
+
+## What they have in common
+
+- **Zod validation at the boundary** — every POST body is validated before any business logic runs
+- **Rate limiting by IP** — via Upstash Ratelimit sliding windows on all mutation endpoints
+- **Supabase auth gating** — every authenticated action checks `supabase.auth.getUser()`
+- **Non-blocking side effects** — WhatsApp and email are always fire-and-forget, never load-bearing for the response
+- **Idempotent handlers** — double-submit produces no duplicate state
+
+These cross-cutting concerns are documented in [Backend](../backend) rather than repeated in each flow.
