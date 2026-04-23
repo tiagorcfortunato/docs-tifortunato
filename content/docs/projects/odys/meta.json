@@ -1,0 +1,14 @@
+{
+  "title": "Odys",
+  "pages": [
+    "index",
+    "architecture",
+    "frontend",
+    "backend",
+    "database",
+    "ai-layer",
+    "deployment",
+    "lessons-learned",
+    "future-work"
+  ]
+}

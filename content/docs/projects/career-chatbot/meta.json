@@ -1,0 +1,4 @@
+{
+  "title": "Career Chatbot",
+  "pages": ["index", "architecture", "rag-pipeline", "langgraph", "reranker", "deployment"]
+}
