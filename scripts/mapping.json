@@ -1,0 +1,284 @@
+{
+  "odys": {
+    "repo_path": "/Users/tiagofortunato/Desktop/Money App/odys",
+    "docs_root": "content/docs/projects/odys",
+    "deep_dive_path": "/Users/tiagofortunato/job-prep/Reply/data/odys_technical_deep_dive_en.md",
+    "pages": {
+      "index.mdx": {
+        "code_files": ["src/app/page.tsx", "README.md", "src/lib/professions.ts"],
+        "deep_dive_sections": ["1. High-level Architecture"],
+        "description": "Overview — what Odys is, target users, current state, list of docs"
+      },
+      "architecture.mdx": {
+        "code_files": ["package.json", "vercel.json", "next.config.ts", "src/lib/db/schema.ts", "README.md"],
+        "deep_dive_sections": ["1. High-level Architecture"],
+        "description": "High-level system architecture, runtimes, supporting services, data residency"
+      },
+      "user-journeys/index.mdx": {
+        "code_files": [],
+        "deep_dive_sections": ["2. Core User Journeys"],
+        "description": "3-flow overview: sign-up, booking, payment"
+      },
+      "user-journeys/sign-up-onboarding.mdx": {
+        "code_files": ["src/app/api/auth/register/route.ts", "src/app/auth/callback/route.ts", "src/app/api/onboarding/route.ts", "src/lib/ratelimit.ts"],
+        "deep_dive_sections": ["2. Core User Journeys", "A. A service provider signs up and onboards"],
+        "description": "Professional sign-up + onboarding flow end-to-end"
+      },
+      "user-journeys/booking-flow.mdx": {
+        "code_files": ["src/app/api/booking/route.ts", "src/app/p/[slug]/page.tsx", "src/app/p/[slug]/booking-widget.tsx", "src/lib/slots.ts", "src/lib/ratelimit.ts", "src/app/api/appointments/[id]/route.ts"],
+        "deep_dive_sections": ["2. Core User Journeys", "B. A customer books via the public page", "7. Public Booking Widget Deep-Dive"],
+        "description": "Customer booking flow: landing → slot selection → POST → overlap check → confirmation"
+      },
+      "user-journeys/payment-flow.mdx": {
+        "code_files": ["src/lib/pix.ts", "src/lib/stripe/plans.ts", "src/app/api/stripe/checkout/route.ts", "src/app/api/stripe/webhook/route.ts"],
+        "deep_dive_sections": ["2. Core User Journeys", "C. Payment via Stripe", "6. Payment Flow Deep-Dive"],
+        "description": "PIX flow (client → pro, off-Stripe) + Stripe subscription flow (pro → Odys)"
+      },
+      "frontend/index.mdx": {
+        "code_files": ["src/app/layout.tsx", "src/app/(auth)/layout.tsx", "package.json"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "Frontend overview: Next.js 16 App Router, RSC patterns, Tailwind + shadcn"
+      },
+      "frontend/app-router.mdx": {
+        "code_files": ["src/app/layout.tsx", "src/app/page.tsx", "src/app/dashboard/layout.tsx", "src/app/(auth)/layout.tsx"],
+        "deep_dive_sections": ["4. Deep-Dive per Module", "App Router structure"],
+        "description": "How App Router is used: server components, route groups, no middleware"
+      },
+      "frontend/booking-widget.mdx": {
+        "code_files": ["src/app/p/[slug]/booking-widget.tsx", "src/app/p/[slug]/page.tsx", "src/lib/slots.ts"],
+        "deep_dive_sections": ["7. Public Booking Widget Deep-Dive"],
+        "description": "Booking widget internals: 3-step state machine, react-hook-form, slot computation"
+      },
+      "frontend/dashboard.mdx": {
+        "code_files": ["src/app/dashboard/page.tsx", "src/app/dashboard/sidebar.tsx", "src/app/dashboard/layout.tsx"],
+        "deep_dive_sections": ["4. Deep-Dive per Module", "Dashboard"],
+        "description": "Professional dashboard: sidebar, sub-routes, appointment actions"
+      },
+      "backend/index.mdx": {
+        "code_files": ["src/lib/api.ts"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "Backend overview: API route tree, shared helpers, auth pattern"
+      },
+      "backend/api-routes-overview.mdx": {
+        "code_files": ["src/lib/api.ts"],
+        "deep_dive_sections": ["3. Project Structure"],
+        "description": "The complete API route tree and shared helpers (getUser, responses)"
+      },
+      "backend/auth-register.mdx": {
+        "code_files": ["src/app/api/auth/register/route.ts", "src/app/auth/callback/route.ts"],
+        "deep_dive_sections": ["2. Core User Journeys"],
+        "description": "Auth + register endpoints, smart-linking, C1 fix"
+      },
+      "backend/booking-api.mdx": {
+        "code_files": ["src/app/api/booking/route.ts"],
+        "deep_dive_sections": ["2. Core User Journeys", "7. Public Booking Widget Deep-Dive"],
+        "description": "Booking GET + POST endpoint internals"
+      },
+      "backend/appointments-api.mdx": {
+        "code_files": ["src/app/api/appointments/[id]/route.ts"],
+        "deep_dive_sections": ["2. Core User Journeys"],
+        "description": "Appointment action endpoint: confirm/reject/cancel/paid/complete/no_show"
+      },
+      "database/index.mdx": {
+        "code_files": ["src/lib/db/index.ts", "src/lib/db/schema.ts", "drizzle.config.ts"],
+        "deep_dive_sections": ["5. Database Schema Deep-Dive"],
+        "description": "Database overview: Drizzle on Supabase Postgres"
+      },
+      "database/drizzle-orm.mdx": {
+        "code_files": ["src/lib/db/index.ts", "drizzle.config.ts"],
+        "deep_dive_sections": ["4. Deep-Dive per Module", "Database layer"],
+        "description": "Why Drizzle, how it's configured, postgres-js client"
+      },
+      "database/schema.mdx": {
+        "code_files": ["src/lib/db/schema.ts"],
+        "deep_dive_sections": ["5. Database Schema Deep-Dive"],
+        "description": "The 10 tables in detail"
+      },
+      "database/rls-gap.mdx": {
+        "code_files": ["src/lib/api.ts"],
+        "deep_dive_sections": ["12. Known Gaps & Security Findings"],
+        "description": "No RLS policies; app-layer authorization pattern and its trade-offs"
+      },
+      "payment/index.mdx": {
+        "code_files": ["src/lib/pix.ts", "src/lib/stripe/plans.ts"],
+        "deep_dive_sections": ["6. Payment Flow Deep-Dive"],
+        "description": "Payment overview: two flows, why split"
+      },
+      "payment/stripe-subscription.mdx": {
+        "code_files": ["src/lib/stripe/index.ts", "src/lib/stripe/plans.ts", "src/app/api/stripe/checkout/route.ts"],
+        "deep_dive_sections": ["6. Payment Flow Deep-Dive"],
+        "description": "Stripe subscription flow internals"
+      },
+      "payment/pix-flow.mdx": {
+        "code_files": ["src/lib/pix.ts", "src/components/pix-qr.tsx"],
+        "deep_dive_sections": ["6. Payment Flow Deep-Dive"],
+        "description": "PIX EMV BR Code generation, CRC16, QR rendering"
+      },
+      "payment/webhook-verification.mdx": {
+        "code_files": ["src/app/api/stripe/webhook/route.ts"],
+        "deep_dive_sections": ["6. Payment Flow Deep-Dive"],
+        "description": "Stripe webhook: raw body, signature verification, event dispatch"
+      },
+      "ai-layer/index.mdx": {
+        "code_files": ["src/lib/ai-intake.ts", "src/app/api/ai/chat/route.ts"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "AI layer overview: Groq, tool-calling, two agents"
+      },
+      "ai-layer/groq-llama.mdx": {
+        "code_files": ["src/lib/ai-intake.ts", "src/app/api/ai/chat/route.ts"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Groq + Llama 3.3 70B, two-pass pattern"
+      },
+      "ai-layer/tool-calling.mdx": {
+        "code_files": ["src/lib/ai-intake.ts", "src/app/api/ai/chat/route.ts"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "Tool-calling pattern: schema definition, dispatch, error handling"
+      },
+      "ai-layer/dashboard-assistant.mdx": {
+        "code_files": ["src/app/api/ai/chat/route.ts", "src/app/dashboard/assistant"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "In-dashboard AI chat"
+      },
+      "ai-layer/whatsapp-intake.mdx": {
+        "code_files": ["src/lib/ai-intake.ts", "src/lib/conversation.ts", "src/app/api/whatsapp/webhook"],
+        "deep_dive_sections": ["4. Deep-Dive per Module"],
+        "description": "WhatsApp AI intake agent: inbound webhook, Groq tool-calling, appointment creation"
+      },
+      "mcp-server/index.mdx": {
+        "code_files": ["mcp-server/src/server.ts", "mcp-server/src/tools.ts", "mcp-server/package.json", ".mcp.json"],
+        "deep_dive_sections": ["8. MCP Server Deep-Dive"],
+        "description": "MCP server overview: purpose, architecture, not deployed"
+      },
+      "mcp-server/stdio-transport.mdx": {
+        "code_files": ["mcp-server/src/server.ts", ".mcp.json", "mcp-server/tsup.config.ts"],
+        "deep_dive_sections": ["8. MCP Server Deep-Dive"],
+        "description": "stdio transport, JSON-RPC, tsup bundling, noExternal quirk"
+      },
+      "mcp-server/four-tools.mdx": {
+        "code_files": ["mcp-server/src/tools.ts", "mcp-server/src/phone.ts"],
+        "deep_dive_sections": ["8. MCP Server Deep-Dive"],
+        "description": "The 4 tools in detail with handler code"
+      },
+      "mcp-server/shared-schema.mdx": {
+        "code_files": ["mcp-server/src/db.ts", "src/lib/db/schema.ts", "mcp-server/tsconfig.json"],
+        "deep_dive_sections": ["8. MCP Server Deep-Dive"],
+        "description": "Shared Drizzle schema via relative import, tsconfig exclude"
+      },
+      "whatsapp/index.mdx": {
+        "code_files": ["src/lib/whatsapp.ts", "docker-compose.evolution.yml"],
+        "deep_dive_sections": ["4. Deep-Dive per Module", "Notifications"],
+        "description": "WhatsApp overview: corporate number architecture, Evolution API, ~20 templates"
+      },
+      "whatsapp/evolution-api.mdx": {
+        "code_files": ["src/lib/whatsapp.ts", "docker-compose.evolution.yml", "README.md"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Evolution API: why, Docker on Railway, v1.8.2 local vs v2 prod"
+      },
+      "whatsapp/message-templates.mdx": {
+        "code_files": ["src/lib/whatsapp.ts"],
+        "deep_dive_sections": ["4. Deep-Dive per Module", "Notifications"],
+        "description": "The ~20 msg* template functions, formatting strategy"
+      },
+      "whatsapp/watchdog-cron.mdx": {
+        "code_files": ["src/app/api/cron/whatsapp-watchdog", "vercel.json"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "Daily health-check cron for Evolution API"
+      },
+      "observability/index.mdx": {
+        "code_files": ["src/instrumentation.ts", "src/instrumentation-client.ts", "src/components/posthog-provider.tsx"],
+        "deep_dive_sections": ["9. Observability & Monitoring"],
+        "description": "Observability overview: Sentry 3-runtime + PostHog"
+      },
+      "observability/sentry.mdx": {
+        "code_files": ["src/instrumentation.ts", "src/instrumentation-client.ts", "src/app/global-error.tsx", "next.config.ts"],
+        "deep_dive_sections": ["9. Observability & Monitoring"],
+        "description": "Sentry server/edge/browser, source maps, /monitoring tunnel"
+      },
+      "observability/posthog.mdx": {
+        "code_files": ["src/components/posthog-provider.tsx", "src/components/posthog-identify.tsx", "src/components/cookie-banner.tsx"],
+        "deep_dive_sections": ["9. Observability & Monitoring"],
+        "description": "PostHog: cookie-gated init, manual pageview, identify in dashboard"
+      },
+      "deployment/index.mdx": {
+        "code_files": ["vercel.json", "next.config.ts", ".github/workflows/ci.yml", "README.md"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "Deployment overview"
+      },
+      "deployment/vercel.mdx": {
+        "code_files": ["vercel.json", "next.config.ts"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "Vercel deployment: auto-deploy on main, env vars, regions"
+      },
+      "deployment/cron-jobs.mdx": {
+        "code_files": ["vercel.json", "src/app/api/cron/reminders/route.ts", "src/app/api/cron/whatsapp-watchdog"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "Vercel Cron: 2 schedules, shared-secret auth"
+      },
+      "deployment/github-actions-ci.mdx": {
+        "code_files": [".github/workflows/ci.yml"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "CI pipeline: typecheck + lint + build"
+      },
+      "deployment/railway-evolution.mdx": {
+        "code_files": ["docker-compose.evolution.yml", "README.md"],
+        "deep_dive_sections": ["10. Deployment Pipeline"],
+        "description": "Railway for Evolution API: Docker image, separate Postgres"
+      },
+      "security/index.mdx": {
+        "code_files": [],
+        "deep_dive_sections": ["12. Known Gaps & Security Findings"],
+        "description": "Security overview: 15-finding audit, status, what's fixed"
+      },
+      "security/audit-findings.mdx": {
+        "code_files": [],
+        "deep_dive_sections": ["12. Known Gaps & Security Findings"],
+        "description": "All 15 findings categorized by severity"
+      },
+      "security/fixed.mdx": {
+        "code_files": ["src/app/api/auth/register/route.ts", "src/app/auth/callback/route.ts", "src/app/api/onboarding/route.ts", "src/app/api/appointments/[id]/route.ts"],
+        "deep_dive_sections": ["12. Known Gaps & Security Findings"],
+        "description": "C1, M4, plus new fixes (Zod onboarding, reserved-slug, unknown-action 400, landing fake social proof)"
+      },
+      "security/open-backlog.mdx": {
+        "code_files": [],
+        "deep_dive_sections": ["12. Known Gaps & Security Findings"],
+        "description": "Open findings H1-H4, M1-M3, M5, L1-L5, plus new (non-transactional overlap)"
+      },
+      "tech-decisions/index.mdx": {
+        "code_files": ["package.json"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Overview of major tech decisions"
+      },
+      "tech-decisions/nextjs-16-app-router.mdx": {
+        "code_files": ["package.json", "next.config.ts"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Next.js 16 App Router over alternatives"
+      },
+      "tech-decisions/drizzle-vs-prisma.mdx": {
+        "code_files": ["src/lib/db/index.ts", "drizzle.config.ts", "package.json"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Drizzle over Prisma"
+      },
+      "tech-decisions/supabase.mdx": {
+        "code_files": ["src/lib/supabase/server.ts", "src/lib/supabase/client.ts", "package.json"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Supabase (Postgres + Auth + Storage)"
+      },
+      "tech-decisions/evolution-api-over-waba.mdx": {
+        "code_files": ["src/lib/whatsapp.ts", "docker-compose.evolution.yml"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Evolution API instead of Meta's WhatsApp Business API"
+      },
+      "tech-decisions/groq-llama-over-openai.mdx": {
+        "code_files": ["src/lib/ai-intake.ts", "src/app/api/ai/chat/route.ts"],
+        "deep_dive_sections": ["11. Tech Stack Justification"],
+        "description": "Why Groq + Llama over OpenAI"
+      },
+      "lessons-learned.mdx": {
+        "code_files": [],
+        "deep_dive_sections": ["10. Deployment Pipeline", "12. Known Gaps & Security Findings"],
+        "description": "What I'd do differently / key learning moments"
+      }
+    }
+  }
+}
