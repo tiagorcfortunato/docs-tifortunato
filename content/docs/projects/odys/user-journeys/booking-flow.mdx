@@ -75,7 +75,7 @@ The professional receives the WhatsApp / email / dashboard alert and either:
 - **Rejects** → client gets `msgBookingRejected`.
 - Has **autoConfirm: true** → the appointment was already `confirmed` at insert time, no manual step needed.
 
-The full action set on PATCH `/api/appointments/[id]` is: `confirm`, `reject`, `cancel`, `paid`, `complete`, `no_show`. `paid` / `complete` / `no_show` are pro-only (authentication + ownership gate).
+The full action set on PATCH `/api/appointments/[id]` is `confirm`, `reject`, `cancel`, `paid`, `complete`, `no_show` — enforced by an explicit allowlist; unknown actions return 400. `paid` / `complete` / `no_show` are pro-only (authentication + ownership gate).
 
 If the client booked without a registered account, the confirmation message appends `msgRegistrationInvite` — a short prompt with a pre-filled `/register` link so the client can claim their profile for future bookings.
 
@@ -88,7 +88,7 @@ Two customers clicking the same slot at the same moment both see it as available
 
 The SELECT and INSERT are **not wrapped in a transaction** — there's a microsecond window between them where two simultaneous requests could both pass the check and both insert. In practice that window is microseconds on Supabase's pooled connection, and per-professional booking rate is far below contention threshold.
 
-**Upgrade path** if real contention emerges: either wrap select+insert in `db.transaction(...)` with `SERIALIZABLE` isolation, or add a Postgres `EXCLUSION CONSTRAINT` using `tstzrange(starts_at, ends_at)` with `&&` operator. The `generateSlots()` function stays unchanged — it's UX, not authorization.
+**Upgrade path** if real contention emerges: either wrap select+insert in `db.transaction(...)` with `SERIALIZABLE` isolation, or add a Postgres `EXCLUSION CONSTRAINT` using `tstzrange(starts_at, ends_at)` with the `&&` operator. The `generateSlots()` function stays unchanged — it's UX, not authorization.
 
 ## Timezone handling — honest flag
 
