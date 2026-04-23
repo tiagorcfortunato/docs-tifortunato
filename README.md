@@ -1,6 +1,6 @@
 # Tiago Fortunato — docs
 
-Personal documentation site at [blog.tifortunato.com](https://blog.tifortunato.com).
+Personal documentation site at [docs.tifortunato.com](https://docs.tifortunato.com).
 
 Built with [Fumadocs](https://fumadocs.vercel.app/) on Next.js 16 + MDX + Tailwind v4.
 
