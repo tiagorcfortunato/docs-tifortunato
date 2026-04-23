@@ -15,13 +15,14 @@ Existing tools (Calendly, Simples Agenda) miss the mark:
 
 - Too complex for a solo professional who just wants a booking page
 - Don't speak WhatsApp natively — the actual channel where business happens
-- Designed for English-speaking corporate markets, not Brazilian realities (PIX payments, WhatsApp as primary channel)
+- Designed for English-speaking corporate markets, not Brazilian realities (PIX, WhatsApp as primary channel)
 
 ## What Odys does
 
 - **Public booking page** at `/p/[slug]` — clients pick a slot, fill details, done
+- **AI WhatsApp agent** — clients can book appointments autonomously by chatting with Odys on WhatsApp; the agent looks up availability and creates appointments via Groq LLM tool-calling
 - **Professional dashboard** to confirm, track, and manage appointments
-- **WhatsApp reminders** sent from the professional's own number via Evolution API (not a corporate bot number)
+- **Transactional WhatsApp messages** — reminders, confirmations, cancellations, alerts — all delivered from a single corporate Odys number via Evolution API
 - **Stripe subscription billing** for the professional to pay Odys (Basic / Pro / Premium)
 - **PIX payment flow** for client-to-professional payments — Brazilian-native, off-Stripe
 
@@ -37,6 +38,17 @@ Existing tools (Calendly, Simples Agenda) miss the mark:
 - **Creative** — photographer, personal stylist, personal organizer
 
 The schema is strictly per-individual-professional — there is no `salons` table. A salon owner using Odys would onboard each professional individually.
+
+## The corporate-number architecture
+
+Unlike earlier designs that connected Evolution to each professional's personal phone, Odys operates **one corporate WhatsApp number** that handles every interaction:
+
+- **Outbound** — reminders, confirmations, AI replies, professional alerts — all leave from the corporate number
+- **Inbound** — client and professional messages are routed through `/api/whatsapp/webhook` to the AI intake agent
+- **Reply routing** — a client replying to a transactional notification is contextualized via a Redis key `last_outbound:{phone}`, so the AI knows which professional/appointment the reply concerns without asking again
+- **Conversation-aware delivery** — the reminder cron skips a push if the client is mid-conversation with the AI (\<15 min idle), avoiding interleaving transactional alerts with in-progress scheduling dialogues
+
+**Why this matters:** professionals' personal numbers are never exposed to spam risk. Odys controls the brand, the message tone, and the scale path to Meta's WhatsApp Business Cloud API when volume demands it.
 
 ## Current state (2026-04-23)
 
@@ -54,9 +66,9 @@ When a section in these docs says *"the system handles X,"* it means the code is
 - [Backend](./backend) — the API route tree
 - [Database](./database) — 10-table Drizzle schema on Supabase Postgres
 - [Payment](./payment) — Stripe subscriptions + PIX flow
-- [AI Layer](./ai-layer) — Groq + Llama, tool-calling, dashboard assistant
+- [AI Layer](./ai-layer) — Groq + Llama, tool-calling, AI intake agent, dashboard assistant
 - [MCP Server](./mcp-server) — local stdio server with 4 tools
-- [WhatsApp](./whatsapp) — Evolution API + ~20 message templates
+- [WhatsApp](./whatsapp) — corporate-number architecture, Evolution API, ~20 message templates
 - [Observability](./observability) — Sentry 3-runtime + PostHog
 - [Deployment](./deployment) — Vercel + Railway + GitHub Actions
 - [Security](./security) — the 15-finding audit, what's fixed, what's open
