@@ -96,8 +96,9 @@ OUTPUT
   const raw = await callLLM(systemPrompt, userPrompt, { maxTokens: 6000 })
 
   let mdx = raw.trim()
-  if (mdx.startsWith("```mdx")) mdx = mdx.replace(/^```mdx\n/, "").replace(/\n```$/, "")
-  else if (mdx.startsWith("```")) mdx = mdx.replace(/^```\n/, "").replace(/\n```$/, "")
+  if (mdx.startsWith("```")) {
+    mdx = mdx.replace(/^```\w*\n/, "").replace(/\n```$/, "")
+  }
 
   if (!mdx.startsWith("---")) {
     console.error("[generate] Output does not start with frontmatter. Refusing to write.")
