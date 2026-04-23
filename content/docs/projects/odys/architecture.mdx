@@ -1,8 +1,106 @@
 ---
 title: Architecture
-description: Odys system architecture.
+description: High-level view of how Odys's pieces connect — Next.js, Supabase, Stripe, Evolution API on Railway, MCP server, and supporting services.
 ---
 
-## Coming soon
+# Architecture
 
-This section will be filled in together.
+At the top level, Odys is a **single Next.js 16 App Router application** deployed on Vercel, backed by a **Supabase Postgres** instance in `sa-east-1` (São Paulo), with three ancillary processes: **Stripe** (hosted checkout and subscription engine), **Evolution API** (self-hosted WhatsApp runtime on Railway), and a local **MCP server** that exposes the database to AI agents through four tools.
+
+## System diagram
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │            Browser / Mobile              │
+                    │  Landing · /p/[slug] · /dashboard · /c   │
+                    └───────────────────┬──────────────────────┘
+                                        │ HTTPS
+                                        ▼
+                    ┌──────────────────────────────────────────┐
+                    │       Vercel Edge / Next.js 16           │
+                    │   App Router (RSC) + API route handlers  │
+                    │     Sentry tunnel on /monitoring         │
+                    └───┬───────────────┬────────────┬─────────┘
+                        │               │            │
+               Drizzle  │        Stripe │     Evolution API
+                        ▼               ▼            ▼
+           ┌────────────────────┐  ┌─────────┐  ┌──────────────┐
+           │ Supabase Postgres  │  │ Stripe  │  │   Railway    │
+           │  + Supabase Auth   │  │ Checkout│  │  Evolution   │
+           │  + Supabase Storage│  │ Webhook │  │   v2 + PG    │
+           │  (sa-east-1)       │  │         │  │              │
+           └────────┬───────────┘  └─────────┘  └──────────────┘
+                    │
+                    │  same DATABASE_URL, shared Drizzle schema
+                    ▼
+           ┌────────────────────┐
+           │   mcp-server       │  (local stdio process;
+           │  tsup-bundled ESM  │   not deployed to prod)
+           │   4 MCP tools      │
+           └────────────────────┘
+
+  Side services:  Resend (email) · Upstash Redis (rate limits + reply routing)
+                  Sentry (errors) · PostHog (product analytics)
+                  Groq   (LLM for AI intake agent + dashboard assistant)
+```
+
+## Where the data lives
+
+Three tiers, important to keep separate:
+
+- **Browser (client)** — almost no state. Supabase issues an HttpOnly session cookie; React Server Components do the initial hydration; a handful of `"use client"` components (booking widget, notification bell, assistant chat, cookie banner) add interactivity.
+- **Vercel edge + Node runtime** — terminates TLS, runs the Next.js router, executes Server Components and API routes. Sentry beacons are rewritten through `/monitoring` to bypass ad-blockers.
+- **Persisted storage**:
+  - Supabase Postgres (`sa-east-1`) — the 10-table application schema
+  - Supabase Storage — uploaded avatars
+  - Upstash Redis — rate limits + WhatsApp reply routing (`last_outbound:{phone}`)
+  - Railway Postgres (separate Supabase project) — Evolution API's own database
+  - Stripe — subscription state, payment history
+
+## Runtimes in use
+
+Odys runs across **three runtimes**:
+
+- **Node (Vercel)** — most API routes, Server Components, the main application
+- **Edge (Vercel)** — Sentry's edge bootstrap only; no routes currently use edge runtime
+- **Local stdio (developer laptop)** — the MCP server, not deployed
+
+No Node workers, no background job queue, no separate microservices. Periodic work runs through **Vercel Cron** — two schedules, both daily UTC: `/api/cron/reminders` at 08:00 and `/api/cron/whatsapp-watchdog` at 09:00.
+
+## Supporting services
+
+| Service | Purpose | Tier |
+|---|---|---|
+| Supabase | Postgres + Auth + Storage (`sa-east-1`) | Managed |
+| Stripe | Subscription billing | Managed |
+| Evolution API | WhatsApp Web runtime on Railway | Self-hosted Docker |
+| Groq | LLM inference (Llama 3.3 70B, two-pass tool-calling) | Managed API |
+| Upstash Redis | Rate limits + WhatsApp reply context | Managed |
+| Sentry | Error tracking (server, edge, browser) | Managed |
+| PostHog | Product analytics + session replay | Managed |
+| Resend | Transactional email | Managed |
+
+## MCP server — a note on architecture scope
+
+The MCP server is a **separate process, not a separate service**. It shares the same `DATABASE_URL` and the same Drizzle schema (imported via relative path from `../../src/lib/db/schema`) and communicates with Claude Code via JSON-RPC over stdio. It runs on the developer's laptop — no HTTP endpoint, no auth layer, because there is no remote caller. It lets any AI agent answer *"how many appointments does Dr. Ana have today?"* without opening Drizzle Studio.
+
+Deployment path for the MCP server when an in-product AI assistant needs it: either expose it as an authenticated HTTP service, or collapse it into direct Groq tool-calls that hit the existing API routes.
+
+## Data residency
+
+- **Supabase (database, auth, storage)** — `sa-east-1` São Paulo. **Brazilian user data stays in Brazil at rest.**
+- **Sentry** — `*.ingest.us.sentry.io` (US). Only error traces, no business data.
+- **PostHog** — `https://us.i.posthog.com` (US). Product analytics events.
+- **Vercel** — default region `iad1` (US East) for the edge layer.
+
+For an LGPD-strict buyer, the primary data store is already in Brazil. The remaining US-hosted layers (error tracking, analytics, HTTP edge) can be migrated to EU or São Paulo alternatives via configuration — not a rewrite.
+
+## What this isn't
+
+- **Not a microservice architecture.** One Next.js app, one DB, ancillary managed services.
+- **Not using Kubernetes.** Vercel's serverless runtime + Railway's container runtime for Evolution.
+- **No separate backend.** API routes + Server Components are the backend.
+- **No GraphQL, no gRPC.** Plain REST with Zod validation.
+- **No multi-region replication.** Single-region Postgres.
+
+That's intentional. The goal was a production-grade SaaS shippable by one founder — not a CV of infrastructure complexity.
