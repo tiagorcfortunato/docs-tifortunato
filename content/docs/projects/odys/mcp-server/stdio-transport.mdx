@@ -1,8 +1,149 @@
 ---
-title: stdio Transport + JSON-RPC
-description: stdio transport and JSON-RPC for the Odys MCP server.
+title: "MCP Server stdio Transport"
+description: "stdio transport, JSON-RPC, tsup bundling, noExternal quirk"
 ---
 
-## Coming soon
+# MCP Server stdio Transport
 
-This section will be filled in together.
+This page details the implementation of the Odys MCP server, focusing on its stdio-based JSON-RPC transport, `tsup` bundling configuration, and the specific `noExternal` quirk required for its build process.
+
+## JSON-RPC over stdio
+
+The Odys MCP server communicates using JSON-RPC over standard input/output (stdio). This approach provides a clean, language-agnostic interface for AI agents, such as Claude Code sessions, to interact with the Odys backend without direct database access.
+
+The core server logic is implemented in `mcp-server/src/server.ts`. It leverages the `@modelcontextprotocol/sdk` to establish the server and handle requests:
+
+-   A `Server` instance is initialized with the server's name and version.
+-   `StdioServerTransport` from `@modelcontextprotocol/sdk/server/stdio.js` is used to manage the stdio communication.
+-   The server registers handlers for two primary request types:
+    -   `ListToolsRequestSchema`: Returns the `TOOL_DEFINITIONS` available to the client.
+    -   `CallToolRequestSchema`: Dispatches incoming tool calls to the appropriate internal function (e.g., `getAppointmentsToday`, `updateAppointmentStatus`) based on the `name` field in the request.
+
+Errors during tool execution are caught, logged to `console.error`, and returned to the client as a JSON object with an `error` field and `isError: true`. This ensures that stdout remains reserved for valid JSON-RPC responses.
+
+```typescript
+// mcp-server/src/server.ts
+import { Server } from "@modelcontextprotocol/sdk/server/index.js"
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
+
+import {
+  TOOL_DEFINITIONS,
+  getAppointmentsToday,
+  getCustomerByPhone,
+  getRevenueSummary,
+  updateAppointmentStatus,
+} from "./tools.js"
+
+const server = new Server(
+  { name: "odys", version: "0.1.0" },
+  { capabilities: { tools: {} } },
+)
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: TOOL_DEFINITIONS,
+}))
+
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params
+
+  try {
+    let result: unknown
+    switch (name) {
+      case "get_appointments_today":
+        result = await getAppointmentsToday(args)
+        break
+      case "get_customer_by_phone":
+        result = await getCustomerByPhone(args)
+        break
+      case "get_revenue_summary":
+        result = await getRevenueSummary(args)
+        break
+      case "update_appointment_status":
+        result = await updateAppointmentStatus(args)
+        break
+      default:
+        throw new Error(`Unknown tool: ${name}`)
+    }
+
+    return {
+      content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[odys-mcp] tool "${name}" failed:`, message)
+    return {
+      content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+      isError: true,
+    }
+  }
+})
+
+async function main() {
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  console.error("[odys-mcp] odys MCP server running on stdio")
+}
+
+main().catch((err) => {
+  console.error("[odys-mcp] fatal error:", err)
+  process.exit(1)
+})
+```
+
+The server is registered for Claude Code sessions via the `.mcp.json` file at the repository root, which specifies the command to execute the bundled server:
+
+```json
+// .mcp.json
+{
+  "mcpServers": {
+    "odys": {
+      "command": "node",
+      "args": ["./mcp-server/dist/server.js"]
+    }
+  }
+}
+```
+
+## Bundling with tsup
+
+The MCP server is a self-contained sub-project within the repository, managed by its own `package.json` and `tsconfig.json`. It is bundled into a single ESM file, `dist/server.js`, using `tsup`. The `mcp-server/tsup.config.ts` configuration ensures a production-ready output:
+
+-   `entry: ["src/server.ts"]`: Specifies the main entry point.
+-   `format: ["esm"]`: Outputs an ECMAScript Module.
+-   `target: "node20"`: Targets Node.js version 20.
+-   `bundle: true`, `splitting: false`: Ensures all dependencies are bundled into a single output file.
+-   `banner: { js: "#!/usr/bin/env node" }` and `onSuccess: "chmod +x dist/server.js"`: Make the output file directly executable as a Node.js script.
+
+```typescript
+// mcp-server/tsup.config.ts
+import { defineConfig } from "tsup"
+
+export default defineConfig({
+  entry: ["src/server.ts"],
+  format: ["esm"],
+  target: "node20",
+  outDir: "dist",
+  clean: true,
+  bundle: true,
+  splitting: false,
+  sourcemap: false,
+  minify: false,
+  noExternal: ["zod", "@modelcontextprotocol/sdk"],
+  banner: { js: "#!/usr/bin/env node" },
+  onSuccess: "chmod +x dist/server.js",
+})
+```
+
+## The `noExternal` quirk
+
+A specific configuration in `mcp-server/tsup.config.ts` is the `noExternal` option, which forces `esbuild` (used internally by `tsup`) to inline certain dependencies rather than treating them as external runtime imports.
+
+Specifically, `zod` and `@modelcontextprotocol/sdk` are listed in `noExternal: ["zod", "@modelcontextprotocol/sdk"]`. This was necessary to resolve a dual-package hazard where the MCP SDK ships both CommonJS (CJS) and ECMAScript Module (ESM) entry points. Bundling with `noExternal` ensures that `esbuild` correctly resolves and inlines the ESM version of the SDK, preventing startup crashes related to module resolution. `dotenv` remains external as it does not exhibit this dual-package issue.
+
+## Why this shape
+
+The choice of JSON-RPC over stdio for the MCP server was driven by the need for a robust, low-overhead, and language-agnostic communication channel with AI agents. This design allows agents to interact with specific, controlled tools without exposing the underlying database or application logic directly. The `tsup` bundling strategy ensures the server is deployed as a single, self-contained executable, simplifying deployment and reducing potential dependency conflicts. The `noExternal` quirk addresses specific module resolution challenges inherent in bundling complex JavaScript ecosystems, ensuring reliable startup and operation.

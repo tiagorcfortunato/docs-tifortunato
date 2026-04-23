@@ -1,8 +1,57 @@
 ---
-title: Vercel
-description: Vercel deployment for Odys.
+title: "Vercel Deployment"
+description: "Vercel deployment: auto-deploy on main, env vars, regions"
 ---
 
-## Coming soon
+# Vercel Deployment
 
-This section will be filled in together.
+This page details the deployment strategy for the application on Vercel, covering automatic deployments, environment variable management, and configured cron jobs.
+
+## Automatic Deployment
+
+The application is hosted on Vercel, leveraging its native integration with GitHub. Pushes to the `main` branch automatically trigger a production deployment. For pull requests, Vercel creates preview deployments, allowing for testing changes in an isolated environment before merging to `main`. This process is handled by Vercel's GitHub application, not by custom GitHub Actions workflows.
+
+## Environment Variables
+
+Environment variables required for the application are managed directly within the Vercel dashboard. While a local `.env.example` file enumerates the necessary variables for local development, their production values are securely configured and injected by Vercel during the build and runtime phases.
+
+## Vercel Cron Jobs
+
+Vercel Cron Jobs are used to schedule recurring tasks. These are declared in the `vercel.json` file:
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-watchdog",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}
+```
+
+The `/api/cron/reminders` endpoint is scheduled to run daily at 8 AM UTC, handling tasks such as sending WhatsApp reminders for appointments and trial expiration emails. The `/api/cron/whatsapp-watchdog` endpoint runs daily at 9 AM UTC.
+
+Authentication for these cron job handlers relies on a shared secret, which is expected in either the `x-cron-secret` header or as a `Bearer` token in the `Authorization` header.
+
+Sentry's integration, configured in `next.config.ts`, includes `automaticVercelMonitors: true` within its `webpack` options. This enables automatic instrumentation of Vercel Cron Monitors, providing visibility into the health and execution of these scheduled tasks.
+
+## Sentry Integration
+
+The application integrates with Sentry for error monitoring and performance tracing, configured via `next.config.ts`. The `withSentryConfig` wrapper is used to set up Sentry for Next.js.
+
+Key Sentry configurations include:
+
+*   `org: "odys-hx"` and `project: "javascript-nextjs"` identify the Sentry project.
+*   `silent: !process.env.CI` ensures Sentry logs for source map uploads are only printed in CI environments.
+*   `widenClientFileUpload: true` uploads a broader set of source maps for more detailed stack traces.
+*   `tunnelRoute: "/monitoring"` routes browser requests to Sentry through a Next.js rewrite, which can help circumvent ad-blockers.
+*   `automaticVercelMonitors: true` (as mentioned above) enables Sentry's Cron Monitors for Vercel cron jobs.
+
+## Known Gaps
+
+The authentication mechanism for Vercel Cron Jobs, which checks for a shared secret in `x-cron-secret` or `Authorization: Bearer <CRON_SECRET>`, uses a plain `===` comparison. This is not a timing-safe comparison, which could potentially be vulnerable to timing attacks. A timing-safe comparison mechanism is needed to mitigate this risk.

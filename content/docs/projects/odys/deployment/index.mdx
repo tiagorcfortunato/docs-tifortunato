@@ -1,8 +1,70 @@
 ---
-title: Deployment Overview
-description: Overview of the Odys deployment.
+title: "Deployment Overview"
+description: "Overview of the Odys deployment."
 ---
 
-## Coming soon
+# Deployment Overview
 
-This section will be filled in together.
+This page provides a technical overview of the Odys application's deployment architecture, covering hosting platforms, continuous integration, cron job management, and the deployment status of auxiliary services.
+
+## Application Hosting
+
+The main Odys application is hosted on Vercel. Pushes to the `main` branch automatically trigger a production deployment, while pull requests generate preview deployments. Environment variables are managed directly within the Vercel dashboard.
+
+Sentry is integrated for error monitoring, with configuration in `next.config.ts`. This includes `automaticVercelMonitors` for cron jobs and `tunnelRoute` for routing browser requests through `/monitoring` to circumvent ad-blockers.
+
+## Cron Jobs
+
+Scheduled tasks are managed using Vercel Cron, as defined in `vercel.json`. Two primary cron jobs are configured:
+
+*   `/api/cron/reminders`: Scheduled daily at 08:00 UTC. This handler is responsible for sending 24-hour and 1-hour WhatsApp reminders for confirmed appointments, and trial expiration emails.
+*   `/api/cron/whatsapp-watchdog`: Scheduled daily at 09:00 UTC.
+
+Authentication for these cron handlers relies on a shared secret, checked via the `x-cron-secret` header or `Authorization: Bearer <CRON_SECRET>`.
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-watchdog",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}
+```
+
+## Continuous Integration (CI)
+
+Continuous Integration is handled by GitHub Actions, configured in `.github/workflows/ci.yml`. The workflow consists of two main jobs:
+
+*   `check`: Runs `npm ci`, `npx tsc --noEmit`, and `npm run lint` on every pull request and push to the `main` branch. This ensures code quality and type safety.
+*   `build`: Executes `npm run build` (which runs `next build`) after the `check` job passes. This job injects necessary environment variables from GitHub Secrets, enabling a full production build.
+
+It is important to note that the CI workflow currently does not include automated tests for the main application, as there are no tests present in `src/`.
+
+## Database Migrations
+
+Database schema management uses Drizzle ORM. While the `drizzle/` directory contains generated SQL files, the standard workflow for schema updates is `npm run db:push` (drizzle-kit push). This declarative approach is currently executed manually against production environments, as migrations are not integrated into the CI pipeline.
+
+## Evolution API (WhatsApp)
+
+The Evolution API, responsible for WhatsApp integration, is deployed as a separate service on Railway. It uses the Docker image `tiagorcfortunato/evolution-api-odys`. This service maintains its own independent Supabase PostgreSQL database (`odys-evolution` project, `evolution_api` schema), distinct from the main application's database. Configuration for its Railway deployment is assumed to be managed via the Railway dashboard, as no related configuration files are present in this repository.
+
+## MCP Server
+
+The MCP (Multi-tool Code Processor) server is currently not deployed to a production environment. It operates as a local `stdio` process, invoked by development tools like Claude Code (via `.mcp.json`) or Claude Desktop (via `claude_desktop_config.json`). A production rollout path for this service has not yet been established.
+
+## Known Gaps
+
+*   **Cron Secret Comparison**: The authentication for cron jobs uses a plain `===` comparison for the `CRON_SECRET`. This is susceptible to timing attacks and should be updated to a timing-safe comparison.
+*   **Database Migrations in CI**: Database schema pushes (`npm run db:push`) are currently a manual process against production. Integrating these into the CI pipeline would improve reliability and reduce human error.
+*   **Main Application Test Coverage**: The CI workflow in `.github/workflows/ci.yml` does not include automated tests for the main application, as there are no tests in `src/`. This increases the risk of regressions.
+*   **MCP Server Production Path**: The MCP server, which provides AI assistant functionality, currently lacks a defined production deployment strategy.
+
+## Why this shape
+
+The current deployment architecture reflects a pragmatic approach for a pre-launch project, balancing rapid iteration with necessary infrastructure. Vercel is a natural fit for Next.js applications, providing integrated CI/CD and cron job capabilities. The Evolution API's separate deployment on Railway acknowledges its distinct runtime environment (Docker) and independent database requirements. The MCP server's local-only status indicates its current role as a developer-facing tool without immediate production scaling needs. Manual database migrations are a common pattern in early-stage projects with a single developer, prioritizing speed over a fully automated, team-oriented migration workflow.

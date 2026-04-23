@@ -1,8 +1,108 @@
 ---
-title: PostHog
-description: PostHog analytics in Odys.
+title: PostHog Analytics
+description: "PostHog: cookie-gated init, manual pageview, identify in dashboard"
 ---
 
-## Coming soon
+# PostHog Analytics
 
-This section will be filled in together.
+This page details the integration of PostHog for analytics, covering its cookie-gated initialization, the manual pageview tracking mechanism, and how user identification is handled within the authenticated dashboard.
+
+## Cookie-Gated Initialization
+
+PostHog is initialized only after a user has explicitly accepted cookie consent. This ensures compliance with privacy regulations.
+
+The `PostHogProvider` component in `src/components/posthog-provider.tsx` manages the initialization logic. It checks `localStorage` for an existing consent status using the key `odys_cookie_consent`. If consent was previously given, PostHog is initialized immediately.
+
+```typescript
+// src/components/posthog-provider.tsx
+// ...
+const CONSENT_KEY = "odys_cookie_consent"
+let initialized = false
+
+function initPostHog(key: string) {
+  if (initialized) return
+  initialized = true
+  posthog.init(key, {
+    api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
+    capture_pageview: false,
+    capture_pageleave: true,
+    persistence: "localStorage+cookie",
+  })
+}
+// ...
+export function PostHogProvider({ children }: { children: React.ReactNode }) {
+  const key = process.env.NEXT_PUBLIC_POSTHOG_KEY
+
+  useEffect(() => {
+    if (!key) return
+
+    // Init immediately if user already gave consent
+    if (localStorage.getItem(CONSENT_KEY) === "accepted") {
+      initPostHog(key)
+    }
+
+    // Init when user accepts cookies during this session
+    function onAccepted() { initPostHog(key!) }
+    window.addEventListener("odys:cookie-accepted", onAccepted)
+    return () => window.removeEventListener("odys:cookie-accepted", onAccepted)
+  }, [key])
+// ...
+```
+
+If consent is given during the current session via the `CookieBanner` component (`src/components/cookie-banner.tsx`), a custom `odys:cookie-accepted` event is dispatched. The `PostHogProvider` listens for this event and calls `initPostHog()` once it's received. The `persistence` option is set to `"localStorage+cookie"`.
+
+## Manual Pageview Tracking
+
+Automatic pageview capturing is disabled in the PostHog initialization (`capture_pageview: false`). Instead, pageviews are manually triggered by the `PageViewTracker` component, nested within the `PostHogProvider` in `src/components/posthog-provider.tsx`.
+
+```typescript
+// src/components/posthog-provider.tsx
+// ...
+function PageViewTracker() {
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const ph = usePostHog()
+
+  useEffect(() => {
+    ph.capture("$pageview", { $current_url: window.location.href })
+  }, [pathname, searchParams, ph])
+
+  return null
+}
+// ...
+```
+
+This component uses `useEffect` to capture a `$pageview` event whenever the `pathname` or `searchParams` change. This approach addresses a known issue with Next.js App Router where automatic pageview tracking can result in double-firing events.
+
+## User Identification
+
+For authenticated users, PostHog identification is handled by the `PostHogIdentify` component in `src/components/posthog-identify.tsx`. This component is intended to be rendered within the authenticated dashboard layout.
+
+```typescript
+// src/components/posthog-identify.tsx
+"use client"
+
+import { useEffect } from "react"
+import posthog from "posthog-js"
+
+export function PostHogIdentify({ userId }: { userId: string }) {
+  useEffect(() => {
+    posthog.identify(userId)
+  }, [userId])
+  return null
+}
+```
+
+It calls `posthog.identify(userId)` once, using the provided `userId`, ensuring that subsequent events are associated with the specific user. The `useEffect` hook with `userId` as a dependency ensures identification occurs when the component mounts or if the `userId` somehow changes.
+
+## Known Gaps
+
+*   **Feature Flags**: While the PostHog provider is wired to support feature flags, there are currently no active calls to `posthog.isFeatureEnabled(...)` within the codebase. This indicates that PostHog's feature flagging capabilities are not yet utilized.
+
+## Why this shape
+
+The design choices for PostHog integration prioritize user privacy and data accuracy:
+
+*   **Cookie-gated initialization**: Ensures that analytics tracking only begins after explicit user consent, aligning with privacy best practices.
+*   **Manual pageview tracking**: Mitigates potential double-counting of pageviews that can occur with automatic tracking in the Next.js App Router environment, providing more accurate usage data.
+*   **Dedicated identification component**: Centralizes user identification logic, making it clear where and when authenticated users are identified in PostHog.

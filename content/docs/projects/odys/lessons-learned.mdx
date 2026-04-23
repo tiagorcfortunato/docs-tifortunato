@@ -1,8 +1,38 @@
 ---
 title: Lessons Learned
-description: Odys lessons learned.
+description: What I'd do differently / key learning moments
 ---
 
-## Coming soon
+# Lessons Learned
 
-This section will be filled in together.
+This page outlines key learning moments and areas where different approaches would be taken in future projects, drawing from the development and security audit of the application.
+
+## Prioritizing Security Audits and Remediation
+
+A significant learning was the value of a point-in-time security audit conducted early in the project lifecycle. The audit identified 15 findings, including a critical account takeover vulnerability (C1) related to registration and email smart-linking. This highlighted the importance of:
+
+*   **Defaulting to secure registration flows**: Unconditionally calling `adminClient.auth.admin.createUser({ email_confirm: true })` in a production path is a critical oversight. User registration should always default to email verification via `supabase.auth.signUp()` in production environments.
+*   **Careful handling of data linking**: Smart-linking pre-existing client data to a new user ID should only occur *after* email verification is complete, typically within the `/auth/callback` flow.
+*   **Input validation beyond basic types**: Findings like mass assignment (H2) and stored XSS (H1) underscore that even when fields are enumerated, robust Zod shape validation and content-type sniffing (e.g., for avatar uploads) are essential.
+*   **Minimizing data exposure**: The `/api/booking` GET endpoint leaking professional PII (H3) demonstrated the need for explicit DTO (Data Transfer Object) helpers at API boundaries to filter sensitive information.
+*   **Implementing defense-in-depth**: Even with IP-based rate limiting, unauthenticated booking endpoints (H4) are vulnerable to spam and slot-griefing without additional measures like captchas and per-professional caps.
+*   **Using timing-safe comparisons for secrets**: The `CRON_SECRET` comparison (M1) using `===` instead of a timing-safe equivalent is a subtle but important security detail for sensitive credentials.
+
+The audit process itself, and the subsequent remediation of critical issues like C1, provided invaluable insights into common vulnerabilities and the discipline required for secure development.
+
+## Building a Robust CI/CD and Database Migration Strategy
+
+The current deployment and development workflows revealed several areas for improvement, particularly concerning automation and team readiness:
+
+*   **Comprehensive CI for the main application**: The current CI workflow in `.github/workflows/ci.yml` only runs `tsc --noEmit` and `npm run lint` for the main app, lacking any test execution. A critical lesson is that a robust test suite for the main application, integrated into CI, is non-negotiable for maintainability and preventing regressions. While the MCP server has Vitest tests, their exclusion from the main CI workflow is a gap.
+*   **Automated and versioned database migrations**: Relying on `npm run db:push` (declarative push) and manual execution against production is suitable for a solo pre-launch project but becomes a significant risk for a team. The lesson is to adopt a file-based migration strategy (`drizzle-kit generate + migrate`) with migrations checked into version control and integrated into the CI/CD pipeline for automated, controlled deployments.
+*   **Production readiness for all components**: The MCP server, while functional locally, lacks a defined production deployment path. Any component intended for future production use should have its deployment strategy (e.g., HTTP service with auth, direct tool-calls) planned and, ideally, prototyped early.
+*   **Careful scheduling of cron jobs**: The Vercel cron `0 8 * * *` UTC firing at 5 AM São Paulo highlights the need to consider target timezones when scheduling global cron jobs, or to implement in-handler gating for more flexible execution.
+
+## Architectural Decisions and Future-Proofing
+
+Several architectural choices and omissions presented learning opportunities:
+
+*   **Implementing Row-Level Security (RLS) from the outset**: The absence of RLS policies in Postgres, with all authorization handled at the application level via scattered `professional.userId === user.id` checks, is a significant technical debt and a potential source of data leaks. A key lesson is to leverage database-level security features like RLS as a primary defense layer, complementing application-level checks.
+*   **Centralizing utility functions**: Duplication of phone normalization logic across `mcp-server/src/phone.ts` and `src/lib/whatsapp.ts` indicates a need for a shared utility library (e.g., `src/lib/phone.ts`) and a canonical E.164 format for phone numbers in the database.
+*   **Strategic prioritization**: The decision to maintain "zero paying customers, by choice" pre-launch, focusing instead on security and infrastructure, was a deliberate trade-off. This allowed for a disciplined approach to addressing findings from the security audit before scaling. This highlights the lesson that sometimes, delaying monetization to solidify foundational elements is a valid strategy.

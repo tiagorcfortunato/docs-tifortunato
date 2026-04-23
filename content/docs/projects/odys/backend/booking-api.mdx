@@ -1,8 +1,22 @@
 ---
-title: Booking API
-description: Odys booking API.
+title: "Booking API"
+description: "Booking GET + POST endpoint internals"
 ---
 
-## Coming soon
+# Booking API
+This page covers the internals of the Booking GET and POST endpoints, including validation, overlap checks, and plan limits.
 
-This section will be filled in together.
+## Validation and Overlap Checks
+The `POST /api/booking` endpoint performs validation using `zod` and checks for overlap with existing appointments. The validation schema is defined in `src/app/api/booking/route.ts` and includes fields such as `slug`, `startsAt`, `clientName`, `clientPhone`, and `clientEmail`. The overlap check is performed using a query that selects appointments with a conflicting time range.
+
+## Plan Limits
+The endpoint also checks plan limits, including the number of clients and appointments per month. These limits are defined in `src/lib/stripe.ts` and are enforced using the `effectivePlan` function in `src/lib/plan-guard.ts`.
+
+## Implementation Details
+The `GET /api/booking` endpoint returns the professional's availability and existing appointments for a given date. The `POST /api/booking` endpoint creates a new appointment and sends notifications to the professional and client. The implementation details can be found in `src/app/api/booking/route.ts`.
+
+## Known Gaps
+One known gap in the current implementation is the lack of timezone handling consistency across the codebase. The booking widget uses browser-local time, while the API stores timestamps in UTC. This may lead to inconsistencies in appointment scheduling and notification timing.
+
+## Why This Shape
+The Booking API is designed to handle the complexities of appointment scheduling, including validation, overlap checks, and plan limits. The use of `zod` for validation and the `effectivePlan` function for plan limits helps to ensure that the API is robust and scalable. The implementation details are carefully considered to ensure that the API is easy to use and maintain.

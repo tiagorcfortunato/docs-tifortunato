@@ -1,8 +1,30 @@
 ---
-title: Groq + Llama over OpenAI
-description: Why Groq + Llama was chosen over OpenAI in Odys.
+title: "Groq + Llama Decision"
+description: "Why Groq + Llama was chosen over OpenAI in Odys."
 ---
 
-## Coming soon
+# Groq + Llama Decision
 
-This section will be filled in together.
+This page details the rationale behind selecting Groq with Llama 3.3 for AI functionalities within Odys, specifically in contrast to using OpenAI models. It covers the primary drivers for this decision, the specific use cases, and the known trade-offs.
+
+## Rationale for Groq + Llama
+
+The decision to implement Groq with Llama 3.3 was primarily driven by performance and cost efficiency for specific, well-defined AI tasks. Groq's inference engine provides significantly faster response times and is estimated to be 10–20x cheaper than comparable GPT-4 class models. This speed is crucial for applications involving back-to-back tool calls, where latency directly impacts user experience.
+
+## Implementation
+
+Groq is utilized in two main areas of the application:
+
+1.  **AI WhatsApp Intake Agent**: Located in `src/lib/ai-intake.ts`, this agent handles inbound WhatsApp messages from clients. It uses Groq's LLM with tool-calling capabilities to check professional availability and facilitate booking appointments. The agent follows a two-pass pattern: an initial LLM call to decide on tool usage, followed by a second call to generate a final response incorporating tool results. The `TOOLS` array in `src/lib/ai-intake.ts` defines functions like `get_available_slots` and `book_appointment`.
+
+2.  **AI Assistant**: Implemented in `src/app/api/ai/chat/route.ts`, this assistant helps professionals understand their appointments, clients, and revenue. Similar to the intake agent, it leverages Groq for tool-calling to fetch data. The `SYSTEM_PROMPT` in `src/app/api/ai/chat/route.ts` guides the assistant's behavior, and the `TOOLS` array defines functions such as `get_stats` for monthly summaries and `get_no_show_clients` for client-specific no-show data.
+
+Both implementations instantiate the Groq client using `new Groq({ apiKey: process.env.GROQ_API_KEY })`, as seen in the `getGroq()` functions in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`.
+
+## Known Gaps
+
+*   **Instruction-following limitations**: While Groq + Llama 3.3 offers significant speed and cost advantages, it is generally weaker on complex instruction-following compared to more advanced models like GPT-4. This trade-off is mitigated in Odys by designing narrow, specific tools (e.g., availability lookup, revenue roll-up, no-show count) that reduce the need for broad, open-ended instruction interpretation.
+
+## Why this shape
+
+The architecture prioritizes cost-effectiveness and low-latency inference for specific, high-volume AI interactions. By confining the LLM's role to well-defined tool-calling tasks, the system can leverage Groq's performance benefits without being significantly impacted by its relative weakness in general instruction-following. This approach ensures that critical features like WhatsApp intake and professional analytics are responsive and economically viable.

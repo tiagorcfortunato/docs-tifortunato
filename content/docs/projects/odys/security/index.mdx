@@ -1,8 +1,58 @@
 ---
-title: Security Overview
-description: Overview of Odys security.
+title: "Security Overview"
+description: "Security overview: 15-finding audit, status, what's fixed"
 ---
 
-## Coming soon
+# Security Overview
 
-This section will be filled in together.
+This page provides an overview of the application's security posture, detailing findings from a recent security audit, their current status, and remediation efforts.
+
+## 2026-04-14 Security Audit
+
+A point-in-time security audit, captured in an internal security study document, was conducted on 2026-04-14. The audit identified 15 findings, categorized by severity: 1 Critical, 4 High, 5 Medium, and 5 Low. The audit's scope was "defense in depth," meaning not every finding is independently exploitable, but each contributes to the overall risk profile.
+
+### Critical Finding (C1)
+
+**C1: Account takeover via auto-confirmed registration + email smart-linking.**
+The registration endpoint was unconditionally calling `adminClient.auth.admin.createUser({ email_confirm: true })`, bypassing email verification. This, combined with a smart-linking query that attached pre-existing `clients` rows to a new `user.id` based on email match, created a vulnerability. An attacker could register with a victim's email and inherit their client history across all professionals.
+
+**Status:** Fixed in commits `441caff` and `b47b4a8`. The registration route now uses `supabase.auth.signUp()` in production, which triggers a verification email. The admin path is restricted to development environments. Smart-linking logic was moved to run only after `exchangeCodeForSession` has verified the inbox.
+
+### High Severity Findings (H1-H4)
+
+*   **H1: Stored XSS via avatar upload.** The avatar upload route trusts the client-supplied `Content-Type` header and does not validate magic bytes. This allows an attacker to upload an SVG with embedded `<script>` tags.
+    *   **Status:** Open. Remediation requires sniffing file types via a library like `file-type`, whitelisting `jpeg`, `png`, and `webp`, rejecting `SVG`, re-encoding through `sharp`, and setting the `Content-Type` from the sniffed type.
+*   **H2: Mass assignment on the settings endpoint.** The settings endpoint manually enumerates fields (`name`, `phone`, `bio`, `sessionDuration`, `sessionPrice`, etc.) rather than spreading the request body. While this prevents direct modification of fields like `plan` or `trialEndsAt`, the finding highlights the absence of Zod shape validation. For example, `sessionPrice` could be negative, or `sessionDuration` could be a string.
+    *   **Status:** Partially mitigated; Zod validation is open.
+*   **H3: Booking GET endpoint leaks professional PII.** The booking handler returns the full `professionals` row, including sensitive data such as `email`, `phone`, `stripeCustomerId`, and `stripeSubscriptionId`. This allows unauthenticated users to scrape professional PII.
+    *   **Status:** Open. Remediation requires a `toPublicProfessionalDTO()` helper at the route boundary to filter sensitive fields.
+*   **H4: Unauthenticated booking endpoint enables spam and slot-griefing.** The booking POST endpoint is IP-rate-limited (5 requests per 10 minutes) but lacks a per-professional cap or captcha. A proxy farm could fill a professional's slots with `pending_confirmation` bookings.
+    *   **Status:** Open. Remediation requires Cloudflare Turnstile integration and a per-slug daily booking cap.
+
+### Medium Severity Findings (M1-M5)
+
+*   **M1:** `CRON_SECRET` is compared using `===` instead of `timingSafeEqual` in the cron reminders endpoint.
+*   **M2:** Booking upsert logic matches clients by phone *or* email, which could create an oracle for determining if a given phone/email is a client of a specific professional.
+*   **M3:** The AI chat endpoint has no rate limit.
+*   **M4:** Registration rate limit.
+    *   **Status:** Fixed via `getRegisterLimiter()` (5 registrations per hour).
+*   **M5:** A server action trusts `professionalId` from a React prop without re-verifying it on the server.
+
+### Low Severity Findings (L1-L5)
+
+*   **L1:** Several routes lack Zod validation (e.g., settings, account-delete).
+*   **L2:** Rate-limit keys are based on raw `x-forwarded-for`, which is safe on Vercel but could break off-platform.
+*   **L3:** No CSRF tokens are used; the application relies on `SameSite=Lax` from Supabase.
+*   **L4:** The messages endpoint does not validate the `type` enum.
+*   **L5:** The booking GET endpoint leaks the full booked-slot schedule.
+
+## Current Status and Remediation Pace
+
+Of the 15 findings, Critical finding C1 and Medium finding M4 have been fixed. All other findings remain open. The expected remediation pace is one day per session dedicated to security work. High severity findings H1-H4 are estimated to be cleared within approximately one month at this cadence.
+
+## Broader Security Gaps
+
+Beyond the specific audit findings, the following broader security gaps have been identified:
+
+*   **No Row-Level Security (RLS) policies in Postgres.** All authorization is currently handled at the application level through `professional.userId === user.id` checks scattered across the API routes. Any missed check represents a potential data leak. The security study explicitly flags the implementation of RLS policies as a Phase-2 initiative.
+*   **No test suite for the main application.** The Continuous Integration (CI) pipeline currently only runs type checking, linting, and build steps. The absence of a comprehensive test suite for the main application increases the risk of regressions and undetected vulnerabilities.

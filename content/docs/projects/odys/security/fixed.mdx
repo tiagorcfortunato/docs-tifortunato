@@ -1,8 +1,158 @@
 ---
-title: Fixed (C1, M4)
-description: Security findings already fixed in Odys.
+title: Security Fixes
+description: "C1, M4, plus new fixes (Zod onboarding, reserved-slug, unknown-action 400)"
 ---
 
-## Coming soon
+# Security Fixes
 
-This section will be filled in together.
+This page details recent security fixes and enhancements implemented in the Odys codebase, addressing specific findings from the 2026-04-14 security audit and other identified gaps. It covers the resolution of Critical finding C1, Medium finding M4, and new defensive measures including Zod validation for onboarding, reserved slug handling, and explicit unknown action rejection.
+
+## Critical Finding C1: Account Takeover via Registration
+
+The original implementation of the `/api/auth/register` endpoint allowed for account takeover. This was due to two factors:
+1.  Unconditional `email_confirm: true` when using `adminClient.auth.admin.createUser()` in production, bypassing email verification.
+2.  A smart-linking query that attached pre-existing `clients` rows to a newly registered `user.id` based on email match, running *before* email verification.
+
+### Resolution
+
+The fix involved two key changes:
+*   **Production Registration Flow**: In `src/app/api/auth/register/route.ts`, the production environment now uses `supabase.auth.signUp()`. This method automatically triggers a verification email, ensuring that user accounts are not confirmed until the email address is verified. The `adminClient.auth.admin.createUser()` path is now strictly for development environments, where `email_confirm: true` accelerates testing cycles.
+    ```typescript
+    // src/app/api/auth/register/route.ts
+    if (process.env.NODE_ENV === "production") {
+      const supabase = await createClient()
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { name, type } },
+      })
+      // ... error handling ...
+      requiresEmailConfirmation = !data.session
+    } else {
+      const { error } = await adminClient.auth.admin.createUser({
+        email,
+        password,
+        user_metadata: { name, type },
+        email_confirm: true, // Dev-only
+      })
+      // ... error handling ...
+    }
+    ```
+*   **Smart-linking Relocation**: The logic for smart-linking pre-existing `clients` to a new `user.id` has been moved to `src/app/auth/callback/route.ts`. This ensures that smart-linking only executes *after* Supabase's `exchangeCodeForSession` has successfully verified the user's email, preventing an attacker from claiming existing client history with a victim's email.
+    ```typescript
+    // src/app/auth/callback/route.ts
+    // Smart-linking: só roda aqui porque o email acabou de ser verificado
+    // pela Supabase. Liga o user.id a clients pré-existentes com mesmo email.
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user?.email && type === "client") {
+      await db.update(clients)
+        .set({ userId: user.id })
+        .where(and(
+          isNull(clients.userId),
+          eq(clients.email, user.email),
+        ))
+    }
+    ```
+
+## Medium Finding M4: Register Rate Limit
+
+The `/api/auth/register` endpoint previously lacked sufficient rate limiting, making it vulnerable to spam or brute-force registration attempts.
+
+### Resolution
+
+A rate limiter has been integrated into `src/app/api/auth/register/route.ts` using `getRegisterLimiter()`. This limits registration attempts per IP address, returning a `429 Too Many Requests` status if the limit is exceeded.
+```typescript
+// src/app/api/auth/register/route.ts
+import { getRegisterLimiter } from "@/lib/ratelimit"
+import { getIp } from "@/lib/api"
+
+export async function POST(req: NextRequest) {
+  const { success } = await getRegisterLimiter().limit(getIp(req))
+  if (!success) {
+    return NextResponse.json(
+      { error: "Muitas tentativas de registro. Aguarde um momento." },
+      { status: 429 }
+    )
+  }
+  // ... rest of the registration logic ...
+}
+```
+
+## New Fixes and Enhancements
+
+Beyond the audit findings, several other defensive measures have been implemented.
+
+### Zod Validation for Onboarding
+
+The `/api/onboarding` endpoint now uses Zod for robust input validation. This prevents invalid or malicious data from being processed, such as negative `sessionPrice` values or malformed `sessionDuration`.
+```typescript
+// src/app/api/onboarding/route.ts
+import { z } from "zod"
+
+const onboardingSchema = z.object({
+  name: z.string().min(2),
+  profession: z.string().min(1),
+  phone: z.string().min(10),
+  bio: z.string().optional().nullable(),
+  sessionDuration: z.number().int().positive().max(480),
+  sessionPrice: z.number().int().nonnegative(),
+  availability: z.array(z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    startTime: z.string().regex(/^\d{2}:\d{2}$/),
+    endTime: z.string().regex(/^\d{2}:\d{2}$/),
+  })).min(1),
+})
+
+export async function POST(req: NextRequest) {
+  // ... rate limiting and user check ...
+  const parsed = onboardingSchema.safeParse(await req.json())
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Dados inválidos", fields: parsed.error.flatten().fieldErrors },
+      { status: 400 }
+    )
+  }
+  const body = parsed.data
+  // ... rest of the onboarding logic ...
+}
+```
+
+### Reserved Slugs for Professionals
+
+To prevent URL collisions and potential route shadowing, a set of `RESERVED_SLUGS` has been defined in `src/app/api/onboarding/route.ts`. This ensures that professional profile slugs generated from names do not conflict with core application routes (e.g., `/api`, `/auth`, `/dashboard`). The `generateUniqueSlug` function now checks against this set and appends a suffix if a collision occurs.
+```typescript
+// src/app/api/onboarding/route.ts
+const RESERVED_SLUGS = new Set([
+  "api", "auth", "dashboard", "login", "register", "onboarding",
+  "explore", "c", "p", "privacidade", "termos", "admin", "monitoring",
+  "sitemap", "robots", "opengraph-image",
+])
+
+async function generateUniqueSlug(base: string): Promise<string> {
+  // ... logic to check against RESERVED_SLUGS and existing slugs ...
+}
+```
+
+### Explicit Unknown Action Handling
+
+The `PATCH` endpoint for appointments (`src/app/api/appointments/[id]/route.ts`) now explicitly validates the `action` parameter against a predefined `ALLOWED_ACTIONS` set. Previously, an unknown action (e.g., a typo like `"cancle"`) could fall through conditional branches and result in an unintended state change (e.g., silently rejecting an appointment). This change ensures that only valid actions are processed, returning a `400 Bad Request` for unknown actions.
+```typescript
+// src/app/api/appointments/[id]/route.ts
+const ALLOWED_ACTIONS = new Set([
+  "confirm", "reject", "cancel", "paid", "complete", "no_show",
+])
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  // ... user and appointment checks ...
+  const { action } = await req.json()
+
+  if (!ALLOWED_ACTIONS.has(action)) {
+    if (!isProfessional && !isClient) return forbidden("Não autorizado")
+    return NextResponse.json({ error: "Unknown action" }, { status: 400 })
+  }
+  // ... rest of the action handling ...
+}
+```

@@ -1,8 +1,37 @@
 ---
-title: Groq + Llama 3.3
-description: Groq + Llama 3.3 in the Odys AI layer.
+title: "Groq + Llama 3.3 AI"
+description: "Why Groq + Llama 3.3 70B, two-pass pattern"
 ---
 
-## Coming soon
+# Groq + Llama 3.3 AI
 
-This section will be filled in together.
+This page details the rationale behind using Groq with the Llama 3.3 70B model for the AI layer and explains the two-pass pattern employed for AI interactions.
+
+## Groq + Llama 3.3 70B Selection
+
+The AI layer leverages Groq's inference engine with the Llama 3.3 70B model for both the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`). This decision was driven by a combination of performance and cost considerations.
+
+Groq offers significantly faster inference speeds—typically 10–20x faster than GPT-4 class models—and is substantially more cost-effective. This speed is crucial for scenarios involving back-to-back tool calls, where latency directly impacts user experience and operational efficiency.
+
+While Llama 3.3 70B may exhibit weaker instruction-following capabilities compared to larger, more expensive models, this trade-off is mitigated by the narrow and well-defined scope of the tools it interacts with. For instance, the tools for availability lookup, revenue roll-up, and no-show counting are specific enough that the model's instruction-following limitations are less impactful.
+
+## Two-Pass Tool Calling Pattern
+
+Both the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`) implement a two-pass pattern for interactions involving tool calls. This pattern enhances reliability and reduces the likelihood of hallucinations or incorrect tool usage.
+
+The two passes are structured as follows:
+
+1.  **First Pass: Tool Decision**: The LLM receives the user's input and the available tool definitions (e.g., `get_available_slots`, `book_appointment` in `src/lib/ai-intake.ts`, or `get_stats`, `get_upcoming` in `src/app/api/ai/chat/route.ts`). Its primary task in this pass is to decide whether a tool needs to be called and, if so, to output the `function_call` object with the appropriate tool name and arguments. No natural language response is generated at this stage.
+2.  **Second Pass: Response Generation**: If a tool was called in the first pass, its results are executed and then fed back to the LLM along with the original user query and the tool's output. The LLM then generates a final, natural language response that incorporates the information obtained from the tool. If no tool was called in the first pass, the LLM directly generates a natural language response.
+
+This explicit separation ensures that tool invocation is handled deterministically before any user-facing text is composed, leading to more accurate and reliable AI interactions.
+
+## Known Gaps
+
+*   **Instruction Following**: While Llama 3.3 70B is highly performant and cost-effective, it is generally weaker on complex, open-ended instruction following compared to larger, more expensive models like GPT-4. This is currently mitigated by the narrow scope of defined tools, but could become a limitation if the AI's responsibilities expand to more nuanced or abstract tasks.
+
+## Why This Shape
+
+The combination of Groq's inference speed with Llama 3.3 70B and the two-pass tool calling pattern is a deliberate design choice to optimize for performance, cost, and reliability in the AI layer.
+
+Groq's hardware acceleration makes it economically viable to perform multiple LLM calls per user interaction, which is essential for the two-pass pattern. This pattern, in turn, provides a robust mechanism for integrating external tools. By explicitly separating the tool-calling decision from the final response generation, the system gains precision and reduces the risk of the LLM misinterpreting tool outputs or hallucinating responses. This approach allows the use of a highly efficient model like Llama 3.3 70B, even with its instruction-following trade-offs, by structuring interactions in a way that plays to its strengths in rapid, focused processing.

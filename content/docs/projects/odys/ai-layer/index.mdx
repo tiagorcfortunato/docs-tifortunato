@@ -1,8 +1,48 @@
 ---
-title: AI Layer Overview
-description: Overview of the Odys AI layer.
+title: "AI Layer Overview"
+description: "AI layer overview: Groq, tool-calling, two agents"
 ---
 
-## Coming soon
+# AI Layer Overview
 
-This section will be filled in together.
+This page provides an overview of the AI layer's architecture, detailing its integration with Groq, the common tool-calling pattern, and the two primary AI agents responsible for client intake and professional insights.
+
+## Groq Integration
+
+The AI layer leverages Groq for its large language model (LLM) capabilities, primarily for fast inference and robust tool-calling. Both AI agents instantiate the Groq SDK using a dedicated `getGroq()` function, which retrieves the API key from `process.env.GROQ_API_KEY`.
+
+## Tool-Calling Pattern
+
+A consistent two-pass tool-calling pattern is employed across both AI agents to manage interactions with external functions and generate responses.
+1.  **First pass**: The LLM determines whether a tool needs to be invoked based on the user's prompt.
+2.  **Second pass**: If a tool is called, its results are fed back to the LLM, which then generates the final, contextually rich response.
+
+This pattern ensures that tool execution is deliberate and that the LLM's final output incorporates the most up-to-date information from the system. The `src/lib/ai-intake.ts` agent explicitly notes this pattern is "Same two-pass pattern as /api/ai/chat".
+
+## AI Agents
+
+The AI layer comprises two distinct agents, each tailored for specific use cases and operating environments.
+
+### WhatsApp Intake Agent
+
+The WhatsApp Intake Agent, implemented in `src/lib/ai-intake.ts`, is designed to handle inbound WhatsApp messages from clients. Its primary function is to automate tasks such as checking professional availability and creating new bookings.
+
+This agent defines and utilizes the following tools:
+-   `get_available_slots`: Returns available appointment slots for a given date. This tool is always used before suggesting times to a client.
+-   `book_appointment`: Creates a new appointment in the database. This tool is only invoked after confirming the date, time, client name, and phone number.
+-   `get_professional_info`: Retrieves general information about the professional, including name, profession, session duration, price, and operating hours.
+
+The agent includes specific timezone helpers (`saoPauloDate`, `formatSaoPauloTime`, `formatSaoPauloDate`) to correctly manage São Paulo time (UTC-3), reflecting Brazil's abolition of DST.
+
+### Professional Dashboard Assistant
+
+The Professional Dashboard Assistant, exposed via the API route `src/app/api/ai/chat/route.ts`, serves professionals directly within the dashboard. It helps professionals understand their appointments, client base, and revenue by providing data-driven insights.
+
+This agent is guided by a `SYSTEM_PROMPT` that instructs it to respond in Portuguese, use tools for data retrieval, and format monetary values in BRL. It defines the following tools:
+-   `get_stats`: Returns statistics for the last six months, including global summaries (total appointments, no-shows, rate, revenue) and a month-by-month breakdown. This tool is used for queries about monthly summaries, no-show rates, revenue, and historical comparisons.
+-   `get_upcoming`: Retrieves appointments scheduled for the next seven days, including client name, date, and time.
+-   `get_no_show_clients`: Ranks clients by the number of no-shows over the last six months, providing individual no-show counts, total sessions, and rates. This tool is specifically for identifying clients with high no-show rates.
+
+## Why this shape
+
+The AI layer is structured with two distinct agents to address different user personas and interaction channels: a client-facing agent for automated WhatsApp intake and a professional-facing agent for dashboard insights. This separation allows for specialized toolsets and prompts, optimizing each agent for its specific domain. The consistent use of Groq and the two-pass tool-calling pattern provides a unified, efficient, and robust foundation for AI-driven interactions across the platform.

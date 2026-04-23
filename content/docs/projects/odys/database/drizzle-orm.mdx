@@ -1,8 +1,22 @@
 ---
-title: Drizzle ORM
-description: Drizzle ORM in the Odys database layer.
+title: "Drizzle ORM"
+description: "Why Drizzle, how it's configured, postgres-js client"
 ---
 
-## Coming soon
+# Drizzle ORM
+This page covers the use of Drizzle ORM in the database layer, including its configuration and the postgres-js client.
 
-This section will be filled in together.
+## Why Drizzle
+Drizzle is used on top of `postgres-js` to provide a simple and efficient way to interact with the database. The decision to use Drizzle was made due to its ease of use and flexibility.
+
+## Configuration
+The Drizzle configuration is defined in `drizzle.config.ts`, which specifies the schema, output directory, dialect, and database credentials. The `dbCredentials` are set to the `DATABASE_URL` environment variable.
+
+## Postgres-js Client
+The postgres-js client is used in `src/lib/db/index.ts` to create a single client instance with `prepare: false`. This is necessary because Supabase's transaction pooler cannot prepare statements.
+
+## Known Gaps
+One known gap in the current implementation is the lack of RLS policies, which means that authorization is entirely app-level. This may need to be revisited in the future to improve security.
+
+## Why this Shape
+The decision to use Drizzle on top of postgres-js was made to provide a simple and efficient way to interact with the database. The configuration and client setup were designed to be easy to use and flexible, while also meeting the needs of the application. The lack of RLS policies is a trade-off that was made to simplify the implementation, but may need to be revisited in the future.

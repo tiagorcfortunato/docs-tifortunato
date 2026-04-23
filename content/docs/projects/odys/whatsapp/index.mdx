@@ -1,8 +1,68 @@
 ---
-title: WhatsApp Overview
-description: Overview of Odys WhatsApp integration.
+title: "WhatsApp Integration Overview"
+description: "WhatsApp overview: corporate number architecture, Evolution API, ~20 templates"
 ---
 
-## Coming soon
+# WhatsApp Integration Overview
 
-This section will be filled in together.
+This page details the architecture for integrating with WhatsApp, focusing on the corporate number setup via the Evolution API and the structured approach to message templating.
+
+## Corporate Number Architecture
+
+The WhatsApp integration leverages the Evolution API as the gateway for sending and receiving messages through a corporate WhatsApp number. This API is deployed as a Docker container, as defined in `docker-compose.evolution.yml`.
+
+The local development setup for the Evolution API is configured via environment variables:
+*   `EVOLUTION_API_URL`: The base URL for the Evolution API instance.
+*   `EVOLUTION_API_KEY`: The API key for authentication.
+*   `EVOLUTION_INSTANCE`: The specific instance name to use.
+
+These environment variables are checked by the `isConfigured()` function in `src/lib/whatsapp.ts` to ensure the API is ready for use.
+
+For incoming messages, the `docker-compose.evolution.yml` explicitly disables global webhooks (`WEBHOOK_GLOBAL_ENABLED: "false"`). Instead, webhooks are enabled per instance via an API call, specifically configured to listen for `MESSAGES_UPSERT` events, which are then routed to `{APP_URL}/api/whatsapp/webhook`. This allows for granular control over which events trigger inbound processing.
+
+## Evolution API Integration
+
+The core integration logic resides in `src/lib/whatsapp.ts`. This module encapsulates all interactions with the Evolution API.
+
+Key functions include:
+
+*   `normalizeBrazilianPhone(phone: string)`: This utility function standardizes phone numbers to an international format without the `+` prefix. It intelligently handles Brazilian numbers by adding the `55` country code if missing, while preserving other international formats.
+*   `sendWhatsApp({ phone, text, context })`: This asynchronous function is responsible for sending text messages.
+    *   It first checks if the Evolution API is configured using `isConfigured()`.
+    *   The phone number is normalized using `normalizeBrazilianPhone()`.
+    *   A `POST` request is made to the Evolution API's `/message/sendText/{INSTANCE}` endpoint, including the `number`, `text`, and a `delay` of `1200` milliseconds.
+    *   Authentication is handled via the `apikey` header.
+    *   If the message is sent successfully and a `context` object is provided, `setOutboundContext()` is called to store `professionalId` and `appointmentId` in Redis. This context is crucial for routing subsequent client replies back to the correct professional or appointment.
+    *   The function returns `true` on successful delivery and `false` on failure, logging any errors to the console rather than throwing exceptions.
+
+## Message Templating
+
+All outbound transactional WhatsApp messages are defined as exported functions within `src/lib/whatsapp.ts`. This centralizes message content and ensures consistency across the application.
+
+A visual templating system is employed to distinguish automated notifications from conversational AI replies within the same WhatsApp thread:
+
+*   `HEADER_RULE` and `transactionalHeader()`: These create a consistent header block with an emoji, label, and the professional's name, framed by rule lines.
+*   `TRANSACTIONAL_FOOTER`: A standard footer naming "Odys" is appended to all transactional messages.
+
+Examples of predefined message templates include:
+
+*   `msgBookingRequest`: Notifies a professional of a new booking request.
+*   `msgBookingConfirmed`: Confirms a booking to the client.
+*   `msgBookingRejected`: Informs a client that a booking could not be confirmed.
+*   `msgBookingCancelled`: Confirms a booking cancellation to the client.
+*   `msgReminder24h`: Sends a 24-hour appointment reminder.
+*   `msgReminder1h`: Sends a 1-hour appointment reminder.
+
+## Known Gaps
+
+*   **Error Handling for `sendWhatsApp`**: The `sendWhatsApp` function in `src/lib/whatsapp.ts` returns `false` on failure rather than throwing an exception. This design choice requires explicit `.catch(console.warn)` at every call site, which can lead to silent failures if not handled diligently. This is a trade-off for ensuring WhatsApp delivery is not load-bearing for API responses, but it shifts the burden of error observation to external monitoring.
+*   **Template Count Discrepancy**: The deep-dive documentation states "20+ message templates" are used for WhatsApp. However, `src/lib/whatsapp.ts` currently defines only a subset of these (6 examples are shown). This indicates a potential gap between the stated documentation and the current implementation, or that other templates are generated dynamically or reside elsewhere.
+
+## Why this shape
+
+The design of the WhatsApp integration prioritizes consistency, clarity, and resilience:
+
+*   **Centralized Messaging**: Consolidating all outbound WhatsApp messages into `src/lib/whatsapp.ts` ensures that message content is consistent, easily auditable, and prevents scattered, ad-hoc message strings throughout the codebase.
+*   **Visual Distinction**: The use of `transactionalHeader` and `TRANSACTIONAL_FOOTER` provides clear visual cues within WhatsApp conversations. This is critical for a corporate number that handles both automated notifications and potential conversational AI, helping users differentiate between system messages and interactive dialogue.
+*   **Decoupled Delivery**: The `sendWhatsApp` function's approach of returning `false` on failure (rather than throwing) is a deliberate choice to decouple WhatsApp message delivery from the critical path of API responses. This ensures that a transient issue with the WhatsApp API does not block or fail core application logic, prioritizing system resilience for non-essential notifications.
+*   **Contextual Replies**: The `context` parameter in `sendWhatsApp` and its use with `setOutboundContext` are fundamental for enabling intelligent routing of inbound client replies. By associating outbound messages with specific professionals or appointments, the system can correctly route subsequent conversations, facilitating a seamless user experience.

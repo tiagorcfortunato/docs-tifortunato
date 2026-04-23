@@ -1,8 +1,36 @@
 ---
-title: Sentry (3 runtimes)
-description: Sentry across three runtimes in Odys.
+title: Sentry Integration
+description: "Sentry server/edge/browser, source maps, /monitoring tunnel"
 ---
 
-## Coming soon
+# Sentry Integration
 
-This section will be filled in together.
+This page details the Sentry integration across the server (Node.js), edge, and browser runtimes. It covers how errors are captured, source maps are managed, and browser beacons are routed to ensure comprehensive observability.
+
+## Runtime Initialization
+
+Sentry is initialized across three distinct runtimes to provide full coverage:
+
+*   **Server and Edge Runtimes**: `src/instrumentation.ts` acts as Next.js's official instrumentation hook. It dynamically imports `sentry.server.config.ts` for the Node.js runtime and `sentry.edge.config.ts` for the edge runtime, based on `process.env.NEXT_RUNTIME`. Both configurations call `Sentry.init` with `tracesSampleRate: 1`, `enableLogs: true`, and `sendDefaultPii: true`.
+*   **Browser Runtime**: `src/instrumentation-client.ts` initializes the Sentry browser SDK. This configuration includes `Sentry.replayIntegration()` for session replay capabilities. Replay sampling is set with `replaysSessionSampleRate: 0.1` for general sessions and `replaysOnErrorSampleRate: 1.0` when an error occurs. A `beforeSend` hook is implemented to filter out common browser noise, specifically messages containing "Object Not Found Matching" and "Non-Error promise rejection captured".
+
+## Error Handling
+
+For unhandled errors within the App Router, `src/app/global-error.tsx` serves as the global error boundary. This component uses a `useEffect` hook to call `Sentry.captureException(error)` when an error is caught, ensuring that unhandled exceptions are reported to Sentry. It then renders Next.js's default error page using `NextError` with a `statusCode` of `0`.
+
+## Source Maps and Tunneling
+
+The `next.config.ts` file integrates `withSentryConfig` to manage Sentry's build-time and client-side configurations:
+
+*   **Source Map Uploads**: `widenClientFileUpload: true` is configured to upload a more comprehensive set of source maps during the build process. This enhances the quality of stack traces in Sentry by providing more detailed file and line information. Source maps are uploaded under `org: "odys-hx"` and `project: "javascript-nextjs"`.
+*   **Ad-Blocker Circumvention**: `tunnelRoute: "/monitoring"` is set up to route browser-initiated Sentry requests through a Next.js rewrite. This strategy helps bypass ad-blockers that might otherwise prevent Sentry beacons from reaching the Sentry ingestion endpoint, ensuring client-side error reporting remains robust.
+
+## Known Gaps
+
+*   **Sampling Rates**: The current `tracesSampleRate: 1` (100%) for server/edge runtimes and `replaysOnErrorSampleRate: 1.0` for browser replays are set for maximum visibility during pre-launch and development. These rates will need to be adjusted downwards in production environments to manage data volume and associated costs.
+*   **Build Performance**: Enabling `widenClientFileUpload: true` improves the fidelity of stack traces but can increase overall build times.
+*   **Server Load and Cost**: The `tunnelRoute: "/monitoring"` effectively circumvents ad-blockers, but it introduces additional server load and potentially increases hosting costs as all client-side Sentry traffic is proxied through the Next.js application.
+
+## Why this shape
+
+The Sentry integration is designed to provide comprehensive observability across all Next.js runtimes. By initializing separate SDKs for Node.js, Edge, and Browser environments, we ensure that errors and performance data are captured regardless of where they originate. The `global-error.tsx` boundary centralizes App Router error capture, while the `tunnelRoute` addresses a common challenge in client-side observability by ensuring Sentry beacons are not blocked by ad-blockers. The aggressive sampling rates are a deliberate choice for early-stage development, prioritizing complete data capture over cost optimization, with a clear plan for adjustment as the application matures.

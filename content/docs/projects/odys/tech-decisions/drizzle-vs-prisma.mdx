@@ -1,8 +1,41 @@
 ---
-title: Drizzle over Prisma
-description: Why Drizzle was chosen over Prisma in Odys.
+title: "Drizzle vs. Prisma"
+description: "Why Drizzle was chosen over Prisma in Odys."
 ---
 
-## Coming soon
+# Drizzle vs. Prisma
 
-This section will be filled in together.
+This page details the technical rationale behind selecting Drizzle ORM over Prisma for Odys's database layer. It covers the specific advantages Drizzle provides in terms of type safety, runtime efficiency, and integration with the development and deployment workflow.
+
+## Rationale for Drizzle
+
+The decision to use Drizzle ORM was driven by several factors that align with the project's goals for a lean, type-safe, and efficient data access layer.
+
+### Type Safety and Schema Integration
+
+Drizzle provides robust type safety for database queries, directly integrating the database schema with TypeScript. As noted in the deep-dive, "Fully typed queries in TypeScript — changing the schema immediately surfaces type errors everywhere." This ensures that schema modifications are immediately reflected in the application code, surfacing potential issues at compile time rather than runtime.
+
+The schema definition is managed in `src/lib/db/schema.ts` (referenced in `drizzle.config.ts`), and the `drizzle-kit` package (visible in `package.json` scripts like `db:generate` and `db:migrate`) facilitates schema migrations and type generation. The `db` instance is initialized in `src/lib/db/index.ts` using `drizzle` from `drizzle-orm` and `postgres` as the underlying client, ensuring a fully typed and consistent interface to the PostgreSQL database.
+
+```typescript
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+import *s schema from "./schema"
+
+const client = postgres(process.env.DATABASE_URL!, { prepare: false })
+export const db = drizzle(client, { schema })
+```
+
+### Lean Runtime and Direct SQL Approach
+
+Drizzle is designed to be "lighter and more direct than Prisma." Its SQL-adjacent nature means that the mental model for query construction and debugging remains close to raw SQL, which can simplify understanding and troubleshooting. The deep-dive highlights that "Drizzle is SQL-adjacent, so debugging happens in your head, and its runtime is lean." This lean runtime is particularly beneficial in serverless environments, where minimizing bundle size and cold start times is critical.
+
+### Build Process and Deployment Considerations
+
+A key factor in Drizzle's selection was its impact on the build process and deployment, especially in a Vercel environment. Prisma's approach, which involves a generated client and a separate migration DSL, can introduce additional build steps and potential cache-invalidation complexities for serverless functions.
+
+In contrast, Drizzle's more direct integration avoids these overheads. The `drizzle-kit` tooling, configured via `drizzle.config.ts`, manages schema and migrations without requiring a heavy runtime client generation step that could impact deployment efficiency on platforms like Vercel. The `package.json` scripts `db:generate` and `db:migrate` demonstrate the direct tooling integration.
+
+## Why this shape
+
+The choice of Drizzle ORM reflects a preference for a database abstraction that prioritizes type safety, a lean runtime, and a straightforward development experience without introducing significant build-time or deployment overheads. By maintaining a close relationship with SQL and leveraging `drizzle-kit` for schema management, the data layer remains explicit and performant, aligning with the project's overall architecture goals for efficiency and maintainability.

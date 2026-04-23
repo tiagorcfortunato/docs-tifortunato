@@ -1,8 +1,26 @@
 ---
-title: Booking Widget
-description: Booking widget in the Odys frontend.
+title: "Booking Widget Internals"
+description: "Booking widget internals: 3-step state machine, react-hook-form, slot computation"
 ---
 
-## Coming soon
+# Booking Widget Internals
 
-This section will be filled in together.
+This page covers the internals of the booking widget, including its 3-step state machine, usage of `react-hook-form`, and slot computation.
+
+## State Machine
+The booking widget uses a 3-step state machine, with states `pick`, `form`, and `success`. The state is managed using the `useState` hook in `src/app/p/[slug]/booking-widget.tsx`. The state transitions are triggered by user interactions, such as selecting a date or submitting the form.
+
+## React Hook Form
+The booking widget uses `react-hook-form` to manage the form state and validation. The form schema is defined using `zod` in `src/app/p/[slug]/booking-widget.tsx`. The form is validated on submit, and errors are displayed to the user.
+
+## Slot Computation
+The available slots are computed using the `generateSlots` function in `src/lib/slots.ts`. This function takes the selected date, availability rules, existing appointments, and session duration as input, and returns an array of available slots. The slots are then displayed to the user, and they can select one to book.
+
+## Implementation Details
+The booking widget is implemented in `src/app/p/[slug]/booking-widget.tsx`. It uses the `useState` and `useEffect` hooks to manage the state and side effects. The `useForm` hook from `react-hook-form` is used to manage the form state and validation.
+
+## Known Gaps
+One known gap in the current implementation is the lack of timezone handling consistency across the codebase. The booking widget uses browser-local time, while the API stores timestamps in UTC. This may lead to inconsistencies in the displayed availability and booked slots.
+
+## Why this Shape
+The booking widget is designed as a 3-step state machine to provide a clear and simple user experience. The use of `react-hook-form` simplifies form management and validation, while the `generateSlots` function provides a flexible way to compute available slots based on the selected date and availability rules. The implementation is designed to be modular and reusable, with a clear separation of concerns between the state machine, form management, and slot computation.

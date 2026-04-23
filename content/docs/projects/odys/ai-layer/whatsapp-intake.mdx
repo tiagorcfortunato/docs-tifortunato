@@ -1,8 +1,126 @@
 ---
-title: WhatsApp AI Intake
-description: AI-driven WhatsApp intake flow in Odys.
+title: "WhatsApp AI Intake Agent"
+description: "WhatsApp AI intake agent: inbound webhook, Groq tool-calling, appointment creation"
 ---
 
-## Coming soon
+# WhatsApp AI Intake Agent
 
-This section will be filled in together.
+This page details the architecture and implementation of the AI-driven WhatsApp intake agent. It covers the handling of inbound WhatsApp messages, the use of Groq for tool-calling to understand user intent, and the process of creating appointments based on these interactions.
+
+## Inbound Webhook
+
+The system processes inbound WhatsApp messages via a webhook endpoint. This endpoint is responsible for receiving messages from the WhatsApp provider, extracting relevant message data, and initiating the AI intake flow.
+
+*(Note: The implementation details for the `src/app/api/whatsapp/webhook` endpoint are not available in the provided code snippet.)*
+
+## Groq Tool-Calling Agent
+
+The core logic for the AI intake agent resides in `src/lib/ai-intake.ts`. This module implements a two-pass LLM pattern, similar to the `/api/ai/chat` endpoint, where the first LLM call determines if a tool is needed, and the second generates a final response using tool results.
+
+The agent uses Groq's LLM with a predefined set of tools to interact with the database and manage the booking process.
+
+### Tool Definitions
+
+The `TOOLS` array in `src/lib/ai-intake.ts` defines the functions the Groq LLM can call. These include:
+
+*   `get_available_slots`: Retrieves available appointment times for a specific date.
+*   `book_appointment`: Creates a new appointment after confirming details.
+*   `get_professional_info`: Fetches details about the professional, such as session duration, price, and working hours.
+
+```typescript
+const TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "get_available_slots",
+      description: "Retorna horários disponíveis para agendamento em uma data específica. Use SEMPRE antes de sugerir horários.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
+        },
+        required: ["date"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "book_appointment",
+      description: "Cria um agendamento. Use SOMENTE após confirmar data, horário e nome do cliente.",
+      parameters: {
+        type: "object",
+        properties: {
+          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
+          time: { type: "string", description: "Horário no formato HH:mm (ex: 14:00)" },
+          client_name: { type: "string", description: "Nome completo do cliente" },
+          client_phone: { type: "string", description: "Telefone do cliente no formato 5511999999999" },
+        },
+        required: ["date", "time", "client_name", "client_phone"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_professional_info",
+      description: "Retorna informações do profissional: nome, profissão, duração e preço da sessão, e horários de atendimento.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+]
+```
+
+### `getAvailableSlots` Implementation
+
+The `getAvailableSlots` function in `src/lib/ai-intake.ts` is responsible for calculating and returning available time slots for a given professional and date.
+
+1.  **Professional Lookup**: It first retrieves the professional's details from the `professionals` table.
+2.  **Date Validation & Day of Week**: The input `dateStr` is validated, and the day of the week is determined in the "America/Sao_Paulo" timezone.
+3.  **Availability Rules**: It queries the `availability` table to find the professional's working hours for that specific day.
+4.  **Existing Appointments**: It fetches existing appointments for the given date from the `appointments` table, excluding `rejected` or `cancelled` statuses.
+5.  **Slot Generation**: It iterates through the availability rules, generating potential slots based on the `sessionDuration`. Each potential slot is checked against existing appointments to prevent double-bookings and ensures only future slots are offered.
+
+Brazilian time zone handling is explicit, with `saoPauloDate` and `formatSaoPauloTime`/`formatSaoPauloDate` helpers ensuring consistency (Brazil abolished DST in 2019, so São Paulo is consistently UTC-3).
+
+### `bookAppointment` Implementation
+
+The `bookAppointment` function in `src/lib/ai-intake.ts` is designed to create a new appointment in the database. It takes the professional ID, date, time, client name, and client phone as arguments.
+
+*(Note: The provided code snippet for `bookAppointment` is truncated, so its full implementation details are not available.)*
+
+### `getProfessionalInfo`
+
+This tool is defined to retrieve professional information but its implementation is not included in the provided `src/lib/ai-intake.ts` snippet.
+
+## Conversation Management
+
+The `src/lib/conversation.ts` module handles the state of ongoing conversations with clients via WhatsApp. This is crucial for maintaining context across multiple messages and enabling the AI agent to have coherent dialogues.
+
+### State Storage
+
+Conversation state is stored in Redis, keyed by `conv:{professionalId}:{clientPhone}`. Each `ConversationState` object includes:
+
+*   `professionalId` and `clientPhone` for identification.
+*   `messages`: An array of `ConversationMessage` objects, trimmed to `MAX_MESSAGES` (20) to manage context window size.
+*   `context`: An object holding transient information like `pendingDate`, `pendingSlot`, and `appointmentCreated`.
+*   `createdAt` and `updatedAt` timestamps.
+
+Conversations have a `TTL` of 30 minutes, after which they expire from Redis.
+
+### Client Activity Tracking
+
+To prevent transactional reminders from interrupting an active AI conversation, `src/lib/conversation.ts` maintains a `client_active:{phone}` key in Redis. This key is touched on every `saveConversation` call and has an `ACTIVE_TTL` of 15 minutes. The `isClientActive` function allows other parts of the system (e.g., reminder cron jobs) to check if a client is currently engaged with the AI. In case of Redis failure, `isClientActive` fails open, allowing reminders to proceed.
+
+### Outbound Context
+
+The `setOutboundContext` and `getOutboundContext` functions in `src/lib/conversation.ts` store and retrieve the context of the last transactional message sent to a client. This `OutboundContext` includes the `professionalId` and optionally an `appointmentId`. It has an `OUTBOUND_TTL` of 2 hours. This allows inbound replies like "I need to reschedule" to be automatically routed to the correct professional and appointment without requiring the client to re-specify details.
+
+## Why this shape
+
+The design of the WhatsApp AI intake agent prioritizes a robust, stateful interaction model. The two-pass LLM pattern allows for explicit tool-calling, ensuring that complex actions like booking appointments are handled systematically. Storing conversation state in Redis (`src/lib/conversation.ts`) enables the AI to maintain context across messages, providing a more natural and efficient user experience. The explicit handling of São Paulo time zones in `src/lib/ai-intake.ts` ensures accurate scheduling without relying on server-side timezone configurations.
+
+## Known gaps
+
+*   **Incomplete `bookAppointment` implementation**: The provided `src/lib/ai-intake.ts` snippet for the `bookAppointment` function is truncated, meaning the full logic for persisting the appointment and handling subsequent notifications is not visible.
+*   **Missing webhook implementation**: The `src/app/api/whatsapp/webhook` file content was not available, so the specific implementation details of how inbound WhatsApp messages are received and processed before being handed off to the AI agent are not documented here.

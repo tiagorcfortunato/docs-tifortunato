@@ -1,8 +1,42 @@
 ---
-title: Railway (Evolution API)
-description: Railway deployment for the Evolution API.
+title: "Evolution API Deployment"
+description: "Railway for Evolution API: Docker image, separate Postgres"
 ---
 
-## Coming soon
+# Evolution API Deployment
 
-This section will be filled in together.
+This page details the deployment strategy for the Evolution API, which handles WhatsApp integration. It covers its independent hosting on Railway, the Docker image used, and its dedicated PostgreSQL database.
+
+## Independent Deployment on Railway
+
+The Evolution API is deployed as a separate service from the main application, hosted on Railway. This architectural decision provides isolation and dedicated resources for the critical WhatsApp integration component. The `README.md` confirms Railway as the hosting provider for the WhatsApp server.
+
+## Docker Image
+
+The Evolution API is deployed as a Docker image. The deep-dive indicates the image used for the Railway deployment is `tiagorcfortunato/evolution-api-odys`. For local development, the `docker-compose.evolution.yml` file specifies the image `atendai/evolution-api:v1.8.2` and exposes port `8080` for API access.
+
+## Database Configuration
+
+For its production deployment on Railway, the Evolution API utilizes its own Supabase Postgres instance. This database is entirely independent of the main application's database, operating with an `evolution_api` schema and PgBouncer on port `6543`.
+
+**Honest flag**: The `docker-compose.evolution.yml` file, which configures a local instance of the Evolution API, explicitly disables external database usage by setting `DATABASE_ENABLED: "false"` and `REDIS_ENABLED: "false"`. In this local configuration, data is stored in local files, diverging from the production Railway setup.
+
+## Key Environment Variables (Local Configuration)
+
+The `docker-compose.evolution.yml` file defines several environment variables for configuring the Evolution API locally:
+
+*   `SERVER_URL`: Configures the API's public URL, set to `http://localhost:8080` in the local setup.
+*   `AUTHENTICATION_TYPE`: Set to `apikey` for authentication.
+*   `AUTHENTICATION_API_KEY`: Uses `odys-local-key-2026` for local API key authentication.
+*   `DATABASE_ENABLED`: Set to `false`, indicating local file storage for the provided `docker-compose.evolution.yml`.
+*   `REDIS_ENABLED`: Set to `false`.
+*   `WEBHOOK_GLOBAL_ENABLED`: Set to `false`, with webhooks intended to be enabled per instance via API calls.
+
+## Known Gaps
+
+*   The specific Railway configuration files or deployment workflows are not present in the repository. Deployment to Railway is assumed to be managed via the Railway dashboard, requiring manual configuration of environment variables and service settings.
+*   There is a divergence in the Docker image name and database configuration between the deep-dive's description of the Railway deployment and the provided `docker-compose.evolution.yml` for local setup. The deep-dive specifies `tiagorcfortunato/evolution-api-odys` and a dedicated Supabase Postgres for Railway, while the `docker-compose.evolution.yml` uses `atendai/evolution-api:v1.8.2` and disables external database usage.
+
+## Why this shape
+
+The Evolution API is deployed as a distinct service to provide isolation and dedicated resources for the critical WhatsApp integration. This microservice-like approach allows for independent scaling and management of the WhatsApp component, minimizing its impact on the main application's performance and stability. It also enables the use of a specialized database for WhatsApp-related data, separate from the core application's PostgreSQL instance.

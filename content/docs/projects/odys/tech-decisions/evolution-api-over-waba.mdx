@@ -1,8 +1,31 @@
 ---
-title: Evolution API over Meta WABA
-description: Why Evolution API was chosen over Meta WABA in Odys.
+title: "Evolution API over Meta WABA"
+description: "Why Evolution API was chosen over Meta WABA in Odys."
 ---
 
-## Coming soon
+# Evolution API over Meta WABA
 
-This section will be filled in together.
+This page details the rationale behind Odys's decision to implement the self-hosted Evolution API for WhatsApp communication instead of Meta's official WhatsApp Business API (WABA).
+
+## Core Differences and Strategic Advantages
+
+The primary distinction between Evolution API and Meta WABA lies in their operational models and user perception.
+
+Meta's official WABA operates as a managed service, incurring per-message costs and requiring pre-approved message templates. Messages sent via WABA originate from a branded business number, which can appear automated or "bot-like" to recipients.
+
+In contrast, Evolution API leverages WhatsApp Web internally, allowing messages to be sent from a professional's actual phone number. This approach ensures that communications, such as appointment reminders or confirmations, appear as if they were personally typed by the professional. This fosters a more personal and direct interaction with clients, which is a core value proposition for Odys.
+
+The implementation of Evolution API is visible in `src/lib/whatsapp.ts`, which defines the client for sending messages and pre-formatted transactional messages. The self-hosted nature is configured via `docker-compose.evolution.yml`, where the `evolution-api` service runs as a Docker container.
+
+## Known Gaps
+
+The choice of Evolution API introduces a trade-off concerning reliability. Because Evolution API relies on an active WhatsApp Web session from a physical phone, it is susceptible to disconnections. Common causes include:
+*   The linked phone running out of storage.
+*   WhatsApp application updates on the phone.
+*   Network connectivity issues on the phone.
+
+These disconnections can interrupt message delivery. To mitigate this, a daily health check mechanism is in place to monitor the Evolution API instance status and detect connectivity issues.
+
+## Why This Shape
+
+The decision to use Evolution API is central to Odys's value proposition. By enabling professionals to communicate with clients via their familiar WhatsApp number, Odys aims to provide a more personal and less automated experience. This approach differentiates Odys from platforms that rely on generic, branded WABA numbers, which can feel impersonal. The perceived authenticity of messages sent from a professional's own number is considered a key "moat" for Odys, fostering stronger client-professional relationships and enhancing user engagement.

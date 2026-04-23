@@ -1,8 +1,77 @@
 ---
-title: MCP Server Overview
-description: Overview of the Odys MCP server.
+title: "MCP Server Overview"
+description: "MCP server overview: purpose, architecture, not deployed"
 ---
 
-## Coming soon
+# MCP Server Overview
 
-This section will be filled in together.
+This page provides an overview of the Odys MCP (Model Context Protocol) server, detailing its purpose, architectural design, and how it integrates with AI agents without being a traditionally deployed service.
+
+## Purpose
+
+The MCP server was introduced to enable AI agents, such as Claude Code sessions and the in-product assistant, to interact with the Odys application's data and business logic through a well-defined tool interface. This abstraction allows agents to perform actions like querying appointment schedules or updating statuses without direct access to the database layer or requiring knowledge of Drizzle ORM. The server exposes a JSON-RPC over stdio interface, providing a clean and secure surface for tool invocation.
+
+## Architecture
+
+The MCP server is structured as a self-contained Node.js sub-project within the main repository, located at `mcp-server/`.
+
+### Sub-project Structure
+
+The `mcp-server/` directory contains its own `package.json`, `node_modules`, and `tsconfig.json`. This isolation ensures that the main application's CI/CD pipeline does not attempt to compile the MCP server, as indicated by the root `tsconfig.json` excluding `mcp-server`.
+
+The server is bundled into a single ESM file, `dist/server.js`, using `tsup` (`mcp-server/package.json`). This output file includes a `#!/usr/bin/env node` banner and is made executable (`chmod +x`), allowing it to be run directly as a command.
+
+### Dependency Management
+
+A specific configuration in `tsup.config.ts` marks `zod` and `@modelcontextprotocol/sdk` as `noExternal`. This instructs esbuild to inline these dependencies rather than treating them as runtime imports. This approach resolves potential CJS/ESM dual-package hazard issues that could lead to startup crashes, particularly with the MCP SDK. `dotenv` remains an external dependency as it does not exhibit these issues.
+
+### Data Access and Environment
+
+The MCP server shares the core database schema by importing `../../src/lib/db/schema.js` into `mcp-server/src/db.ts`. Due to the bundling process, only one compiled copy of the schema exists in the final output, preventing schema drift.
+
+Environment variables, primarily `DATABASE_URL`, are loaded using `dotenv` from the repository root's `.env.local` and `.env` files. The server logs errors to `stderr` and exits if `DATABASE_URL` is missing, reserving `stdout` exclusively for JSON-RPC framing.
+
+### Server Entry Point
+
+The `mcp-server/src/server.ts` file serves as the main entry point for the MCP server. It initializes an `@modelcontextprotocol/sdk/server/index.js` `Server` instance and sets up request handlers for `ListToolsRequestSchema` and `CallToolRequestSchema`.
+
+*   The `ListToolsRequestSchema` handler returns the `TOOL_DEFINITIONS` array, which describes the available tools and their input schemas.
+*   The `CallToolRequestSchema` handler dispatches incoming tool calls to the appropriate functions defined in `mcp-server/src/tools.ts` based on the tool `name`. It wraps tool execution in a `try/catch` block to handle errors gracefully, returning a structured error response to the caller.
+
+### Tool Definitions and Logic
+
+The `mcp-server/src/tools.ts` file defines the four primary tools exposed by the MCP server:
+
+1.  **`get_appointments_today`**: Retrieves a professional's appointments for the current civil date, resolving "today" based on a specified IANA timezone (defaulting to `America/Sao_Paulo`). It uses `Intl.DateTimeFormat` for accurate timezone handling, including historical DST rules.
+2.  **`get_customer_by_phone`**: Looks up customer records by phone number. It normalizes Brazilian phone numbers and queries for both E.164 and 11-digit variants to ensure matches across different storage formats.
+3.  **`get_revenue_summary`**: Calculates revenue for a professional over rolling periods (7, 30, or 365 days). It counts appointments with `paymentStatus = 'captured'` and derives revenue from `professional.sessionPrice`.
+4.  **`update_appointment_status`**: A write tool that updates an appointment's status. It includes an ownership check (`existing.professionalId !== input.professionalId`) to prevent unauthorized modifications and is designed to be idempotent. If a `reason` is provided, it overwrites the appointment's `notes` field.
+
+## Integration and Deployment
+
+The MCP server is not deployed as a traditional long-running service (e.g., a web server or API). Instead, it is designed to be invoked on demand by AI agent environments. This integration is configured via the `.mcp.json` file at the repository root:
+
+```json
+{
+  "mcpServers": {
+    "odys": {
+      "command": "node",
+      "args": ["./mcp-server/dist/server.js"]
+    }
+  }
+}
+```
+
+This configuration instructs environments like Claude Code sessions to execute `node ./mcp-server/dist/server.js` when they need to interact with the "odys" MCP server. The server then communicates over standard I/O (stdio) using the JSON-RPC protocol.
+
+## Testing
+
+The `mcp-server` sub-project includes Vitest tests under `src/__tests__/`. These tests specifically cover critical utility functions like phone number normalization (`phone.test.ts`) and timezone offset calculation (`timezone.test.ts`), as well as the `update_appointment_status` tool's Zod schema (`update.test.ts`). Live-database integration tests are currently deferred.
+
+## Known Gaps
+
+The `get_customer_by_phone` tool in `mcp-server/src/tools.ts` currently employs a pragmatic workaround for phone number normalization by querying for both E.164 and 11-digit variants. The underlying issue stems from the application storing 11-digit phone numbers while the MCP and intake agents prefer E.164. A more robust, long-term solution involving a shared `src/lib/phone.ts` utility and a database migration to standardize phone number storage is tracked in `mcp-server/TODO.md` as a medium-priority item.
+
+## Why this shape
+
+The MCP server is designed as a distinct, stdio-based sub-project to provide a secure and isolated interface for AI agents. This architecture abstracts away direct database access and complex business logic, exposing only a curated set of tools via JSON-RPC. This approach minimizes the attack surface, simplifies agent integration, and ensures that AI interactions adhere to defined operational boundaries and ownership checks, such as those enforced in `updateAppointmentStatus` in `mcp-server/src/tools.ts`. The self-contained nature also allows for independent development, testing, and bundling, reducing coupling with the main application's build process.

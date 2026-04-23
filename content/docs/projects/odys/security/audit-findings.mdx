@@ -1,8 +1,65 @@
 ---
-title: Audit (15 Findings)
-description: Security audit findings for Odys.
+title: Security Audit Findings
+description: All 15 findings categorized by severity
 ---
 
-## Coming soon
+# Security Audit Findings
 
-This section will be filled in together.
+This page details the 15 security findings identified during the point-in-time security audit conducted on 2026-04-14. The findings are categorized by severity: Critical, High, Medium, and Low, reflecting a defense-in-depth approach where not every finding is independently exploitable but each reduces the overall security margin.
+
+## Critical Findings
+
+### C1: Account Takeover via Auto-Confirmed Registration + Email Smart-Linking
+
+**Description**: The `/api/auth/register` route initially called `adminClient.auth.admin.createUser({ email_confirm: true })` unconditionally, bypassing email verification. This, combined with a smart-linking query that attached pre-existing `clients` rows to a new `user.id` based on email match, allowed an attacker to register with a victim's email and inherit their client history across all professionals.
+
+**Status**: **Fixed**. The register route now uses `supabase.auth.signUp()` in production, which triggers a verification email. The admin path is restricted to development environments. Smart-linking logic was moved into the `/auth/callback` flow, ensuring it only executes after `exchangeCodeForSession` has verified the user's inbox.
+
+## High Severity Findings
+
+### H1: Stored XSS via Avatar Upload
+
+**Description**: The avatar upload route trusts the client-supplied `Content-Type` header and does not perform magic byte validation. This vulnerability allows an attacker to upload an SVG file containing embedded `<script>` tags.
+
+**Status**: **Open**.
+**Proposed Fix**: Implement file type sniffing (e.g., via `file-type`), whitelist allowed image formats (JPEG, PNG, WebP), reject SVG files, re-encode images through `sharp`, and set the `Content-Type` header based on the sniffed type.
+
+### H2: Mass Assignment on `/api/settings`
+
+**Description**: The `/api/settings` route explicitly enumerates fields like `name`, `phone`, `bio`, `sessionDuration`, and `sessionPrice` rather than spreading the request body. While this prevents direct modification of sensitive fields like `plan` or `trialEndsAt`, the route lacks comprehensive Zod shape validation. This could allow invalid values, such as a negative `sessionPrice` or a string for `sessionDuration`.
+
+**Status**: **Open** (partially mitigated by explicit field enumeration, but Zod validation is pending).
+
+### H3: `/api/booking` GET Leaks Professional PII
+
+**Description**: The handler for GET requests to `/api/booking` returns the full `professionals` row, including sensitive Personally Identifiable Information (PII) such as `email`, `phone`, `stripeCustomerId`, and `stripeSubscriptionId`. This allows any user to scrape private contact and billing information for all professionals.
+
+**Status**: **Open**.
+**Proposed Fix**: Implement a `toPublicProfessionalDTO()` helper function at the route boundary to filter out sensitive fields before sending the response.
+
+### H4: Unauthenticated Booking Endpoint Enables Spam and Slot-Griefing
+
+**Description**: The POST `/api/booking` endpoint is protected by an IP-based rate limit (5 requests per 10 minutes) but lacks a per-professional booking cap or a CAPTCHA. This allows an attacker using a proxy farm to fill a professional's available slots with `pending_confirmation` bookings, leading to spam and denial-of-service for legitimate clients.
+
+**Status**: **Open**.
+**Proposed Fix**: Integrate Cloudflare Turnstile and implement a daily booking cap per professional slug.
+
+## Medium Severity Findings
+
+*   **M1: `CRON_SECRET` Comparison**: The `CRON_SECRET` in the `/api/cron/reminders` route is compared using `===` instead of `timingSafeEqual`, which is vulnerable to timing attacks. **Status**: **Open**.
+*   **M2: Booking Upsert Oracle**: The booking upsert logic matches clients by phone *or* email, creating an oracle that can reveal whether a given phone number or email address is associated with a client of a specific professional. **Status**: **Open**.
+*   **M3: `/api/ai/chat` Unlimited**: The `/api/ai/chat` endpoint has no rate limits, potentially allowing for abuse and excessive resource consumption. **Status**: **Open**.
+*   **M4: Register Rate Limit**: The registration route was vulnerable to brute-force attacks. **Status**: **Fixed** via `getRegisterLimiter()` (5 requests per hour).
+*   **M5: Server Action Trusts `professionalId`**: A server action trusts the `professionalId` passed from a React prop without re-verifying it on the server side, potentially allowing a malicious client to operate on another professional's data. **Status**: **Open**.
+
+## Low Severity Findings
+
+*   **L1: Routes Without Zod**: Several routes, including settings and account-delete, lack comprehensive Zod validation. **Status**: **Open**.
+*   **L2: Rate-Limit Keys**: Rate-limit keys are derived from the raw `x-forwarded-for` header. While safe on Vercel, this approach is less robust off-platform. **Status**: **Open**.
+*   **L3: No CSRF Tokens**: The application relies on `SameSite=Lax` from Supabase for CSRF protection, but does not implement explicit CSRF tokens. **Status**: **Open**.
+*   **L4: `/api/messages` Type Enum Validation**: The `/api/messages` endpoint does not validate the `type` enum for incoming messages. **Status**: **Open**.
+*   **L5: Booking GET Leaks Full Schedule**: The GET `/api/booking` endpoint leaks the full booked-slot schedule, potentially revealing a professional's availability patterns. **Status**: **Open**.
+
+## Known Gaps
+
+Of the 15 findings, C1 (Critical) and M4 (Medium) have been fixed. All other findings (4 High, 4 Medium, 5 Low) remain open. The current plan anticipates addressing the High severity findings (H1-H4) within approximately one month, assuming a cadence of one day per session dedicated to security work.

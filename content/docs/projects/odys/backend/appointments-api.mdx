@@ -1,8 +1,38 @@
 ---
-title: Appointments API
-description: Odys appointments API.
+title: "Appointment Action Endpoint"
+description: "Appointment action endpoint: confirm/reject/cancel/paid/complete/no_show"
 ---
 
-## Coming soon
+# Appointment Action Endpoint
+This page covers the appointment action endpoint, which allows clients and professionals to perform actions such as confirming, rejecting, canceling, marking as paid, completing, or marking as no-show on appointments.
 
-This section will be filled in together.
+## Actions
+The endpoint supports the following actions:
+- `confirm`
+- `reject`
+- `cancel`
+- `paid`
+- `complete`
+- `no_show`
+
+These actions are defined in the `ALLOWED_ACTIONS` set in `src/app/api/appointments/[id]/route.ts`.
+
+## Cancel Action
+The `cancel` action can be performed by both clients and professionals. When a client cancels an appointment, a notification is sent to the professional. When a professional cancels an appointment, a notification is sent to the client. The appointment status is updated to `cancelled`.
+
+## Professional-only Actions
+The following actions can only be performed by professionals:
+- `paid`: updates the appointment payment status to `captured` and sends a notification to the client.
+- `complete`: updates the appointment status to `completed` and sends a notification to the client.
+- `no_show`: marks the appointment as no-show.
+
+These actions are implemented in `src/app/api/appointments/[id]/route.ts`.
+
+## Implementation
+The endpoint is implemented as a PATCH request handler in `src/app/api/appointments/[id]/route.ts`. It fetches the appointment and related data, checks the user's ownership and permissions, and performs the requested action.
+
+## Known Gaps
+One known gap in the current implementation is that it does not handle cases where the appointment status is not in a valid state for the requested action. For example, attempting to cancel an appointment that is already completed will result in a `badRequest` error.
+
+## Why this Shape
+The endpoint is designed to provide a simple and straightforward way for clients and professionals to perform actions on appointments. The use of a single endpoint for all actions simplifies the API and reduces the number of requests that need to be made. The implementation is focused on handling the business logic for each action, with notifications and updates to the appointment status handled accordingly.

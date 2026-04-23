@@ -1,8 +1,151 @@
 ---
-title: Evolution API
-description: Evolution API powering the Odys WhatsApp integration.
+title: "Evolution API Integration"
+description: "Details on the Evolution API integration, including its strategic rationale, local Docker setup, production deployment, and application interaction."
 ---
 
-## Coming soon
+# Evolution API Integration
 
-This section will be filled in together.
+This page details the integration of the Evolution API for WhatsApp communication, covering the strategic decision to use it over Meta's official API, its local development setup via Docker, production deployment considerations, and how the application interacts with it for sending messages.
+
+## Why Evolution API?
+
+The decision to integrate the self-hosted Evolution API over Meta's official WhatsApp Business API (WABA) is a core strategic differentiator for Odys, as outlined in the [README.md](#whatsapp-integration-evolution-api) and the architecture deep-dive.
+
+Meta's WABA imposes per-message costs, requires template pre-approval, and sends messages from a branded WABA number, which can appear impersonal or bot-like to clients. In contrast, Evolution API leverages WhatsApp Web to send messages from the professional's actual phone number. This approach ensures that automated reminders and confirmations appear as if typed by the professional, fostering a more personal client experience. This is critical for Odys's "WhatsApp-first" approach, where the same managed line handles both conversational AI intake and automated notifications.
+
+## Local Development Setup
+
+For local development, the Evolution API is run as a Docker container using the configuration defined in `docker-compose.evolution.yml`.
+
+```yaml
+version: "3.8"
+
+services:
+  evolution-api:
+    image: atendai/evolution-api:v1.8.2
+    container_name: evolution-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SERVER_URL: "http://localhost:8080"
+      AUTHENTICATION_TYPE: "apikey"
+      AUTHENTICATION_API_KEY: "odys-local-key-2026"
+      DATABASE_ENABLED: "false"
+      REDIS_ENABLED: "false"
+      WEBHOOK_GLOBAL_ENABLED: "false"
+    volumes:
+      - evolution_data:/evolution/instances
+```
+
+Key aspects of this local setup include:
+
+*   **Version**: The `atendai/evolution-api:v1.8.2` image is used.
+*   **Access**: The API is exposed locally on port `8080`.
+*   **Authentication**: An `AUTHENTICATION_API_KEY` is set to `odys-local-key-2026`.
+*   **Persistence**: `DATABASE_ENABLED` and `REDIS_ENABLED` are set to `false`, meaning instance data is stored in local files within the `evolution_data` Docker volume, simplifying local setup by removing external database dependencies.
+*   **Webhooks**: `WEBHOOK_GLOBAL_ENABLED` is `false`. Webhooks for specific instances are configured programmatically via a `POST` request to `{EVOLUTION_API_URL}/webhook/set/{INSTANCE}` with the appropriate `url` and `events` (e.g., `MESSAGES_UPSERT`), as noted in the comments within `docker-compose.evolution.yml`.
+
+## Production Deployment
+
+In production, the Evolution API is hosted on Railway, as indicated in the `README.md` "Tech Stack" section. The production environment utilizes `Evolution API v2`, a more recent version than the `v1.8.2` used for local development. This distinction implies potential differences in API behavior or features that should be considered during development and deployment.
+
+The `src/lib/whatsapp.ts` module retrieves its configuration from environment variables (`process.env.EVOLUTION_API_URL`, `process.env.EVOLUTION_API_KEY`, `process.env.EVOLUTION_INSTANCE`), allowing for seamless switching between local and production Evolution API instances.
+
+## Application Interaction
+
+All application-level interactions with the Evolution API are encapsulated within `src/lib/whatsapp.ts`. This module serves as the single source of truth for sending WhatsApp messages.
+
+```typescript
+// src/lib/whatsapp.ts
+import { APP_URL } from "@/lib/constants"
+import { setOutboundContext } from "@/lib/conversation"
+
+const BASE_URL = process.env.EVOLUTION_API_URL?.trim().replace(/\/$/, "") ?? ""
+const API_KEY = process.env.EVOLUTION_API_KEY?.trim() ?? ""
+const INSTANCE = process.env.EVOLUTION_INSTANCE?.trim() ?? ""
+
+function isConfigured() {
+  return BASE_URL && API_KEY && INSTANCE
+}
+
+export function normalizeBrazilianPhone(phone: string): string { /* ... */ }
+
+interface SendTextParams {
+  phone: string
+  text: string
+  context?: {
+    professionalId: string
+    appointmentId?: string
+  }
+}
+
+export async function sendWhatsApp({ phone, text, context }: SendTextParams): Promise<boolean> {
+  if (!isConfigured()) {
+    console.warn("[WhatsApp] Evolution API não configurada — mensagem não enviada")
+    return false
+  }
+
+  const number = normalizeBrazilianPhone(phone)
+
+  try {
+    const res = await fetch(`${BASE_URL}/message/sendText/${INSTANCE}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: API_KEY,
+      },
+      body: JSON.stringify({
+        number,
+        text,
+        delay: 1200,
+      }),
+    })
+
+    if (!res.ok) {
+      const body = await res.text()
+      console.error(`[WhatsApp] Erro ao enviar para ${number}:`, body)
+      return false
+    }
+
+    if (context) {
+      await setOutboundContext(number, context)
+    }
+
+    return true
+  } catch (err) {
+    console.error(`[WhatsApp] Falha ao conectar Evolution API:`, err)
+    return false
+  }
+}
+```
+
+Key functionalities within `src/lib/whatsapp.ts` include:
+
+*   **Configuration**: Environment variables `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE` are loaded to configure the API client. The `isConfigured()` function provides a runtime check for these variables.
+*   **Phone Normalization**: The `normalizeBrazilianPhone()` function ensures that phone numbers are formatted correctly for the Evolution API, handling various input formats and country codes.
+*   **`sendWhatsApp` Function**: This asynchronous function is the primary interface for sending text messages. It constructs the API request, including the `apikey` header and a `delay` of `1200` milliseconds in the request body. It handles API response validation and error logging, returning `true` on success and `false` on failure without throwing exceptions.
+*   **Outbound Context**: The optional `context` parameter in `sendWhatsApp` allows for storing `professionalId` and `appointmentId` in Redis via `setOutboundContext`. This mechanism enables the webhook to correctly route client replies back to the relevant professional and appointment.
+
+## Message Templating
+
+`src/lib/whatsapp.ts` also centralizes all client-facing transactional messages. This ensures consistency in tone, branding, and structure across all automated WhatsApp communications.
+
+*   **Visual Templating**: Functions like `transactionalHeader()` and the `TRANSACTIONAL_FOOTER` constant are used to create visually distinct automated messages. These include rule lines (`━━━━━━━━━━━━━━━━━`) and clear labels to differentiate automated notifications from conversational AI replies within the same WhatsApp thread.
+*   **Pre-formatted Messages**: Specific functions (e.g., `msgBookingConfirmed`, `msgReminder24h`, `msgBookingCancelled`) are exported, each responsible for generating a complete message string for a particular event. This pattern ensures that message content is never hardcoded directly within API routes or business logic.
+
+## Known Gaps
+
+The Evolution API, while offering significant advantages over Meta's WABA, introduces a trade-off in reliability. As it operates by simulating WhatsApp Web, it is susceptible to disconnections if the linked phone runs out of storage, loses internet connectivity, or if WhatsApp itself undergoes updates that break the underlying integration. This can lead to message delivery failures.
+
+To mitigate this, a daily health check cron job (`/api/cron/whatsapp-watchdog`) is implemented. This watchdog monitors the Evolution API instance status and alerts if it becomes disconnected, allowing for proactive intervention.
+
+## Why This Shape
+
+The design of the Evolution API integration, particularly the `src/lib/whatsapp.ts` module, aims to centralize all WhatsApp-related logic. This approach offers several benefits:
+
+*   **Consistency**: All outbound messages adhere to a consistent format and tone, reinforcing the Odys brand and professional identity.
+*   **Maintainability**: Changes to message content, API interaction logic, or phone number normalization can be made in a single location, reducing the risk of inconsistencies and simplifying updates.
+*   **Testability**: By encapsulating the API calls and message generation, individual WhatsApp functions can be more easily tested in isolation.
+*   **Abstraction**: Application code interacts with high-level message functions (e.g., `msgBookingConfirmed`) rather than directly with the Evolution API, abstracting away the underlying communication mechanism.
+*   **Operational Clarity**: The separation of local Docker setup from production deployment on Railway reflects distinct operational requirements, optimizing for developer experience locally while ensuring scalability and manageability in production.

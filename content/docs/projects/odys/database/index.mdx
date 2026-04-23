@@ -1,8 +1,148 @@
 ---
-title: Database Overview
-description: Overview of the Odys database.
+title: "Database Overview"
+description: "Database overview: Drizzle on Supabase Postgres"
 ---
 
-## Coming soon
+# Database Overview
 
-This section will be filled in together.
+This page provides an overview of the database architecture, focusing on the use of Drizzle ORM with Supabase Postgres. It covers the database client setup, schema definition, and the overall structure of the data model.
+
+## Database Client Setup
+
+The application connects to a Supabase Postgres instance using the `postgres-js` client library, managed by Drizzle ORM. The database client is initialized in `src/lib/db/index.ts`.
+
+```typescript
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+import * as schema from "./schema"
+
+const client = postgres(process.env.DATABASE_URL!, { prepare: false })
+export const db = drizzle(client, { schema })
+```
+
+The `DATABASE_URL` environment variable is used for connection, and the `prepare: false` option is set for the `postgres-js` client. The `db` object is then exported, providing a Drizzle client instance with the defined schema.
+
+## Schema Definition
+
+The database schema is defined declaratively using Drizzle ORM in `src/lib/db/schema.ts`. This file uses Drizzle's `pgTable`, `text`, `timestamp`, `boolean`, `integer`, `uuid`, and `index` functions to define tables, columns, and indexes.
+
+All tables use UUIDs as primary keys, generated with `defaultRandom()`, ensuring unguessable IDs. Timestamps for `createdAt` and `updatedAt` columns are managed with `defaultNow()`. Foreign key relationships are established with `references()` and consistently use `onDelete: "cascade"` to ensure data integrity upon deletion of parent records.
+
+## Schema Structure
+
+The database schema is centered around the `professionals` table, with several related tables capturing various aspects of the platform's functionality.
+
+### `professionals`
+
+This is the central table, representing a professional user.
+-   `id`: Primary key, UUID.
+-   `userId`: Supabase authentication ID, `text`, unique.
+-   `slug`: Unique URL path segment for the professional's public page.
+-   `sessionDuration`, `sessionPrice`: Integer fields for session details.
+-   `plan`: `text` field indicating the professional's subscription plan (`free`, `pro`, `premium`).
+-   `paymentType`, `paymentPercentage`, `pixKeyType`, `pixKey`: Fields related to payment processing.
+-   `stripeCustomerId`, `stripeSubscriptionId`: Store Stripe-related identifiers.
+-   `trialEndsAt`: Timestamp for Pro trial expiration.
+-   `autoConfirm`: Boolean to indicate automatic appointment confirmation.
+
+### `availability`
+
+Defines a professional's recurring availability slots.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+-   `dayOfWeek`: Integer (0-6 for Sunday-Saturday).
+-   `startTime`, `endTime`: `text` fields in `"HH:mm"` format.
+-   Indexed on `professionalId` via `availability_professional_id_idx`.
+
+### `clients`
+
+Represents clients who book appointments.
+-   `userId`: Optional Supabase authentication ID (`text`), allowing clients to book without an account. This is back-filled if a client later registers with the same email.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`. A client record is scoped to a single professional.
+-   Indexed on `professionalId` (`clients_professional_id_idx`) and `userId` (`clients_user_id_idx`).
+
+### `clientNotes`
+
+Stores private notes a professional keeps on a client.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+-   `clientId`: Foreign key to `clients`, `onDelete: "cascade"`.
+-   `content`: Free-form `text`.
+
+### `recurringSchedules`
+
+Captures patterns for recurring appointments.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+-   `clientId`: Foreign key to `clients`, `onDelete: "cascade"`.
+-   `frequency`: `text` field (e.g., `weekly`, `biweekly`).
+-   `dayOfWeek`, `secondDayOfWeek`: Integers for specific days.
+-   `time`: `text` field in `"HH:mm"` format.
+
+### `appointments`
+
+The primary table for booking events.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+-   `clientId`: Foreign key to `clients`, `onDelete: "cascade"`.
+-   `recurringScheduleId`: Optional foreign key to `recurringSchedules`.
+-   `startsAt`, `endsAt`: Timestamps for the appointment duration.
+-   `status`: `text` field representing the appointment lifecycle (e.g., `pending_confirmation`, `confirmed`, `rejected`, `completed`, `cancelled`, `no_show`).
+-   `paymentStatus`: `text` field for payment state (e.g., `none`, `authorized`, `captured`, `refunded`).
+-   `stripePaymentIntentId`: Stores Stripe Payment Intent ID, though currently unused for per-appointment charges.
+-   `reminderSent24h`, `reminderSent1h`: Booleans to prevent duplicate reminder emails.
+-   Indexed on `professionalId` (`appointments_professional_id_idx`), `clientId` (`appointments_client_id_idx`), and `startsAt` (`appointments_starts_at_idx`).
+
+### `messages`
+
+Stores in-product chat messages between professionals and clients.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+-   `clientId`: Foreign key to `clients`, `onDelete: "cascade"`.
+-   `sender`: `text` field (`"professional"` or `"client"`).
+-   `type`: `text` field (`"text"`, `"link"`, `"pdf"`).
+-   `readAt`: Timestamp, null until read.
+
+### `follows`
+
+Represents the client-follows-professional social graph.
+-   `userId`: Supabase authentication ID (`text`), allowing a user to follow multiple professionals without being a `client` of each.
+-   `professionalId`: Foreign key to `professionals`, `onDelete: "cascade"`.
+
+### `reviews`
+
+Stores client reviews for appointments.
+-   `appointmentId`: Foreign key to `appointments`, `onDelete: "cascade"`, with a unique constraint (one review per appointment).
+-   `rating`: Integer (1-5).
+
+### `notifications`
+
+Manages in-app notifications.
+-   `recipientType`: `text` field (`"professional"` or `"client"`).
+-   `recipientId`: Supabase user ID (`text`).
+-   Indexed on `recipientId` for efficient retrieval of a user's notifications.
+
+## Drizzle Configuration
+
+Drizzle Kit is configured via `drizzle.config.ts` to manage schema migrations and introspection.
+
+```typescript
+import type { Config } from "drizzle-kit"
+import { config } from "dotenv"
+
+config({ path: ".env.local" })
+
+export default {
+  schema: "./src/lib/db/schema.ts",
+  out: "./drizzle",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL!,
+  },
+} satisfies Config
+```
+
+This configuration points Drizzle Kit to the schema definition file (`src/lib/db/schema.ts`), specifies the output directory for migrations (`./drizzle`), and confirms the `postgresql` dialect, using `DATABASE_URL` for credentials.
+
+## Why this shape
+
+The database design prioritizes a clear, relational model managed by Drizzle ORM for type safety and a SQL-like query experience within TypeScript. Supabase Postgres provides a robust, managed database solution.
+
+The consistent use of `onDelete: "cascade"` for foreign keys simplifies data management and directly supports data privacy requirements, such as the "right to be forgotten" (LGPD), by ensuring that deleting a `professional` record automatically cleans up all associated data.
+
+Notably, the design avoids Postgres views, computed columns, triggers, or Row Level Security (RLS) policies. All derived data (e.g., revenue calculations, next available slots, unread notification counts) and access control logic are implemented in application code, primarily within Drizzle queries in API routes or server components. This approach centralizes business logic within the application layer, simplifying database maintenance and allowing for greater flexibility in application-specific optimizations and testing.

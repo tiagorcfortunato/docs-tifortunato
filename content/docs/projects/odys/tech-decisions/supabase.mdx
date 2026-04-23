@@ -1,8 +1,73 @@
 ---
-title: Supabase (Postgres + Auth)
-description: Using Supabase for Postgres and Auth in Odys.
+title: "Supabase: Postgres, Auth, Storage"
+description: "Why Supabase (Postgres + Auth + Storage)"
 ---
 
-## Coming soon
+# Supabase: Postgres, Auth, Storage
 
-This section will be filled in together.
+This page details the rationale behind selecting Supabase as the primary backend service for Odys, covering its use for managed Postgres, integrated authentication, and object storage.
+
+## Managed Postgres
+
+Supabase provides a managed PostgreSQL database instance, which simplifies database operations and maintenance. For a pre-launch solo project, the overhead of self-hosting a PostgreSQL instance was deemed impractical. The choice of Supabase ensures a robust, scalable database without requiring dedicated DevOps resources.
+
+## Integrated Authentication
+
+A key advantage of Supabase is its integrated authentication system. This includes features such as email verification, password reset flows, and OAuth providers, all available out-of-the-box. The `@supabase/ssr` package, visible in `package.json`, facilitates seamless integration with Next.js, handling HttpOnly cookies for secure session management.
+
+Server-side Supabase client creation, as shown in `src/lib/supabase/server.ts`, ensures that authentication tokens are securely managed within server components and API routes:
+
+```typescript
+import { createServerClient } from "@supabase/ssr"
+import { cookies } from "next/headers"
+
+export async function createClient() {
+  const cookieStore = await cookies()
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll()
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            )
+          } catch {}
+        },
+      },
+    }
+  )
+}
+```
+
+Similarly, `src/lib/supabase/client.ts` demonstrates the client-side setup for browser interactions:
+
+```typescript
+import { createBrowserClient } from "@supabase/ssr"
+
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+}
+```
+
+Both clients utilize `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` environment variables for configuration.
+
+## Object Storage
+
+Supabase also offers an integrated object storage solution, which is used for managing files and assets within the application. This consolidates storage needs within the same platform as the database and authentication, streamlining infrastructure management.
+
+## Why this shape
+
+The decision to use Supabase was driven by the need for a comprehensive, managed backend solution that minimizes operational overhead for a pre-launch project. Its combination of managed Postgres, built-in authentication, and object storage provides a cohesive platform that accelerates development and reduces the complexity of integrating disparate services. The `@supabase/ssr` library specifically provides significant value by simplifying secure authentication flows within a Next.js App Router environment.
+
+## Known gaps
+
+While Supabase offers a strong integrated solution, alternatives like Neon provide advantages in specific areas. Neon is known for better cold-start performance and database branching capabilities. However, Neon does not include built-in authentication or object storage, which would necessitate integrating and managing additional services. The trade-off was made to prioritize the integrated auth and storage features of Supabase over Neon's performance benefits for the database layer alone.

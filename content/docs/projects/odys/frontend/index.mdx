@@ -1,8 +1,22 @@
 ---
-title: Frontend Overview
-description: Overview of the Odys frontend.
+title: "Frontend Overview"
+description: "Frontend overview: Next.js 16 App Router, RSC patterns, Tailwind + shadcn"
 ---
 
-## Coming soon
+# Frontend Overview
+This page covers the frontend of the Odys application, specifically the Next.js 16 App Router, RSC patterns, and the use of Tailwind and shadcn.
 
-This section will be filled in together.
+## App Router Structure
+The App Router is used to handle client-side routing. The `src/app` directory contains the App Router configuration, with route groups for authentication and other features. Notably, there is **no `middleware.ts`** file, as every route that needs authentication calls `supabase.auth.getUser()` itself via `getUser()` and `getProfessional(userId)` in `src/lib/api.ts`.
+
+## RSC Patterns
+The application uses React Server Components (RSC) patterns to handle server-side rendering. The `src/app/layout.tsx` file defines the root layout component, which includes the `PostHogProvider` and `CookieBanner` components.
+
+## Tailwind and shadcn
+The application uses Tailwind CSS for styling, with the `tailwind.config.js` file configuring the Tailwind setup. The `shadcn` library is also used for additional styling features. The `src/app/layout.tsx` file imports the `Plus_Jakarta_Sans` and `Montserrat` fonts from Google Fonts.
+
+## Known Gaps
+One known gap in the current implementation is the lack of a centralized authentication middleware, which puts the burden on every new route author to handle authentication explicitly. This is flagged as a potential security concern.
+
+## Why this Shape
+The App Router structure and RSC patterns were chosen to provide a flexible and scalable frontend architecture. The use of Tailwind and shadcn provides a consistent and customizable styling solution. The design intent is to provide a fast and seamless user experience, with a focus on server-side rendering and authentication.

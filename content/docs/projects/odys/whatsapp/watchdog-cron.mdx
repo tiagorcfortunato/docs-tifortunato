@@ -1,8 +1,45 @@
 ---
-title: Watchdog Cron
-description: Watchdog cron job for the WhatsApp integration.
+title: WhatsApp Watchdog Cron
+description: Daily health-check cron for Evolution API
 ---
 
-## Coming soon
+# WhatsApp Watchdog Cron
 
-This section will be filled in together.
+This page details the daily cron job responsible for performing a health check on the Evolution API, specifically covering its scheduling and security mechanisms.
+
+## Scheduling
+
+The WhatsApp watchdog cron job is scheduled using Vercel Cron, as defined in `vercel.json`. It is configured to run daily at 09:00 UTC.
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-watchdog",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}
+```
+
+The `path` `/api/cron/whatsapp-watchdog` corresponds to the API route that executes the health check logic.
+
+## Purpose and Handler
+
+The primary purpose of this cron job is to perform a daily health check on the Evolution API, which is deployed independently to Railway. The specific implementation details of the health check logic within the `/api/cron/whatsapp-watchdog` handler are not available in the provided code context.
+
+## Security
+
+Access to the cron handler is protected by a shared secret mechanism. The handler expects either an `x-cron-secret` header or an `Authorization: Bearer <CRON_SECRET>` header. The value provided in these headers is compared against a configured `CRON_SECRET` environment variable.
+
+## Known Gaps
+
+The comparison of the incoming cron secret with the stored `CRON_SECRET` uses a plain `===` operator. This is a known vulnerability (M1) as it is not timing-safe, potentially allowing an attacker to infer the secret through timing side-channels. A timing-safe comparison function should be implemented to mitigate this risk.
+
+## Why this shape
+
+Implementing a dedicated daily watchdog cron for the Evolution API serves as a proactive monitoring mechanism. Given that the Evolution API is an external, separately deployed service, a scheduled health check ensures its operational status is regularly verified, providing early detection of potential issues without relying solely on user-reported problems.

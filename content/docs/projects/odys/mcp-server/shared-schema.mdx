@@ -1,8 +1,48 @@
 ---
 title: Shared Drizzle Schema
-description: Shared Drizzle schema between app and MCP server.
+description: Shared Drizzle schema via relative import, tsconfig exclude
 ---
 
-## Coming soon
+# Shared Drizzle Schema
 
-This section will be filled in together.
+This page details how the Model Context Protocol (MCP) server shares the Drizzle database schema with the main application. It covers the use of relative imports for schema definition and the TypeScript configuration that enables this sharing while maintaining independent build processes.
+
+## Schema Sharing Mechanism
+
+The MCP server, located in the `mcp-server/` subdirectory, directly imports the Drizzle schema definition from the main application's codebase. This is achieved via a relative import in `mcp-server/src/db.ts`:
+
+```typescript
+import * as schema from "../../src/lib/db/schema.js"
+```
+
+This approach ensures that the MCP server uses the exact same schema definition as the main application, preventing schema drift and maintaining a single source of truth for database structure. The `mcp-server/src/db.ts` file then initializes Drizzle with this shared schema:
+
+```typescript
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+// ...
+const client = postgres(DATABASE_URL, { prepare: false })
+export const db = drizzle(client, { schema })
+export { schema }
+```
+
+Environment variables, specifically `DATABASE_URL`, are loaded using `dotenv` from the repository root's `.env.local` and `.env` files to ensure the MCP server connects to the correct database instance. A missing `DATABASE_URL` results in a critical error and process exit, as seen in `mcp-server/src/db.ts:14`.
+
+## TypeScript Configuration
+
+To facilitate this shared schema while treating `mcp-server/` as a distinct sub-project, specific TypeScript configurations are in place. The `mcp-server/tsconfig.json` file explicitly includes the shared schema path:
+
+```json
+{
+  "compilerOptions": {
+    // ...
+  },
+  "include": ["src/**/*", "../src/lib/db/schema.ts", "tsup.config.ts"]
+}
+```
+
+This `include` directive allows the MCP server's TypeScript compiler to correctly resolve types from `src/lib/db/schema.ts`. Concurrently, the main application's build system is configured to exclude the `mcp-server` directory, preventing redundant compilation and ensuring that the two projects can be built and deployed independently.
+
+## Why this shape
+
+This architecture was chosen to provide a robust and maintainable way for the MCP server to interact with the application's database. By directly importing the schema, we guarantee that the MCP server's database operations are always aligned with the latest schema definition, eliminating the risk of inconsistencies that could arise from duplicated or manually synchronized schema files. The `tsconfig.json` setup ensures that this sharing is managed effectively within the TypeScript ecosystem, allowing for strong type checking in both the main application and the MCP server without creating circular dependencies or build conflicts.

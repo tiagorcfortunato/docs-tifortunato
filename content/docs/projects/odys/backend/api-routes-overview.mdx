@@ -1,8 +1,19 @@
 ---
-title: API Routes Overview
-description: Odys API routes overview.
+title: "API Routes Overview"
+description: "The complete API route tree and shared helpers (getUser, responses)"
 ---
 
-## Coming soon
+# API Routes Overview
+This page covers the complete API route tree and shared helpers, including `getUser` and response helpers, used throughout the Odys API.
 
-This section will be filled in together.
+## API Route Tree
+The API tree under `src/app/api/` has one folder per resource, including `account`, `ai/chat`, `appointments/[id]`, `auth/register`, `booking`, `client-profile`, `clients/notes`, `cron/reminders`, `cron/whatsapp-watchdog`, `follows`, `messages`, `notifications`, `onboarding`, `recurring`, `reviews`, `settings`, `stripe/checkout`, `stripe/webhook`, `trial`, `upload/avatar`, and `whatsapp` (inbound webhook).
+
+## Shared Helpers
+The `src/lib/api.ts` file contains shared helpers for API routes, including response helpers, auth helpers, and utility helpers. The response helpers provide standard JSON responses with correct status codes, such as `ok`, `unauthorized`, `forbidden`, `notFound`, `badRequest`, `conflict`, and `tooManyRequests`. The auth helpers, like `getUser` and `getProfessional`, retrieve the authenticated Supabase user and professional row for a given user ID. The utility helpers, such as `getIp`, extract the client IP from the request headers for rate limiting.
+
+## Known Gaps
+There are no known gaps in the current implementation of the API route tree and shared helpers.
+
+## Why this Shape
+The API route tree is organized by resource to provide a clear and consistent structure for API endpoints. The shared helpers in `src/lib/api.ts` provide a standardized way of handling responses, authentication, and utility functions, making it easier to develop and maintain API routes. This design intent allows for a scalable and maintainable API architecture.

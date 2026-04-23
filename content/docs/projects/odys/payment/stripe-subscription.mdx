@@ -1,8 +1,67 @@
 ---
-title: Stripe Subscriptions
-description: Stripe subscription in Odys.
+title: Stripe Subscription Flow
+description: Stripe subscription flow internals
 ---
 
-## Coming soon
+# Stripe Subscription Flow
 
-This section will be filled in together.
+This page details the internal mechanisms for managing professional subscriptions to Odys via Stripe. It covers how subscription plans are defined, the process for initiating a Stripe checkout session, and the high-level approach to handling Stripe webhooks for subscription lifecycle events.
+
+## Subscription Model
+
+The Stripe integration is designed exclusively for professionals to subscribe to Odys's Basic, Pro, or Premium plans. It is not used for client-to-professional payments, which are handled off-Stripe, typically via PIX, and tracked internally using the `appointments.paymentStatus` column. This design ensures Odys remains out of PCI scope for client transactions.
+
+## Plan Definitions
+
+Subscription plans are defined in `src/lib/stripe/plans.ts`. This file exports two key structures:
+
+*   `PLAN_FEATURES`: An ordered list of all available features, used for rendering plan comparison tables. Each feature has a `label` and an optional `comingSoon` flag.
+*   `PLANS`: An object mapping plan keys (`free`, `basic`, `pro`, `premium`) to their detailed configurations. Each plan includes:
+    *   `label`: Display name.
+    *   `price`: Monthly price in Brazilian Reals.
+    *   `priceId`: The corresponding Stripe Price ID, retrieved from environment variables like `process.env.STRIPE_BASIC_PRICE_ID`. The `free` plan has a `null` `priceId`.
+    *   `note`: A descriptive note, primarily for the `free` plan's limits.
+    *   `limits`: An object specifying resource limits (e.g., `clients`, `appointmentsPerMonth`). Paid plans typically have `Infinity` for these limits.
+    *   `features`: A list of features included in the plan, referencing `PLAN_FEATURES`.
+
+The `src/lib/stripe/index.ts` file initializes the Stripe client using `process.env.STRIPE_SECRET_KEY` and re-exports the plan data for server-side usage.
+
+## Checkout Session Creation
+
+The `/api/stripe/checkout/route.ts` endpoint handles the creation of Stripe checkout sessions. This `POST` handler performs the following steps:
+
+1.  **Authentication**: Verifies the user's session using Supabase. If no authenticated user is found, it returns a `401` error.
+2.  **Plan Validation**: Receives the requested `plan` key from the request body. It validates that the `plan` is a recognized paid plan (not `free`).
+3.  **Professional Lookup**: Retrieves the `professional` record from the database using the authenticated user's ID. A `404` is returned if the professional is not found.
+4.  **Trial Handling**: If the requested plan is `pro` and the professional is still within their trial period (determined by `trialDaysLeft(professional.trialEndsAt)`), the `trial_end` parameter is set for the Stripe session. This defers payment collection until the trial ends.
+5.  **Stripe Session Creation**: Calls `stripe.checkout.sessions.create` with the following key parameters:
+    *   `mode: "subscription"`: Specifies a recurring subscription.
+    *   `payment_method_types: ["card"]`: Limits payment methods to cards.
+    *   `line_items`: Includes the selected plan's `priceId` and `quantity: 1`.
+    *   `success_url` and `cancel_url`: Redirect URLs after checkout completion or cancellation.
+    *   `metadata`: Crucially, `professionalId` and `plan` are included here. This metadata is passed to Stripe and will be available in webhook events, allowing the system to identify the professional and plan without needing to query the database by Stripe customer ID during initial checkout.
+    *   `customer_email`: Populated with the user's email for Stripe.
+    *   `locale: "pt-BR"`: Sets the Stripe checkout page language to Brazilian Portuguese.
+    *   `subscription_data`: Conditionally includes `trial_end` if a trial is active.
+    *   `payment_method_collection`: Set to `if_required` during a trial, otherwise `always`.
+6.  **Response**: Returns the `session.url` to the client, which then redirects the user to the Stripe-hosted checkout page.
+
+## Webhook Event Handling
+
+While the webhook handler itself is not provided in the current code, the deep-dive specifies its intended behavior. Stripe webhooks are crucial for reacting to subscription lifecycle events. The handler is expected to:
+
+1.  **Verify Signature**: Use `req.text()` to get the raw request body and `stripe-signature` header to verify the event's authenticity using `constructEvent(body, sig, STRIPE_WEBHOOK_SECRET)`. Invalid signatures result in a `400` response.
+2.  **Process Events**: On successful verification, it dispatches logic based on event types:
+    *   `checkout.session.completed`: Triggered upon initial successful payment, activating the professional's paid plan.
+    *   `customer.subscription.updated`: Handles changes to a subscription, such as plan upgrades or downgrades initiated via the Stripe customer portal.
+    *   `customer.subscription.deleted`: Processes subscription cancellations, reverting the professional's plan to `free`.
+
+Updates to the database, such as changing a professional's plan, are designed to be idempotent at the shape level (e.g., `UPDATE ... SET plan = ? WHERE ...`).
+
+## Known Gaps
+
+Idempotency for webhook events is currently structural (relying on `UPDATE ... SET plan = ? WHERE ...`) rather than explicit via an `idempotency_keys` table. While this approach is generally robust for plan updates, it could lead to issues if a non-idempotent operation were introduced or if a specific event needed explicit deduplication beyond the inherent idempotency of the update statement.
+
+## Why this shape
+
+The decision to use Stripe-hosted checkout sessions, rather than an embedded solution, was made to avoid PCI compliance scope for Odys. This simplifies security posture and reduces implementation friction, allowing Stripe to handle sensitive card data directly. Including `professionalId` and `plan` in the `metadata` of the checkout session streamlines webhook processing by providing immediate context without requiring additional database lookups based on Stripe customer IDs during the initial subscription flow.

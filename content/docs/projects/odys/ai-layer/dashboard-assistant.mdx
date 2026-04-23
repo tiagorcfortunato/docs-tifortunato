@@ -1,8 +1,46 @@
 ---
 title: Dashboard AI Assistant
-description: AI assistant inside the Odys dashboard.
+description: In-dashboard AI chat
 ---
 
-## Coming soon
+# Dashboard AI Assistant
 
-This section will be filled in together.
+This page details the implementation of the in-dashboard AI chat assistant, covering its API endpoint, integration with the Groq SDK, and the data retrieval tools it utilizes.
+
+## API Endpoint
+
+The core logic for the AI assistant resides in the API route `src/app/api/ai/chat/route.ts`. This endpoint handles user queries, orchestrates calls to the Groq API, and executes data retrieval functions based on the AI's tool choices.
+
+### Authentication and Authorization
+
+Access to the AI assistant is gated by user authentication and feature entitlement:
+*   User authentication is performed using `getUser()` and `getProfessional()` from `src/lib/api.ts`. These functions retrieve the current user and their associated professional profile.
+*   Feature access is checked via `canUseFeature()` from `src/lib/plan-guard.ts`, ensuring that only users with the appropriate subscription plan can utilize the assistant. Unauthorized or forbidden requests are handled by specific response utilities from `src/lib/api.ts`.
+
+### AI Model and Prompting
+
+The assistant leverages the Groq SDK, initialized with `process.env.GROQ_API_KEY`. A `SYSTEM_PROMPT` defines the AI's persona as the Odys assistant, instructing it to respond in Portuguese, use tools for data retrieval, and format financial values in BRL. Specific formatting rules are provided for "no-show rate" and "monthly summary" responses.
+
+### AI Tools and Data Retrieval
+
+The AI is equipped with a set of `TOOLS` that allow it to interact with the application's database to fetch relevant information. Each tool corresponds to an asynchronous function within `src/app/api/ai/chat/route.ts` that performs Drizzle ORM queries against the `appointments` and `clients` tables defined in `src/lib/db/schema.ts`, using the `db` client from `src/lib/db/index.ts`. Date manipulations are handled by `date-fns`.
+
+The available tools are:
+
+*   **`get_stats`**:
+    *   **Description**: Returns statistics for the last 6 months, including global summaries (total appointments, no-shows, rate, revenue) and a month-by-month breakdown.
+    *   **Implementation**: The `getStats()` function queries all appointments for the last six months, then processes them to calculate completed appointments, no-shows, cancellation rates, and estimated revenue based on a `sessionPrice`.
+*   **`get_upcoming`**:
+    *   **Description**: Returns appointments scheduled for the next 7 days, including client name, date, and time.
+    *   **Implementation**: The `getUpcoming()` function queries appointments that start within the next seven days, joining with the `clients` table to retrieve client names. Results are ordered by `startsAt`.
+*   **`get_no_show_clients`**:
+    *   **Description**: Ranks clients by the number of no-shows over the last 6 months, including total sessions and individual no-show rates.
+    *   **Implementation**: The `getNoShowClients()` function aggregates appointment data for each client over the last six months, counting total appointments and no-shows.
+
+## Known Gaps
+
+The current implementation of authentication for API routes, including `src/app/api/ai/chat/route.ts`, relies on explicit calls to `getUser()` and `getProfessional()` within each route handler. This approach, while explicit, places the burden of authentication on every new route author. A more centralized authentication mechanism, such as a `middleware.ts` file, could reduce boilerplate and potential for oversight, as flagged by security audits.
+
+## Why this shape
+
+The design of the Dashboard AI Assistant prioritizes a direct, tool-augmented approach to AI interaction. By defining specific tools that map directly to database queries, the system ensures that the AI's responses are factual and verifiable, preventing hallucination of data. The use of the Groq SDK was chosen for its performance characteristics in generating tool calls and responses. Integrating authentication and authorization at the API route level ensures that access control is applied consistently to all AI-driven data requests, aligning with the explicit security model used across the application's API layer.

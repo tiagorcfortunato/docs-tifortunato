@@ -1,8 +1,25 @@
 ---
-title: Auth & Register
-description: Odys authentication and registration.
+title: "Auth + Register Endpoints, Smart-Linking, C1 Fix"
+description: "Auth + register endpoints, smart-linking, C1 fix"
 ---
 
-## Coming soon
+# Auth + Register Endpoints, Smart-Linking, C1 Fix
+This page covers the authentication and registration endpoints, including smart-linking and the C1 fix. It explains how the `POST /auth/register` and `GET /auth/callback` endpoints work, including the rate limiting and user creation logic.
 
-This section will be filled in together.
+## Register Endpoint
+The `POST /auth/register` endpoint is defined in `src/app/api/auth/register/route.ts`. It handles user registration, including rate limiting and user creation. The endpoint expects the `email`, `password`, `name`, and `type` fields in the request body. If the request is successful, it returns a JSON response with the `success` and `type` fields.
+
+The rate limiting is implemented using the `getRegisterLimiter` function from `src/lib/ratelimit.ts`, which limits the number of registration attempts from a single IP address. If the rate limit is exceeded, the endpoint returns a `429` error response.
+
+## Callback Endpoint
+The `GET /auth/callback` endpoint is defined in `src/app/auth/callback/route.ts`. It handles the callback from the authentication provider, including exchanging the authorization code for a session and updating the user metadata. The endpoint expects the `code` and `type` query parameters.
+
+If the `type` parameter is set to `"recovery"`, the endpoint redirects the user to the password reset page. If the `type` parameter is set to `"professional"` or `"client"`, the endpoint updates the user metadata with the corresponding type.
+
+The endpoint also implements smart-linking, which links the user to existing clients with the same email address. This is done by updating the `userId` field in the `clients` table using the `db.update` function from `src/lib/db/schema.ts`.
+
+## Known Gaps
+One known gap in the current implementation is that the `admin.createUser` method is used in development mode to create users with email confirmation, but this method does not send a confirmation email. This means that users created in development mode will not receive a confirmation email, which could lead to issues if the user tries to log in before confirming their email address.
+
+## Why This Shape
+The authentication and registration endpoints are designed to work together to provide a seamless user experience. The `POST /auth/register` endpoint handles user registration, while the `GET /auth/callback` endpoint handles the callback from the authentication provider. The smart-linking feature is implemented in the `GET /auth/callback` endpoint to link users to existing clients with the same email address. This design allows for a flexible and scalable authentication system that can be easily extended to support additional authentication providers and features.

@@ -1,8 +1,95 @@
 ---
-title: Open Backlog
+title: Open Security Backlog
 description: Open security backlog for Odys.
 ---
 
-## Coming soon
+# Open Security Backlog
 
-This section will be filled in together.
+This page details the current open security findings and known architectural gaps identified during the point-in-time security audit on 2026-04-14. The audit focused on a defense-in-depth approach, meaning some findings may not be independently exploitable but collectively reduce the system's security margin.
+
+## Critical Findings
+
+### C1: Account Takeover via Auto-Confirmed Registration + Email Smart-Linking (Fixed)
+
+**Description:** The `/api/auth/register` route previously called `adminClient.auth.admin.createUser({ email_confirm: true })` unconditionally, bypassing email verification. This, combined with a smart-linking query that attached pre-existing `clients` rows to a new `user.id` based on email match, created an account takeover vulnerability. An attacker could register with a victim's email and inherit their client history across professionals.
+
+**Status:** Fixed in commits `441caff` and `b47b4a8`. The register route now uses `supabase.auth.signUp()` in production, which triggers a verification email. The admin path is restricted to development environments. Smart-linking logic was moved inside the `/auth/callback` route, ensuring it only executes after `exchangeCodeForSession` has verified the user's inbox.
+
+## High Findings
+
+### H1: Stored XSS via Avatar Upload (Open)
+
+**Description:** The avatar upload route trusts the client-supplied `Content-Type` header and does not perform magic byte validation. This allows an attacker to upload an SVG file containing embedded `<script>` tags, leading to a stored Cross-Site Scripting (XSS) vulnerability.
+
+**Proposed Fix:** Implement server-side content sniffing using a library like `file-type`. Whitelist allowed image formats (e.g., JPEG, PNG, WebP) and explicitly reject SVG files. Re-encode uploaded images through `sharp` and set the `Content-Type` header based on the sniffed type, not the client-supplied one.
+
+### H2: Mass Assignment on `/api/settings` (Partially Mitigated, Zod Validation Open)
+
+**Description:** While the `/api/settings` route currently enumerates fields manually (e.g., `name`, `phone`, `bio`, `sessionDuration`, `sessionPrice`) rather than spreading the request body, preventing direct mass assignment of sensitive fields like `plan` or `trialEndsAt`, the route lacks comprehensive Zod shape validation. This absence means that fields like `sessionPrice` could potentially accept negative values or `sessionDuration` could accept non-numeric strings, leading to data integrity issues or unexpected application behavior.
+
+**Status:** Partially mitigated by explicit field enumeration. Full Zod validation for input shapes remains an open task.
+
+### H3: `/api/booking` GET Leaks Professional PII (Open)
+
+**Description:** The GET handler for the `/api/booking` route returns the full `professionals` row, including sensitive Personally Identifiable Information (PII) such as `email`, `phone`, `stripeCustomerId`, and `stripeSubscriptionId`. This allows any authenticated user to scrape private contact and billing information for all professionals.
+
+**Proposed Fix:** Implement a `toPublicProfessionalDTO()` helper function at the route boundary to filter and return only publicly releasable professional data.
+
+### H4: Unauthenticated Booking Endpoint Enables Spam and Slot-Griefing (Open)
+
+**Description:** The POST `/api/booking` endpoint is currently protected only by an IP-based rate limit (5 requests per 10 minutes). It lacks a per-professional booking cap or a CAPTCHA mechanism. This vulnerability allows a determined attacker, potentially using a proxy farm, to fill a professional's schedule with `pending_confirmation` bookings, leading to spam and slot-griefing.
+
+**Proposed Fix:** Integrate Cloudflare Turnstile or a similar CAPTCHA solution. Implement a daily booking cap per professional slug to limit the number of `pending_confirmation` bookings an unauthenticated user can create.
+
+## Medium Findings
+
+### M1: `CRON_SECRET` Comparison (Open)
+
+**Description:** The `CRON_SECRET` in the `/api/cron/reminders` route is compared using `===` instead of `timingSafeEqual`. While this is generally safe for fixed-length secrets, `timingSafeEqual` is preferred to prevent timing attacks, especially if the secret length could vary or if the comparison is part of a more complex authentication flow.
+
+### M2: Booking Upsert Oracle (Open)
+
+**Description:** The booking upsert logic matches clients by phone *or* email. This behavior creates an oracle that allows an attacker to determine if a given phone number or email address is associated with a client of a specific professional, even without direct access to client data.
+
+### M3: `/api/ai/chat` Unlimited (Open)
+
+**Description:** The `/api/ai/chat` endpoint currently has no rate limiting or usage caps. This could lead to excessive resource consumption or billing costs if abused.
+
+### M4: Register Rate Limit (Fixed)
+
+**Description:** Initial lack of rate limiting on the registration endpoint.
+
+**Status:** Fixed via `getRegisterLimiter()` which enforces a limit of 5 registrations per hour.
+
+### M5: Server Action Trusts `professionalId` from React Prop (Open)
+
+**Description:** A server action trusts the `professionalId` passed from a React prop without re-verifying it on the server side against the authenticated user's session. This creates a potential authorization bypass if a malicious client manipulates the `professionalId` in the frontend.
+
+## Low Findings
+
+### L1: Routes Without Zod (Open)
+
+**Description:** Several routes, including those for settings and account deletion, lack comprehensive Zod validation for their input payloads. This can lead to unexpected data states or application errors if malformed data is submitted.
+
+### L2: Rate-Limit Keys Off Raw `x-forwarded-for` (Open)
+
+**Description:** Rate-limiting keys are derived directly from the raw `x-forwarded-for` header. While this is generally safe when deployed on Vercel, it could be vulnerable to IP spoofing or bypasses if deployed on other platforms without proper proxy configuration.
+
+### L3: No CSRF Tokens (Open)
+
+**Description:** The application does not implement explicit CSRF tokens, relying instead on the `SameSite=Lax` cookie policy provided by Supabase. While `SameSite=Lax` offers significant protection against CSRF, explicit tokens provide an additional layer of defense, particularly for sensitive state-changing operations.
+
+### L4: `/api/messages` Doesn't Validate `type` Enum (Open)
+
+**Description:** The `/api/messages` endpoint does not validate the `type` enum for incoming messages. This could allow invalid message types to be stored or processed, leading to data inconsistencies or application errors.
+
+### L5: Booking GET Leaks Full Booked-Slot Schedule (Open)
+
+**Description:** The GET endpoint for booking information leaks the full booked-slot schedule, potentially revealing a professional's availability patterns or client density to unauthorized parties.
+
+## Known Gaps
+
+This section highlights architectural and development process gaps that, while not direct security vulnerabilities, represent areas of increased risk or technical debt.
+
+*   **No RLS Policies in Postgres:** All authorization logic is currently implemented at the application level through `professional.userId === user.id` checks scattered across the API routes. The absence of Row-Level Security (RLS) policies in Postgres means that every missed application-level check is a potential data leak. The security study explicitly flags this as a Phase-2 priority.
+*   **No Test Suite for the Main App:** The main application lacks a comprehensive test suite. CI currently only runs type checking, linting, and build steps. While the MCP server has Vitest coverage for specific utilities (phone, timezone, write-tool schema), the core application's business logic and authorization flows are not covered by automated tests, increasing the risk of regressions and undetected vulnerabilities.

@@ -1,8 +1,54 @@
 ---
 title: Observability Overview
-description: Overview of Odys observability.
+description: "Observability overview: Sentry 3-runtime + PostHog"
 ---
 
-## Coming soon
+# Observability Overview
 
-This section will be filled in together.
+This page details the observability setup, covering error tracking and performance monitoring with Sentry across three runtimes, and product analytics with PostHog for client-side user behavior.
+
+## Sentry Error Tracking and Performance Monitoring
+
+Odys utilizes Sentry for comprehensive error tracking, performance monitoring, and session replay. The setup involves three distinct Sentry SDK instances tailored for different Next.js runtimes: Node.js, Edge, and Browser.
+
+The `src/instrumentation.ts` file, Next.js's official instrumentation hook, dynamically imports the appropriate Sentry configuration based on the `NEXT_RUNTIME` environment variable.
+*   For the Node.js runtime, `sentry.server.config.ts` is imported.
+*   For the Edge runtime, `sentry.edge.config.ts` is imported.
+
+Both server-side configurations initialize Sentry with `tracesSampleRate: 1` (100% sampling), `enableLogs: true`, and `sendDefaultPii: true`. The `onRequestError` export from `src/instrumentation.ts` ensures that request errors are captured by Sentry.
+
+Client-side Sentry initialization is handled by `src/instrumentation-client.ts`. This configuration includes:
+*   `Sentry.replayIntegration()` for session replay, configured with `replaysSessionSampleRate: 0.1` (10% of sessions) and `replaysOnErrorSampleRate: 1.0` (100% of sessions with errors).
+*   A `beforeSend` hook that filters out common browser extension noise ("Object Not Found Matching") and empty promise rejections ("Non-Error promise rejection captured") to reduce irrelevant events.
+*   `tracesSampleRate: 1`, `enableLogs: true`, and `sendDefaultPii: true`, mirroring the server-side settings.
+The `onRouterTransitionStart` export from `src/instrumentation-client.ts` captures router transition events.
+
+For global error handling in the App Router, `src/app/global-error.tsx` captures exceptions using `Sentry.captureException(error)` within a `useEffect` hook, then renders Next.js's default error page. Source maps are uploaded during CI via `withSentryConfig` in `next.config.ts`, configured with `widenClientFileUpload: true` and uploaded under the `odys-hx` organization. Browser beacons are routed through a `tunnelRoute: "/monitoring"` rewrite to mitigate ad-blocker interference.
+
+## PostHog Product Analytics
+
+PostHog is integrated for client-side product analytics and event tracking. Its initialization is gated by user cookie consent to ensure privacy compliance.
+
+The `src/components/posthog-provider.tsx` component manages PostHog's lifecycle:
+*   It checks `localStorage` for an existing `odys_cookie_consent` key set to `"accepted"`. If present, PostHog is initialized immediately.
+*   It listens for a custom `odys:cookie-accepted` event dispatched by the `CookieBanner` component. Upon this event, `posthog.init()` is called.
+*   PostHog is initialized with `capture_pageview: false` to prevent double-firing of pageview events due to Next.js App Router behavior.
+*   Persistence is configured as `"localStorage+cookie"`.
+
+A nested `PageViewTracker` component within `src/components/posthog-provider.tsx` manually captures `$pageview` events using `posthog.capture()` whenever the `pathname` or `searchParams` change, ensuring accurate pageview tracking.
+
+User identification is handled by `posthog-identify.tsx` (not provided in `CURRENT CODE`), which calls `posthog.identify(userId)` within the authenticated dashboard layout. While the provider is wired for feature flags, no `posthog.isFeatureEnabled(...)` calls are currently present in the codebase, indicating this functionality is not yet actively used. The booking widget does utilize `posthog.capture(...)` at various submission milestones to track user interactions.
+
+## Other Logging
+
+Beyond Sentry, standard `console.error` and `console.warn` calls are used throughout the codebase, often prefixed with tags like `[BOOKING POST]` or `[STRIPE WEBHOOK]` for easier identification in Vercel runtime logs. The `serverError(context, err)` function (exported from `src/lib/api.ts`, not provided in `CURRENT CODE`) logs internal errors and returns a generic 500 response, preventing sensitive error details from leaking to clients. A dedicated structured logger (e.g., Pino, Winston) is not currently in use.
+
+## Known Gaps
+
+*   **Sentry Tracing Sample Rate**: The `tracesSampleRate: 1` (100%) for all Sentry SDKs is suitable for pre-launch and development, but will need to be reduced in production environments to manage data volume and Sentry costs.
+*   **Structured Logging**: The current logging relies on tagged `console.error`/`console.warn` output. A dedicated structured logging solution (e.g., Pino, Winston) is not yet implemented, which could improve log analysis and querying capabilities.
+*   **PostHog Feature Flags**: While PostHog is integrated and configured, its feature flag capabilities are not actively utilized in the current codebase, limiting dynamic feature rollout and A/B testing.
+
+## Why this shape
+
+The current observability shape leverages Sentry for robust error tracking, performance monitoring, and session replay across all application runtimes (Node.js, Edge, Browser), providing a holistic view of application health and user experience issues. PostHog is specifically chosen for client-side product analytics, focusing on user behavior, event tracking, and future feature flag management, ensuring a clear separation of concerns between system health and user engagement metrics. The cookie consent gate for PostHog reflects a privacy-first approach to analytics. This dual-tool strategy provides specialized capabilities for different aspects of observability without unnecessary overlap.

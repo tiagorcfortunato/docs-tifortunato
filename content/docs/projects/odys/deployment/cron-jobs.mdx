@@ -1,8 +1,52 @@
 ---
 title: Vercel Cron Jobs
-description: Vercel Cron Jobs in Odys.
+description: "Vercel Cron: 2 schedules, shared-secret auth"
 ---
 
-## Coming soon
+# Vercel Cron Jobs
 
-This section will be filled in together.
+This page details the configuration and implementation of cron jobs within the application, leveraging Vercel Cron for scheduled tasks. It covers the defined schedules and the shared-secret authorization mechanism used to secure these endpoints.
+
+## Schedules
+
+The application uses Vercel Cron for scheduled tasks, with two distinct schedules defined in `vercel.json`. These schedules trigger specific API routes at predetermined times.
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-watchdog",
+      "schedule": "0 9 * * *"
+    }
+  ]
+}
+```
+
+The `/api/cron/reminders` endpoint is scheduled to run daily at 08:00 UTC, and the `/api/cron/whatsapp-watchdog` endpoint is scheduled for 09:00 UTC.
+
+## Reminder Cron Job
+
+The primary cron job is implemented in `src/app/api/cron/reminders/route.ts`. This job is responsible for two main functions:
+
+1.  **Appointment Reminders**: It sends WhatsApp reminders for confirmed appointments. This includes 24-hour and 1-hour reminders, gated by the `canUseFeature` function to ensure the professional's plan supports reminders. Reminders are deferred if the client is actively engaged in an AI conversation, as determined by `isClientActive`.
+2.  **Trial Expiration Emails**: It sends email notifications to professionals whose trials are expiring, specifically 3 days and 1 day before the trial ends.
+
+### Authorization
+
+Access to the `/api/cron/reminders` endpoint is secured using a shared secret. The `isAuthorized` function in `src/app/api/cron/reminders/route.ts` checks for the presence of `process.env.CRON_SECRET` and validates it against either the `x-cron-secret` header or an `Authorization: Bearer <CRON_SECRET>` header in the incoming request. If the secret does not match, the request is rejected with a `401 Unauthorized` status.
+
+## WhatsApp Watchdog Cron Job
+
+The `vercel.json` configuration also defines a cron job for `/api/cron/whatsapp-watchdog`, scheduled to run daily at 09:00 UTC. The implementation details for this endpoint are not available in the provided code.
+
+## Known Gaps
+
+The authorization check in `src/app/api/cron/reminders/route.ts` uses a plain `===` comparison for the `CRON_SECRET`. This is not a timing-safe comparison, which could theoretically be vulnerable to timing attacks. An audit flagged this as M1, and it remains an open item.
+
+## Why this shape
+
+Vercel Cron was chosen for its seamless integration with the Vercel deployment pipeline, simplifying the setup and management of scheduled tasks without requiring external services. The shared-secret authentication provides a straightforward and effective method for securing these internal cron endpoints, suitable for the current stage of development.

@@ -1,8 +1,105 @@
 ---
-title: Schema (10 tables)
-description: Odys database schema.
+title: Database Schema
+description: The 10 tables in detail
 ---
 
-## Coming soon
+# Database Schema
 
-This section will be filled in together.
+This page details the ten core tables that constitute the Odys database schema, as defined in `src/lib/db/schema.ts`. All tables utilize UUIDs for primary keys, generated with `defaultRandom()`, ensuring unguessable identifiers. Timestamps are managed with `defaultNow()`. Foreign key relationships are configured with `onDelete: "cascade"`, which ensures that deleting a `professionals` record automatically cleans up all associated data, supporting data privacy requirements.
+
+## Professionals
+
+The `professionals` table (`src/lib/db/schema.ts:10`) serves as the central entity in the schema. Each row represents a professional user.
+*   `userId`: A `text` column storing the Supabase authentication ID, with a unique constraint ensuring one Supabase user maps to one professional profile.
+*   `slug`: A unique `text` field used for public profile URLs.
+*   `sessionDuration` and `sessionPrice`: Define the default duration (in minutes) and price (in cents) for sessions.
+*   `plan`: Indicates the professional's subscription level (e.g., `free`, `pro`, `premium`).
+*   `trialEndsAt`: Marks the end of a Pro trial period.
+*   `stripeCustomerId` and `stripeSubscriptionId`: Store identifiers for Stripe billing.
+*   `paymentType` and `paymentPercentage`: Configure how professionals receive payments from clients (e.g., `upfront`, `percentage`).
+*   `autoConfirm`: A boolean flag indicating whether appointments are automatically confirmed.
+
+## Availability
+
+The `availability` table (`src/lib/db/schema.ts:39`) defines a professional's recurring weekly availability.
+*   `professionalId`: A foreign key referencing `professionals.id`, with `onDelete: "cascade"`.
+*   `dayOfWeek`: An integer (0-6, where 0 is Sunday) specifying the day.
+*   `startTime` and `endTime`: `text` fields storing times in `"HH:mm"` format.
+*   An index on `professionalId` (`availability_professional_id_idx`) supports efficient lookup of a professional's schedule.
+
+## Clients
+
+The `clients` table (`src/lib/db/schema.ts:51`) stores client information, scoped to a specific professional.
+*   `userId`: A nullable `text` column for the Supabase authentication ID. This allows clients to book without an account, with the `userId` being back-filled if they register later with the same email.
+*   `professionalId`: A foreign key referencing `professionals.id`, with `onDelete: "cascade"`. This design means a client's record is unique per professional they interact with.
+*   Indexes on both `professionalId` (`clients_professional_id_idx`) and `userId` (`clients_user_id_idx`) facilitate client lookups.
+
+## Client Notes
+
+The `clientNotes` table (`src/lib/db/schema.ts:66`) stores private, free-form text notes that a professional keeps on a specific client.
+*   `professionalId`: References `professionals.id`.
+*   `clientId`: References `clients.id`.
+*   `content`: The note's text.
+
+## Recurring Schedules
+
+The `recurringSchedules` table (`src/lib/db/schema.ts:77`) captures patterns for recurring appointments.
+*   `professionalId`: References `professionals.id`.
+*   `clientId`: References `clients.id`.
+*   `frequency`: Defines the recurrence pattern (e.g., `weekly`, `biweekly`, `twice_weekly`).
+*   `dayOfWeek` and `secondDayOfWeek`: Specify the days for weekly or twice-weekly schedules.
+*   `time`: The scheduled time in `"HH:mm"` format.
+*   `active`: A boolean indicating if the recurring schedule is currently active.
+
+## Appointments
+
+The `appointments` table (`src/lib/db/schema.ts:93`) is a critical table, storing individual booking instances.
+*   `professionalId`: References `professionals.id`.
+*   `clientId`: References `clients.id`.
+*   `recurringScheduleId`: A nullable foreign key referencing `recurringSchedules.id`, linking an appointment to its recurring series if applicable.
+*   `startsAt` and `endsAt`: Timestamps defining the appointment slot.
+*   `status`: A `text` field representing the appointment's lifecycle (e.g., `pending_confirmation`, `confirmed`, `rejected`, `completed`, `cancelled`, `no_show`).
+*   `paymentStatus`: A `text` field tracking payment state (e.g., `none`, `authorized`, `captured`, `refunded`).
+*   `stripePaymentIntentId`: Stores the Stripe Payment Intent ID, though this is currently unused for per-appointment charges.
+*   `reminderSent24h` and `reminderSent1h`: Boolean flags to prevent duplicate reminder notifications.
+*   Indexes on `professionalId` (`appointments_professional_id_idx`), `clientId` (`appointments_client_id_idx`), and `startsAt` (`appointments_starts_at_idx`) are crucial for query performance, including overlap checks.
+
+## Messages
+
+The `messages` table stores in-product chat communications between a professional and a client.
+*   `professionalId`: References `professionals.id`.
+*   `clientId`: References `clients.id`.
+*   `sender`: Indicates whether the message was sent by `"professional"` or `"client"`.
+*   `type`: Specifies the message content type (e.g., `"text"`, `"link"`, `"pdf"`).
+*   `readAt`: A nullable timestamp indicating when the message was read.
+*   A composite index on `(professionalId, clientId)` optimizes chat history retrieval.
+
+## Follows
+
+The `follows` table captures the social graph where clients follow professionals.
+*   `userId`: A `text` column storing the Supabase user ID of the client who is following. This is distinct from `clients.id` because a user can follow professionals they haven't booked with.
+*   `professionalId`: References `professionals.id`.
+
+## Reviews
+
+The `reviews` table stores client feedback on appointments.
+*   `appointmentId`: A foreign key referencing `appointments.id`, with a unique constraint ensuring only one review per appointment.
+*   `rating`: An integer from 1 to 5.
+*   `content`: The review text.
+
+## Notifications
+
+The `notifications` table powers the in-app bell feed for users.
+*   `recipientType`: Specifies whether the recipient is a `"professional"` or `"client"`.
+*   `recipientId`: A `text` column storing the Supabase user ID of the notification recipient.
+*   `content`: The notification message.
+*   `readAt`: A nullable timestamp indicating when the notification was read.
+*   An index on `recipientId` (`notifications_recipient_id_idx`) supports efficient retrieval of unread notifications.
+
+## Known Gaps
+
+The current schema design explicitly avoids database-level logic such as Postgres views, computed columns, triggers, or Row Level Security (RLS) policies. All derived metrics (e.g., revenue, next available slot, available-today count) are computed in application code, primarily within Drizzle queries in API routes or server components. This approach centralizes business logic in the application layer, but it places a higher burden on application developers to ensure data consistency and performance for complex queries that might otherwise benefit from database-native optimizations.
+
+## Why this shape
+
+The schema is designed to be straightforward and application-centric. The use of UUIDs for all primary keys and `onDelete: "cascade"` for foreign keys simplifies data management and ensures referential integrity, particularly for data deletion. The decision to keep all business logic within the application layer, rather than leveraging advanced database features like views or triggers, aims to reduce database complexity and make the system easier to reason about for developers primarily working with application code. This also allows for greater flexibility in how data is processed and presented, as all transformations occur at the application level.

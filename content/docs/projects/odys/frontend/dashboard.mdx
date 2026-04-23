@@ -1,8 +1,25 @@
 ---
-title: Dashboard
-description: Dashboard in the Odys frontend.
+title: "Professional Dashboard"
+description: "Professional dashboard: sidebar, sub-routes, appointment actions"
 ---
 
-## Coming soon
+# Professional Dashboard
+The professional dashboard is a key component of the Odys frontend, providing a centralized hub for professionals to manage their appointments, clients, and settings. This page covers the dashboard's sidebar, sub-routes, and appointment actions.
 
-This section will be filled in together.
+## Sidebar
+The sidebar is a crucial element of the dashboard, providing navigation to various sub-routes and features. It is implemented in `src/app/dashboard/sidebar.tsx` and includes links to clients, messages, reports, and settings. The sidebar also displays the professional's name, initials, and plan information.
+
+## Sub-routes
+The dashboard includes several sub-routes, each with its own unique functionality. These sub-routes are implemented in separate files, such as `src/app/dashboard/clients.tsx` and `src/app/dashboard/messages.tsx`. The sub-routes are accessed through the sidebar navigation.
+
+## Appointment Actions
+Appointment actions are a key feature of the dashboard, allowing professionals to manage their appointments and interact with clients. These actions are implemented in `src/app/dashboard/appointment-actions.tsx` and include confirm, reject, cancel, paid, complete, and no-show options. Each action updates the appointment status and triggers relevant notifications and updates.
+
+## Implementation
+The dashboard is implemented using a combination of React, Next.js, and Supabase. The `src/app/dashboard/layout.tsx` file provides the overall layout and structure for the dashboard, while the `src/app/dashboard/page.tsx` file handles the main dashboard content. The dashboard uses the `createClient` function from `@/lib/supabase/server` to interact with the Supabase database.
+
+## Known gaps
+One known gap in the current implementation is the lack of a clear loading indicator when the dashboard is loading data from the Supabase database. This can lead to a brief period of uncertainty for the user, as the dashboard may appear unresponsive. To address this, a loading indicator could be added to the dashboard to provide visual feedback to the user.
+
+## Why this shape
+The dashboard is designed to provide a clear and intuitive interface for professionals to manage their appointments and clients. The use of a sidebar navigation and separate sub-routes helps to organize the various features and functionality, making it easier for users to find what they need. The appointment actions are designed to be simple and easy to use, with clear labels and minimal complexity. Overall, the dashboard is shaped by the need to provide a user-friendly and efficient interface for professionals to manage their work.

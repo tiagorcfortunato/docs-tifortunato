@@ -1,8 +1,22 @@
 ---
-title: Next.js 16 App Router
-description: Next.js 16 App Router in the Odys frontend.
+title: "Next.js 16 App Router"
+description: "How App Router is used: server components, route groups, no middleware"
 ---
 
-## Coming soon
+# Next.js 16 App Router
+This page covers how App Router is used in our application, focusing on server components, route groups, and the absence of middleware.
 
-This section will be filled in together.
+## Server Components
+Our application utilizes server components to handle server-side rendering. For example, the public booking page (`/p/[slug]`) is an async Server Component that performs DB reads server-side before handing off to `BookingWidget` for interactivity. This approach allows for efficient rendering and improved user experience.
+
+## Route Groups
+Route groups are used to organize related routes and share common layouts. In our application, the `(auth)` route group contains authentication-related pages, while the dashboard and client portal have their own separate layouts with server-side auth guards. This structure helps maintain a clean and scalable routing system.
+
+## No Middleware
+Notably, our application does not use a `middleware.ts` file. Instead, every route that requires authentication calls `supabase.auth.getUser()` directly via `getUser()` and `getProfessional(userId)` in `src/lib/api.ts`. This approach, although explicit, puts the burden on every new route author and has been flagged by our security audit.
+
+## Known Gaps
+One known gap in our current implementation is the lack of a centralized authentication mechanism. The absence of a `middleware.ts` file means that each route must handle authentication individually, which can lead to inconsistencies and increased maintenance efforts.
+
+## Why this Shape
+The decision to use server components, route groups, and no middleware was driven by the need for efficient server-side rendering and a scalable routing system. By leveraging Next.js 16's App Router features, we can maintain a clean and organized codebase while providing a seamless user experience. The trade-offs, such as the explicit authentication handling, are acknowledged and will be addressed in future iterations.

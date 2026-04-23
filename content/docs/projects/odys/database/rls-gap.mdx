@@ -1,8 +1,38 @@
 ---
-title: RLS Gap (App-Layer Auth)
-description: Row-level security gap and app-layer authorization.
+title: "Database RLS Gap"
+description: "No RLS policies; app-layer authorization pattern and its trade-offs"
 ---
 
-## Coming soon
+# Database RLS Gap
 
-This section will be filled in together.
+This page details the current authorization pattern, which relies on application-layer checks rather than PostgreSQL Row-Level Security (RLS) policies. It outlines how authorization is enforced and discusses the associated trade-offs.
+
+## App-Layer Authorization Pattern
+
+The application currently implements authorization logic within API routes, primarily by verifying that a resource belongs to the authenticated user. This pattern is evident in how professional data is accessed and managed.
+
+For instance, the `src/lib/api.ts` module provides shared helpers for API routes, including authentication utilities. The `getProfessional` function retrieves a professional's record based on the authenticated Supabase user ID:
+
+```typescript
+export async function getProfessional(userId: string) {
+  const [professional] = await db
+    .select()
+    .from(professionals)
+    .where(eq(professionals.userId, userId))
+    .limit(1)
+  return professional ?? null
+}
+```
+
+After retrieving the `professional` record, subsequent API handlers (e.g., in `src/app/api/**`) are responsible for explicitly checking that the `professional.userId` matches the `user.id` obtained from `getUser()`. This ensures that a user can only access or modify data associated with their own professional profile.
+
+## Known Gaps
+
+The current app-layer authorization approach, while functional, introduces a significant trade-off:
+
+*   **Scattered Authorization Logic**: Authorization checks are distributed across various API handlers (e.g., `src/app/api/**`). This increases the risk of a missed check leading to unauthorized data access or modification. The security audit explicitly flagged this as a "Phase-2" item, noting that "Every miss is a potential leak."
+*   **No Database-Level Enforcement**: Without RLS policies, the database itself does not enforce access control. Any direct database access (e.g., via an admin tool or a compromised backend service) would bypass the application's authorization logic entirely.
+
+## Why This Shape
+
+The decision to implement authorization at the application layer, rather than via PostgreSQL RLS, reflects an iterative development approach. While RLS offers robust, database-enforced security, its implementation can add complexity early in a project's lifecycle. The current pattern allowed for faster initial development and deployment, with the understanding that a more comprehensive, database-level security layer would be a subsequent phase. The security audit confirmed this as a key area for future enhancement.
