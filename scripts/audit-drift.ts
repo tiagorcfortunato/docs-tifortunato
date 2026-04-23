@@ -55,12 +55,24 @@ Return JSON:
 }`
 
   console.log(`[audit] ${projectKey}/${pagePath}…`)
-  const raw = await callLLM(systemPrompt, userPrompt, { jsonMode: true, maxTokens: 3000 })
+  const raw = await callLLM(systemPrompt, userPrompt, { jsonMode: true, maxTokens: 8000 })
 
   try {
     const parsed = JSON.parse(raw)
     console.log(JSON.stringify(parsed, null, 2))
   } catch (err) {
+    // Emit valid JSON on stdout so downstream tooling (verify-all) can parse it as an ERROR result
+    const errorPayload = {
+      status: "ERROR",
+      findings: [
+        {
+          type: "parse_failure",
+          error: `JSON parse failed: ${(err as Error).message?.slice(0, 200)}`,
+          raw_snippet: raw.slice(0, 500),
+        },
+      ],
+    }
+    console.log(JSON.stringify(errorPayload, null, 2))
     console.error("[audit] Failed to parse JSON from model:")
     console.error(raw)
   }
