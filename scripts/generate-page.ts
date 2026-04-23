@@ -36,6 +36,9 @@ ${styleGuide}`
 Page: ${pagePath}
 Description: ${page.description}
 
+STAY STRICTLY ON TOPIC
+This page covers ONLY what the Description says. Do not cover adjacent material that belongs in other pages — for example, if the page is about "App Router", do NOT explain the database layer, auth internals, or deployment details in depth. Reference them in one sentence if relevant, but the body must stay on the page's specific topic.
+
 EXISTING DOC (replace if only "Coming soon" placeholder; integrate if has real content):
 ${existingDoc}
 
@@ -45,16 +48,15 @@ ${relevantDeepDive || "[no deep-dive sections matched — use code only]"}
 CURRENT CODE (source of truth for facts):
 ${codeSections || "[no code files mapped]"}
 
-OUTPUT
-- Full MDX content for the page, including the frontmatter block
-- Include a clear H1 matching the title
-- Use the style guide's tone and structure
-- Reference file paths / line numbers where useful
-- Include an "honest flag" or "Known gaps" section if there are genuine trade-offs in the code
-- Do NOT invent facts; if the code is missing something, say so
-- Frontmatter rules (strict YAML): wrap any \`title\` or \`description\` value that contains \`:\`, \`#\`, \`"\`, \`'\`, \`\\\`\`, \`[\`, \`]\`, \`{\`, \`}\`, \`|\`, \`>\`, or starts with a non-letter in double quotes (escape inner \`"\` as \`\\"\`). When in doubt, quote.
-- MDX rules: never write raw \`<\` followed by a digit or identifier outside a fenced code block; escape with \`\\<\` or wrap in backticks. Put multi-line code samples in fenced code blocks with a language tag.
-- Start the response with the triple-dash frontmatter; end with the last line of content. No commentary before or after.`
+OUTPUT REQUIREMENTS
+- Full MDX content starting with YAML frontmatter block (triple dashes)
+- Frontmatter MUST quote any value containing a colon, hash, or special YAML characters
+- H1 matches the title
+- Stay focused on the Description topic — this is critical
+- Reference file paths where useful, but don't pad with adjacent concerns
+- Include a "Known gaps" or honest-flag section if there are genuine trade-offs IN THIS PAGE'S SCOPE
+- Do NOT invent facts
+- Start response with the frontmatter dashes. End with the last content line. No commentary before or after.`
 
   console.log(`[generate] ${projectKey}/${pagePath}…`)
   const raw = await callGroq(systemPrompt, userPrompt, { maxTokens: 6000 })
