@@ -1,6 +1,7 @@
 import Groq from "groq-sdk"
 import { GoogleGenAI } from "@google/genai"
 import OpenAI from "openai"
+import Cerebras from "@cerebras/cerebras_cloud_sdk"
 import { config } from "dotenv"
 
 config({ path: ".env.local" })
@@ -63,6 +64,30 @@ const geminiProvider: Provider = {
   },
 }
 
+// ---------- Cerebras ----------
+const cerebras = process.env.CEREBRAS_API_KEY
+  ? new Cerebras({ apiKey: process.env.CEREBRAS_API_KEY })
+  : null
+
+const cerebrasProvider: Provider = {
+  name: "cerebras",
+  enabled: !!cerebras,
+  async call(system, user, opts) {
+    if (!cerebras) throw new Error("Cerebras not configured")
+    const resp = await cerebras.chat.completions.create({
+      model: "qwen-3-235b-a22b-instruct-2507",
+      temperature: 0,
+      max_tokens: opts.maxTokens ?? 4000,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      ...(opts.jsonMode ? { response_format: { type: "json_object" } } : {}),
+    })
+    return (resp.choices as any)?.[0]?.message?.content ?? ""
+  },
+}
+
 // ---------- OpenAI (optional) ----------
 const openai = process.env.OPENAI_API_KEY
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
@@ -88,7 +113,7 @@ const openaiProvider: Provider = {
 }
 
 // ---------- Chain with fallback ----------
-const CHAIN: Provider[] = [geminiProvider, groqProvider, openaiProvider]
+const CHAIN: Provider[] = [geminiProvider, groqProvider, cerebrasProvider, openaiProvider]
 
 function isQuotaError(err: unknown): boolean {
   const msg = (err as Error)?.message?.toLowerCase() ?? ""
