@@ -1,6 +1,6 @@
 import { loadMapping, getProject, getPage, resolveCodePath, resolveDocPath } from "./lib/mapping"
 import { readFile, readSystemPrompt } from "./lib/mdx"
-import { callGroq } from "./lib/groq"
+import { callLLM } from "./lib/llm"
 
 async function main() {
   const [, , projectKey, pagePath] = process.argv
@@ -55,7 +55,7 @@ Return JSON:
 }`
 
   console.log(`[audit] ${projectKey}/${pagePath}…`)
-  const raw = await callGroq(systemPrompt, userPrompt, { jsonMode: true, maxTokens: 3000 })
+  const raw = await callLLM(systemPrompt, userPrompt, { jsonMode: true, maxTokens: 3000 })
 
   try {
     const parsed = JSON.parse(raw)

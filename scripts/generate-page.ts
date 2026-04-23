@@ -1,6 +1,6 @@
 import { loadMapping, getProject, getPage, resolveCodePath, resolveDocPath } from "./lib/mapping"
 import { readFile, writeFile, extractDeepDiveSection, readSystemPrompt } from "./lib/mdx"
-import { callGroq } from "./lib/groq"
+import { callLLM } from "./lib/llm"
 
 async function main() {
   const [, , projectKey, pagePath] = process.argv
@@ -42,6 +42,21 @@ This page covers ONLY what the Description says. Do not cover adjacent material 
 - If the page is about the database schema, do NOT explain API routes
 - At most, reference adjacent concerns in ONE sentence with a brief pointer to where they're covered
 
+STRICT FILE REFERENCES
+Reference ONLY file paths that appear in the CURRENT CODE section below. Do NOT invent or infer files — if you want to mention a file, it must be present in CURRENT CODE. If a file you want to cite isn't provided, write your sentence without the file reference.
+
+TITLE RULES
+The frontmatter title must be SHORT (3-7 words) and extracted from the page's logical name, NOT from the Description. For example:
+- Page: "backend/auth-register.mdx" → title: "Auth & Register Endpoints"
+- Page: "backend/appointments-api.mdx" → title: "Appointments API"
+- Page: "database/schema.mdx" → title: "Database Schema"
+Never use the full Description as the title.
+
+KNOWN GAPS ARE OPTIONAL AND SCOPED
+Only include a Known Gaps section if you can point to a SPECIFIC PROBLEM IN A FILE FROM THE CURRENT CODE section that is a real trade-off FOR THIS PAGE'S TOPIC.
+Do NOT include gaps about auth, middleware, timezones, or RLS on pages whose topic is not auth / app-router / booking / database-security. Those gaps belong on their own pages.
+If no page-scoped, code-evidenced gap exists, OMIT the section entirely — no header, no bullets.
+
 EXISTING DOC (replace if only "Coming soon" placeholder; integrate if it has real content):
 ${existingDoc}
 
@@ -78,7 +93,7 @@ OUTPUT
 - NO commentary, preamble, or suffix outside the MDX content.`
 
   console.log(`[generate] ${projectKey}/${pagePath}…`)
-  const raw = await callGroq(systemPrompt, userPrompt, { maxTokens: 6000 })
+  const raw = await callLLM(systemPrompt, userPrompt, { maxTokens: 6000 })
 
   let mdx = raw.trim()
   if (mdx.startsWith("```mdx")) mdx = mdx.replace(/^```mdx\n/, "").replace(/\n```$/, "")
