@@ -1,0 +1,88 @@
+name: Sync docs from source projects
+
+on:
+  # Reusable workflow — called by a workflow in each project repo on push to main.
+  workflow_call:
+    inputs:
+      project:
+        description: "Project key (must exist in projects/<name>/config.json)"
+        required: true
+        type: string
+      source_ref:
+        description: "Ref in the source repo to sync against (defaults to main)"
+        required: false
+        type: string
+        default: "main"
+    secrets:
+      DOCS_WRITE_TOKEN:
+        description: "Fine-scoped PAT with contents:write on the docs repo"
+        required: true
+
+  # Manual trigger for ad-hoc syncs.
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Project key"
+        required: true
+        type: string
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout docs repo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout source project
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/${{ inputs.project }}
+          path: .source/${{ inputs.project }}
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 30
+
+      - name: Point config at checked-out source
+        run: |
+          node -e "
+          const fs = require('fs');
+          const path = 'projects/${{ inputs.project }}/config.json';
+          const cfg = JSON.parse(fs.readFileSync(path, 'utf8'));
+          cfg.repo_path = '\${PWD}/.source/${{ inputs.project }}';
+          fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+          "
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run docs sync (detects changes, regenerates affected pages)
+        env:
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
+        run: pnpm docs:sync ${{ inputs.project }}
+
+      - name: Open PR if docs changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
+          commit-message: "docs(${{ inputs.project }}): auto-sync from source changes"
+          branch: auto-sync/${{ inputs.project }}
+          delete-branch: true
+          title: "docs(${{ inputs.project }}): auto-sync"
+          body: |
+            Automated docs sync triggered by changes in `${{ inputs.project }}` source.
+
+            Pages were regenerated through the audit-gated pipeline.
+            Review the diff before merging — any page still labeled DRIFT
+            may need a manual pass.
+          add-paths: |
+            content/docs/projects/${{ inputs.project }}/**
+            facts/${{ inputs.project }}-facts.json
+            scripts/.docs-sync-state.json

@@ -1,8 +1,11 @@
 import { execSync } from "child_process"
 import { readFileSync, writeFileSync, existsSync } from "fs"
-import { loadMapping, getProject } from "./lib/mapping"
+import { loadMapping, getProject, getPage, resolveDocPath } from "./lib/mapping"
+import { writeFile } from "./lib/mdx"
+import { generatePage, auditPage, refinePage, Finding } from "./lib/pipeline"
 
 const STATE_FILE = "scripts/.docs-sync-state.json"
+const MAX_REFINE_ITERATIONS = 3
 
 type SyncState = Record<string, string>
 
@@ -15,15 +18,48 @@ function saveState(state: SyncState) {
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2) + "\n")
 }
 
-async function sleep(ms: number) {
-  return new Promise(r => setTimeout(r, ms))
+async function regenerateOne(project: any, pagePath: string, projectKey: string): Promise<string> {
+  const page = getPage(project, pagePath)
+  if (page.no_regen) return "skipped (no_regen)"
+
+  const docPath = resolveDocPath(project, pagePath)
+  let mdx = await generatePage(project, page, pagePath, projectKey)
+  if (!mdx.startsWith("---")) return "failed (bad output)"
+
+  let status = "UNKNOWN"
+  let findings: Finding[] = []
+  for (let i = 1; i <= MAX_REFINE_ITERATIONS; i++) {
+    let audit
+    try {
+      audit = await auditPage(project, page, pagePath, mdx)
+    } catch {
+      break
+    }
+    status = audit.status
+    findings = audit.findings
+    const actionable = findings.filter(f => f.type === "drift" || f.type === "missing")
+    if (status === "ERROR" || status === "CLEAN" || actionable.length === 0) break
+    try {
+      const refined = await refinePage(project, page, pagePath, mdx, findings)
+      if (refined.startsWith("---")) mdx = refined
+      else break
+    } catch {
+      break
+    }
+  }
+  writeFile(docPath, mdx)
+  return status === "CLEAN" ? "✓ CLEAN" : `⚠ ${status} (${findings.length} finding${findings.length === 1 ? "" : "s"})`
 }
 
 async function main() {
-  const [, , projectKey] = process.argv
+  const [, , projectKey, ...flags] = process.argv
+  const dryRun = flags.includes("--dry-run")
+  const all = flags.includes("--all")
+
   if (!projectKey) {
-    console.error("Usage: pnpm docs:sync <project>")
-    console.error("Example: pnpm docs:sync odys")
+    console.error("Usage: pnpm docs:sync <project> [--dry-run] [--all]")
+    console.error("  --dry-run   List affected pages without regenerating")
+    console.error("  --all       Regenerate all pages (ignore change detection)")
     process.exit(1)
   }
 
@@ -32,87 +68,97 @@ async function main() {
   const state = loadState()
   const lastSha = state[projectKey]
 
-  // Get changed files in the project repo since last sync
-  const gitLogCmd = lastSha
-    ? `git log ${lastSha}..HEAD --name-only --pretty=format:`
-    : `git log -n 30 --name-only --pretty=format:`
+  let affectedPages: string[]
 
-  let changedFiles: string[]
-  try {
-    const output = execSync(gitLogCmd, { cwd: project.repo_path, encoding: "utf-8" })
-    const unique = new Set(output.split("\n").map(s => s.trim()).filter(Boolean))
-    changedFiles = [...unique]
-  } catch (err) {
-    console.error(`[sync] git log failed in ${project.repo_path}: ${(err as Error).message}`)
-    console.error("[sync] If lastSha is invalid, delete it from scripts/.docs-sync-state.json and retry.")
-    process.exit(1)
-  }
+  if (all) {
+    affectedPages = Object.keys(project.pages)
+    console.log(`[sync] --all flag: ${affectedPages.length} page(s) queued`)
+  } else {
+    // Detect files changed in the source repo since last sync
+    const gitLogCmd = lastSha
+      ? `git log ${lastSha}..HEAD --name-only --pretty=format:`
+      : `git log -n 30 --name-only --pretty=format:`
 
-  console.log(`[sync] Project: ${projectKey}`)
-  console.log(`[sync] Last synced: ${lastSha?.slice(0, 8) || "never"}`)
-  console.log(`[sync] Changed files since: ${changedFiles.length}`)
+    let changedFiles: string[]
+    try {
+      const output = execSync(gitLogCmd, { cwd: project.repo_path, encoding: "utf-8" })
+      changedFiles = [...new Set(output.split("\n").map(s => s.trim()).filter(Boolean))]
+    } catch (err) {
+      console.error(`[sync] git log failed in ${project.repo_path}: ${(err as Error).message}`)
+      console.error(`[sync] Reset state: delete ${projectKey} entry from ${STATE_FILE}`)
+      process.exit(1)
+    }
 
-  if (changedFiles.length === 0) {
-    console.log(`[sync] Nothing changed. Exiting.`)
-    return
-  }
+    console.log(`[sync] Project:      ${projectKey}`)
+    console.log(`[sync] Last synced:  ${lastSha?.slice(0, 8) || "never"}`)
+    console.log(`[sync] Changed:      ${changedFiles.length} file(s)`)
 
-  // Map changed files → affected doc pages
-  const affectedPages = new Set<string>()
-  for (const [pagePath, pageConfig] of Object.entries(project.pages)) {
-    for (const codeFile of pageConfig.code_files) {
-      if (changedFiles.some(c => c === codeFile || c.startsWith(codeFile + "/"))) {
-        affectedPages.add(pagePath)
-        break
+    if (changedFiles.length === 0) {
+      console.log(`[sync] Nothing to do.`)
+      return
+    }
+
+    const affected = new Set<string>()
+    for (const [pagePath, pageConfig] of Object.entries(project.pages)) {
+      for (const codeFile of pageConfig.code_files) {
+        if (changedFiles.some(c => c === codeFile || c.startsWith(codeFile + "/"))) {
+          affected.add(pagePath)
+          break
+        }
       }
     }
+    affectedPages = [...affected]
+
+    console.log(`[sync] Affected:     ${affectedPages.length} page(s)`)
+    for (const p of affectedPages) console.log(`  - ${p}`)
   }
 
-  console.log(`[sync] Affected pages: ${affectedPages.size}`)
-  for (const p of affectedPages) console.log(`  - ${p}`)
-
-  if (affectedPages.size === 0) {
-    console.log(`[sync] No mapped pages affected by these changes.`)
-    // Still update state so we don't re-scan these commits
-    const currentSha = execSync("git rev-parse HEAD", { cwd: project.repo_path, encoding: "utf-8" }).trim()
-    state[projectKey] = currentSha
+  if (affectedPages.length === 0) {
+    console.log(`[sync] No mapped pages touched. Marking sync point.`)
+    state[projectKey] = execSync("git rev-parse HEAD", { cwd: project.repo_path, encoding: "utf-8" }).trim()
     saveState(state)
     return
   }
 
-  // Run audit on each affected page
-  const driftPages: string[] = []
-  for (const pagePath of affectedPages) {
-    console.log(`\n[sync] ── Auditing ${pagePath} ──`)
-    try {
-      const output = execSync(`pnpm docs:audit ${projectKey} ${pagePath}`, { encoding: "utf-8" })
-      console.log(output)
-      // Simple DRIFT detection
-      if (output.includes('"status": "DRIFT"')) {
-        driftPages.push(pagePath)
-      }
-    } catch (err) {
-      console.error(`[sync] Audit failed for ${pagePath}: ${(err as Error).message?.slice(0, 100)}`)
-    }
-    await sleep(2000)
+  if (dryRun) {
+    console.log(`[sync] --dry-run: exiting without regenerating.`)
+    return
   }
 
-  // Update state to current HEAD
+  // Always re-extract facts first — the code just changed
+  console.log(`\n[sync] Re-extracting facts for ${projectKey}...`)
+  execSync(`pnpm facts:extract ${projectKey}`, { stdio: "inherit" })
+
+  console.log(`\n[sync] Regenerating ${affectedPages.length} page(s)...`)
+  const results: { page: string; status: string }[] = []
+  for (const pagePath of affectedPages) {
+    process.stdout.write(`  ${pagePath} ... `)
+    try {
+      const status = await regenerateOne(project, pagePath, projectKey)
+      console.log(status)
+      results.push({ page: pagePath, status })
+    } catch (err) {
+      const msg = `failed (${(err as Error).message?.slice(0, 80)})`
+      console.log(msg)
+      results.push({ page: pagePath, status: msg })
+    }
+    await new Promise(r => setTimeout(r, 5000))
+  }
+
+  // Update sync state to current HEAD of source repo
   const currentSha = execSync("git rev-parse HEAD", { cwd: project.repo_path, encoding: "utf-8" }).trim()
   state[projectKey] = currentSha
   saveState(state)
 
+  const clean = results.filter(r => r.status.startsWith("✓")).length
+  const drift = results.filter(r => r.status.startsWith("⚠")).length
+  const failed = results.filter(r => r.status.startsWith("failed")).length
+  const skipped = results.filter(r => r.status.startsWith("skipped")).length
+
   console.log(`\n[sync] ── Summary ──`)
-  console.log(`[sync] Updated state to SHA ${currentSha.slice(0, 8)}`)
-  console.log(`[sync] Pages with DRIFT: ${driftPages.length}`)
-  for (const p of driftPages) {
-    console.log(`  pnpm docs:generate ${projectKey} ${p}`)
-  }
-  if (driftPages.length === 0) {
-    console.log(`[sync] All audits CLEAN. No regeneration needed.`)
-  } else {
-    console.log(`\n[sync] Review the audit JSON above, then run the commands listed to regenerate.`)
-  }
+  console.log(`[sync] Source HEAD: ${currentSha.slice(0, 8)}`)
+  console.log(`[sync] CLEAN: ${clean}  DRIFT: ${drift}  failed: ${failed}  skipped: ${skipped}`)
+  if (failed > 0) process.exit(2)
 }
 
 main().catch(err => {

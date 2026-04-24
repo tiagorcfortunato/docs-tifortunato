@@ -13,6 +13,7 @@
     "docs:generate": "tsx scripts/generate-page.ts",
     "docs:batch": "tsx scripts/batch-generate.ts",
     "docs:sync": "tsx scripts/docs-sync.ts",
+    "docs:sync:dry": "tsx scripts/docs-sync.ts odys --dry-run",
     "docs:verify": "tsx scripts/verify-all.ts",
     "docs:refine": "tsx scripts/refine-page.ts",
     "facts:extract": "tsx scripts/extract-facts.ts",

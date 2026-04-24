@@ -1,0 +1,19 @@
+# Paste this file into each source repo as `.github/workflows/docs-sync.yml`
+# Then replace PROJECT_KEY with the project name (e.g. `odys`).
+# Requires a repo secret `DOCS_WRITE_TOKEN` = a fine-scoped PAT with
+# contents:write + pull-requests:write on the docs repo.
+
+name: Sync docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  call-docs-sync:
+    uses: tiagorcfortunato/docs-tifortunato/.github/workflows/sync.yml@main
+    with:
+      project: PROJECT_KEY
+    secrets:
+      DOCS_WRITE_TOKEN: ${{ secrets.DOCS_WRITE_TOKEN }}
