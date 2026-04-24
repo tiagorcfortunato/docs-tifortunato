@@ -1,50 +1,48 @@
 ---
-title: "Drizzle ORM & Postgres-js"
-description: "Why Drizzle, how it's configured, postgres-js client"
+title: "Drizzle ORM & Database Configuration"
+description: "Why Drizzle ORM was chosen, how it's configured, and its integration with the postgres-js client in Odys."
 ---
 
-# Drizzle ORM & Postgres-js
-This page details the integration of Drizzle ORM with the `postgres-js` client, covering the rationale for its selection, its configuration, and the client setup.
+# Drizzle ORM & Database Configuration
 
-## Why Drizzle
-Drizzle ORM is utilized atop `postgres-js` to provide a type-safe and efficient interface for database interactions. The choice was driven by its developer experience and flexibility, aligning with the need for a pragmatic database layer.
+Odys relies on a robust, type-safe data layer to power its scheduling, messaging, and subscription workflows. This document explains why Drizzle ORM was selected, how it’s structured across a 10-table schema, and how it integrates with the `postgres-js` driver for efficient PostgreSQL communication.
 
-## Configuration
-The primary configuration for Drizzle is defined in `drizzle.config.ts`. This file specifies the database schema location (`./src/lib/db/schema.ts`), the output directory for migrations (`./drizzle`), and the `postgresql` dialect. Database connection details are sourced from the `DATABASE_URL` environment variable via `dbCredentials.url`.
+## Overview
 
-```typescript
-import type { Config } from "drizzle-kit"
-import { config } from "dotenv"
+Odys uses Drizzle ORM in a **type-safe, schema-first** approach, connecting to PostgreSQL via the lightweight `postgres-js` client. The database schema consists of **10 tables** that model core entities: `professionals`, `clients`, `appointments`, `messages`, and `recurringSchedules`, among others. Relationships are enforced through foreign keys with `ON DELETE CASCADE`, ensuring referential integrity—especially critical when a professional is removed, cascading cleanup across `appointments`, `messages`, and `reviews`.
 
-config({ path: ".env.local" })
+The ORM is initialized in `src/lib/db/index.ts` by wrapping a `postgres` client instance, enabling full SQL control while retaining Drizzle’s compile-time type safety. This setup supports both complex queries and transactional integrity, essential for operations like booking and payment state updates.
 
-export default {
-  schema: "./src/lib/db/schema.ts",
-  out: "./drizzle",
-  dialect: "postgresql",
-  dbCredentials: {
-    url: process.env.DATABASE_URL!,
-  },
-} satisfies Config
-```
+## Why Drizzle ORM?
 
-## Postgres-js Client
-The `postgres-js` client is instantiated in `src/lib/db/index.ts` to establish the connection to the PostgreSQL database. A single client instance is created, passing `process.env.DATABASE_URL!` for connection.
+Drizzle was chosen over alternatives like Prisma for its **lightweight, SQL-first philosophy** and seamless integration with serverless environments. Unlike ORMs that abstract SQL behind a query builder, Drizzle embraces raw SQL expressiveness while adding TypeScript inference from the schema. This is crucial in Odys, where queries often involve joins across `appointments`, `clients`, and `availability`, and must remain performant under rate-limited API conditions.
 
-Crucially, the client is configured with `prepare: false`. This setting is necessary because Supabase's transaction pooler does not support prepared statements, which would otherwise lead to connection errors. The `drizzle` function then wraps this `postgres-js` client, integrating the database schema defined in `src/lib/db/schema.ts`.
+The schema definition—using Drizzle’s `pgTable`—enables autocompletion and type checking across the API layer. For example, when handling `POST /api/booking`, the input is validated against the `appointments` table structure, reducing runtime errors.
 
-```typescript
-import { drizzle } from "drizzle-orm/postgres-js"
-import postgres from "postgres"
-import * as schema from "./schema"
+## Configuration & Client Integration
 
-const client = postgres(process.env.DATABASE_URL!, { prepare: false })
-export const db = drizzle(client, { schema })
-```
+The `postgres-js` client is configured with `{ prepare: false }` to avoid prepared statement overhead in serverless functions, where connection reuse is limited. This aligns with Vercel’s edge runtime constraints, minimizing cold start latency.
 
-## Known Gaps
-*   **Migration Strategy**: Currently, database schema changes are managed declaratively using `drizzle-kit push`, resulting in a single migration file in the `drizzle/` directory. While pragmatic for a solo developer, this approach will need to transition to file-based, versioned migrations before a team joins to ensure better change management and auditability.
-*   **Row-Level Security (RLS)**: The database currently operates without Row-Level Security policies. All authorization logic is implemented at the application level. This simplifies initial development but places the full burden of access control on the application code, which may warrant a review for enhanced security at the database layer in the future.
+Drizzle’s configuration in `drizzle.config.ts` points to `./src/lib/db/schema.ts` and uses `DATABASE_URL` from environment variables. This setup enables both runtime queries and migration generation via `drizzle-kit`, which outputs to the `./drizzle` directory.
 
-## Why this Shape
-The combination of Drizzle ORM with `postgres-js` was chosen for its balance of type safety, performance, and developer ergonomics. The `prepare: false` setting on the `postgres-js` client is a direct adaptation to the constraints of the Supabase transaction pooler, ensuring compatibility and stable connections. The current migration strategy and lack of RLS reflect a pragmatic approach for rapid development, with clear understanding of future scaling and security considerations.
+## Design decisions
+
+The decision to use `postgres-js` instead of `pg` reduces bundle size and improves cold starts. Disabling prepared statements trades slight performance loss on repeated queries for faster connection setup—optimal for Odys’ bursty API traffic.
+
+Foreign keys with `ON DELETE CASCADE` simplify cleanup logic. For instance, deleting a `professional` automatically removes associated `availability`, `messages`, and `recurringSchedules`, reducing the need for manual transaction orchestration.
+
+Default values on `createdAt`, `updatedAt`, and `active` fields ensure consistent state across inserts, especially during onboarding (`/api/onboarding`) or client creation (`/api/client-profile`).
+
+## Potential improvements
+
+1. **Add indexes on frequently queried columns** — The `appointments(startsAt)` and `messages(createdAt)` columns are queried often (e.g., `/api/messages`, `/api/booking`) but lack explicit index definitions. Adding `index()` in schema would improve performance. (File: `src/lib/db/schema.ts`)
+
+2. **Centralize Drizzle client instantiation** — The `db` instance in `src/lib/db/index.ts` could be wrapped in a singleton factory to prevent multiple client connections in long-running contexts. (File: `src/lib/db/index.ts`)
+
+3. **Use `drizzle-kit sync` for schema drift detection** — Currently, schema changes require manual migration generation. Integrating `drizzle-kit sync` into CI would catch drift early, especially as the schema evolves beyond its current 10 tables. (File: `drizzle.config.ts`)
+
+## References
+
+- `src/lib/db/index.ts`: Drizzle client setup
+- `drizzle.config.ts`: Migration and schema configuration
+- `src/lib/db/schema.ts`: Full table definitions and relationships

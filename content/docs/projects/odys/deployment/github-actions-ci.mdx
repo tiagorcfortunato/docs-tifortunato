@@ -1,63 +1,32 @@
 ---
-title: "GitHub Actions CI Pipeline"
-description: "CI pipeline: typecheck + lint + build"
+title: "CI Pipeline: Typecheck + Lint + Build"
+description: "Continuous integration workflow ensuring code quality and build integrity for Odys."
 ---
 
-# GitHub Actions CI Pipeline
+# CI Pipeline: Typecheck + Lint + Build
 
-This page details the Continuous Integration (CI) pipeline implemented using GitHub Actions, covering the automated typechecking, linting, and build processes for the application.
+This document details the GitHub Actions CI pipeline for Odys, a full-stack Next.js application designed for professionals managing client bookings, payments, and communications. The pipeline ensures every change undergoes rigorous type checking, linting, and a production build before merging—critical for maintaining stability across a complex 10-table database schema and 21 API routes.
 
-The CI pipeline is defined in `.github/workflows/ci.yml` and is triggered on every `push` to the `main` branch and for every `pull_request` targeting `main`. It consists of two sequential jobs: `check` and `build`.
+## Overview
 
-## Typecheck & Lint Job
+The CI pipeline is structured in two sequential jobs: `check` and `build`. The `check` job runs type validation via `tsc --noEmit` and linting with `npm run lint`, preventing type errors and style inconsistencies early. Only upon success does the `build` job proceed, executing `npm run build` with all required environment secrets injected—ensuring the Next.js app (using React 19.2.4 and Drizzle ORM) compiles correctly against real configuration. This separation optimizes feedback speed and avoids wasting resources on builds that won’t typecheck.
 
-The `check` job is responsible for validating the codebase's type integrity and adherence to linting rules. It runs on `ubuntu-latest` and performs the following steps, as defined in `.github/workflows/ci.yml`:
+Odys operates on a rich data model with 10 tables including `professionals`, `appointments`, and `recurringSchedules`, all interconnected via foreign keys with cascading deletes. With API routes like `/api/booking` and `/api/stripe/webhook` handling critical workflows, and cron jobs scheduled via `/api/cron/reminders`, any deployment instability could disrupt user experience or data integrity. The CI pipeline acts as the first line of defense.
 
-1.  **Checkout Code**: Uses `actions/checkout@v4` to retrieve the repository content.
-2.  **Setup Node.js**: Configures Node.js version `20` and caches `npm` dependencies using `actions/setup-node@v4`.
-3.  **Install Dependencies**: Executes `npm ci` to install project dependencies.
-4.  **Typecheck**: Runs `npx tsc --noEmit` to perform a TypeScript type check without emitting any JavaScript files.
-5.  **Lint**: Executes `npm run lint` to enforce code style and quality standards.
+## Design decisions
 
-This job ensures that all proposed changes meet the project's baseline quality and type safety requirements before proceeding to the build stage.
+The pipeline uses `ubuntu-latest` and Node 20, aligning with modern runtime standards and ensuring compatibility with dependencies like `@supabase@^2.100.1` and `stripe@^21.0.1`. Caching via `actions/setup-node` with `cache: npm` speeds up dependency installation. The `build` job depends on `check` via `needs: check`, enforcing a fail-fast strategy. All environment variables—such as `DATABASE_URL`, `STRIPE_SECRET_KEY`, and `UPSTASH_REDIS_REST_URL`—are sourced from GitHub secrets, preventing exposure while enabling a full build simulation.
 
-## Build Job
+## Potential improvements
 
-The `build` job executes the full application build process. It depends on the successful completion of the `check` job (`needs: check`) and also runs on `ubuntu-latest`.
+1. **Add test execution** — The pipeline currently omits running unit or integration tests, despite the presence of API routes like `/api/messages` and cron handlers. Adding a `test` job after `check` would improve confidence. See `.github/workflows/ci.yml`.
 
-This job requires a comprehensive set of environment variables, which are securely injected from GitHub Secrets. The steps involved are:
+2. **Parallelize lint and typecheck** — The `check` job runs typechecking then linting sequentially. These could run in parallel using separate jobs with a shared `needs: [typecheck, lint]` dependency in `build`, reducing total CI time. See `.github/workflows/ci.yml`.
 
-1.  **Checkout Code**: Uses `actions/checkout@v4`.
-2.  **Setup Node.js**: Configures Node.js version `20` and caches `npm` dependencies.
-3.  **Install Dependencies**: Executes `npm ci`.
-4.  **Build Application**: Runs `npm run build` to compile the Next.js application for production.
+3. **Validate environment consistency** — The build injects numerous secrets, but no step verifies `.env.local` schema or checks for missing keys during typecheck. Introducing a script like `npm run validate-env` in the `check` job could catch misconfigurations earlier. See `.github/workflows/ci.yml`.
 
-The full list of environment variables passed to the build job is defined in `.github/workflows/ci.yml`:
+## References
 
-```yaml
-env:
-  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-  DATABASE_URL: ${{ secrets.DATABASE_URL }}
-  STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-  STRIPE_BASIC_PRICE_ID: ${{ secrets.STRIPE_BASIC_PRICE_ID }}
-  STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-  NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY }}
-  EVOLUTION_API_URL: ${{ secrets.EVOLUTION_API_URL }}
-  EVOLUTION_API_KEY: ${{ secrets.EVOLUTION_API_KEY }}
-  EVOLUTION_INSTANCE: ${{ secrets.EVOLUTION_INSTANCE }}
-  CRON_SECRET: ${{ secrets.CRON_SECRET }}
-  RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
-  UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
-  UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
-  SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-```
-
-## Known Gaps
-
-The current CI pipeline, as defined in `.github/workflows/ci.yml`, does not include any automated testing for the main application. There are no tests in `src/` that are wired into this workflow. While the MCP server has its own Vitest tests, these are not integrated into this workflow and are assumed to run only locally by developers. This means that functional or integration regressions in the main application would not be caught by CI.
-
-## Why this shape
-
-The separation of `check` and `build` into distinct jobs allows for faster feedback on code quality issues. If typechecking or linting fails, the `build` job is not initiated, saving build time and resources. This sequential dependency ensures that only code that passes static analysis proceeds to the more resource-intensive build step.
+- `.github/workflows/ci.yml` — Full CI workflow definition
+- `schema.tables` — 10-table Drizzle schema influencing build-time type safety
+- `apiRoutes.routes` — 21 API endpoints that must remain build-stable
