@@ -1,6 +1,6 @@
 import { loadMapping, getProject, getPage, resolveCodePath, resolveDocPath } from "./lib/mapping"
 import { readFile, writeFile, extractDeepDiveSection, readSystemPrompt } from "./lib/mdx"
-import { callLLM } from "./lib/llm"
+import { callLLMForGeneration } from "./lib/llm"
 
 async function main() {
   const [, , projectKey, pagePath] = process.argv
@@ -22,7 +22,11 @@ async function main() {
 
   const codeSections = page.code_files.map(f => {
     const content = readFile(resolveCodePath(project, f))
-    return `## ${f}\n\n\`\`\`\n${content.slice(0, 6000)}\n\`\`\``
+    // Raise cap: most Odys files fit in 30k chars. Truncation is the #1 cause of hallucinated facts.
+    const maxChars = 30000
+    const truncated = content.length > maxChars
+    const displayContent = truncated ? content.slice(0, maxChars) + `\n\n[... TRUNCATED after ${maxChars} chars — full file is ${content.length} chars. If you need facts from the omitted portion, write [verify] inline.]` : content
+    return `## ${f}\n\n\`\`\`\n${displayContent}\n\`\`\``
   }).join("\n\n")
 
   const styleGuide = readSystemPrompt()
@@ -66,6 +70,18 @@ ${relevantDeepDive || "[no deep-dive sections matched — use code only]"}
 CURRENT CODE (source of truth for facts):
 ${codeSections || "[no code files mapped]"}
 
+FACTUAL ACCURACY — ZERO HALLUCINATION
+You are writing technical documentation. EVERY factual claim must be verifiable from the CURRENT CODE section provided below.
+
+RULES:
+1. Quote exact values from code. If the code shows \`max_attempts: 5\`, write "5" — never "around 5" or "several".
+2. File paths: only cite files that literally appear in CURRENT CODE. If you want to reference a file not provided, say "[verify: <filename>]" instead.
+3. Function names, table names, env vars: must exist verbatim in provided code. If unsure, write "[verify]" inline.
+4. Numbers: COUNT carefully. If asked "how many tables" and you see \`export const foo = pgTable(\`, \`export const bar = pgTable(\`, \`export const baz = pgTable(\`, the count is 3 — not 2, not 4.
+5. If a claim cannot be verified from the code provided, either omit it or write "[verify from CLAUDE.md / README]" to flag for human review.
+
+Better to UNDER-CLAIM and say "[verify]" than to confidently invent.
+
 FRONTMATTER RULES
 - Output MUST start with a YAML frontmatter block: opening \`---\` on line 1, closing \`---\` on its own line
 - \`title\` and \`description\` values MUST be wrapped in double quotes if they contain colons, hashes, quotes, or special YAML characters
@@ -93,7 +109,7 @@ OUTPUT
 - NO commentary, preamble, or suffix outside the MDX content.`
 
   console.log(`[generate] ${projectKey}/${pagePath}…`)
-  const raw = await callLLM(systemPrompt, userPrompt, { maxTokens: 6000 })
+  const raw = await callLLMForGeneration(systemPrompt, userPrompt, { maxTokens: 6000 })
 
   let mdx = raw.trim()
   if (mdx.startsWith("```")) {

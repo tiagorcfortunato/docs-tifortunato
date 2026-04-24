@@ -113,7 +113,11 @@ const openaiProvider: Provider = {
 }
 
 // ---------- Chain with fallback ----------
+// For audit: speed matters, Gemini is best (fast, structured JSON)
 const CHAIN: Provider[] = [geminiProvider, groqProvider, cerebrasProvider, openaiProvider]
+
+// For generation: factual accuracy matters, Qwen 3 235B (Cerebras) primary
+const GENERATION_CHAIN: Provider[] = [cerebrasProvider, geminiProvider, groqProvider, openaiProvider]
 
 function isQuotaError(err: unknown): boolean {
   const msg = (err as Error)?.message?.toLowerCase() ?? ""
@@ -159,4 +163,32 @@ export async function callLLM(
   }
 
   throw new Error(`All ${enabled.length} providers exhausted. Last error: ${(lastError as Error)?.message}`)
+}
+
+export async function callLLMForGeneration(
+  systemPrompt: string,
+  userPrompt: string,
+  opts: CallOpts = {}
+): Promise<string> {
+  const enabled = GENERATION_CHAIN.filter(p => p.enabled)
+  if (enabled.length === 0) {
+    throw new Error("No LLM provider configured for generation.")
+  }
+  let lastError: unknown
+  for (const provider of enabled) {
+    try {
+      console.log(`[llm:gen] Trying ${provider.name}...`)
+      const result = await provider.call(systemPrompt, userPrompt, opts)
+      if (!result || result.length < 10) {
+        throw new Error(`${provider.name} returned empty/short response`)
+      }
+      console.log(`[llm:gen] ✓ ${provider.name} succeeded`)
+      return result
+    } catch (err) {
+      lastError = err
+      const quota = isQuotaError(err)
+      console.error(`[llm:gen] ✗ ${provider.name} failed${quota ? " (quota)" : ""}: ${(err as Error).message?.slice(0, 120)}`)
+    }
+  }
+  throw new Error(`All generation providers exhausted. Last: ${(lastError as Error)?.message}`)
 }
