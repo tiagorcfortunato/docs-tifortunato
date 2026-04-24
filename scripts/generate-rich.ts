@@ -54,12 +54,16 @@ async function main() {
     findings = audit.findings
     const actionable = findings.filter(f => f.type === "drift" || f.type === "missing")
 
-    if (status === "CLEAN" || actionable.length === 0) {
+    if (status === "ERROR") {
+      console.warn(`[rich] Audit returned ERROR — keeping current draft. Findings: ${JSON.stringify(findings).slice(0, 300)}`)
+      break
+    }
+    if (status === "CLEAN") {
       console.log(`[rich] ✓ CLEAN after ${i} audit pass${i === 1 ? "" : "es"}`)
       break
     }
-    if (status === "ERROR") {
-      console.warn(`[rich] Audit returned ERROR — keeping current draft. Findings: ${JSON.stringify(findings).slice(0, 300)}`)
+    if (actionable.length === 0) {
+      console.log(`[rich] ✓ No actionable findings after ${i} audit pass${i === 1 ? "" : "es"} (${findings.length} suspect-only)`)
       break
     }
     console.log(`[rich] ${actionable.length} finding(s). Refining...`)
