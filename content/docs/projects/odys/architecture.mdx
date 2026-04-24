@@ -1,32 +1,106 @@
 ---
-title: "Architecture: System Overview, Runtimes & Data Residency"
-description: "High-level system architecture, runtimes, supporting services, data residency"
+title: Architecture
+description: High-level view of how Odys's pieces connect — Next.js, Supabase, Stripe, Evolution API on Railway, MCP server, and supporting services.
 ---
 
-# Architecture: System Overview, Runtimes & Data Residency
+# Architecture
 
-Odys is a scheduling platform built for independent professionals in Brazil, deeply integrated with WhatsApp and Stripe. This document outlines the high-level architecture, runtime responsibilities, supporting services, and data residency model that enable a seamless, automated booking and communication experience.
+At the top level, Odys is a **single Next.js 16 App Router application** deployed on Vercel, backed by a **Supabase Postgres** instance in `sa-east-1` (São Paulo), with three ancillary processes: **Stripe** (hosted checkout and subscription engine), **Evolution API** (self-hosted WhatsApp runtime on Railway), and a local **MCP server** that exposes the database to AI agents through four tools.
 
-## Overview
+## System diagram
 
-Odys operates on a serverless architecture hosted primarily on Vercel, with a 10-table PostgreSQL schema managed via Drizzle ORM and hosted on Supabase. The system is structured around two core runtimes: the Next.js application (handling API routes and SSR) and cron-triggered maintenance jobs. All client and professional data resides in Supabase, ensuring strong data isolation and compliance with Brazilian privacy expectations.
+```
+                    ┌──────────────────────────────────────────┐
+                    │            Browser / Mobile              │
+                    │  Landing · /p/[slug] · /dashboard · /c   │
+                    └───────────────────┬──────────────────────┘
+                                        │ HTTPS
+                                        ▼
+                    ┌──────────────────────────────────────────┐
+                    │       Vercel Edge / Next.js 16           │
+                    │   App Router (RSC) + API route handlers  │
+                    │     Sentry tunnel on /monitoring         │
+                    └───┬───────────────┬────────────┬─────────┘
+                        │               │            │
+               Drizzle  │        Stripe │     Evolution API
+                        ▼               ▼            ▼
+           ┌────────────────────┐  ┌─────────┐  ┌──────────────┐
+           │ Supabase Postgres  │  │ Stripe  │  │   Railway    │
+           │  + Supabase Auth   │  │ Checkout│  │  Evolution   │
+           │  + Supabase Storage│  │ Webhook │  │   v2 + PG    │
+           │  (sa-east-1)       │  │         │  │              │
+           └────────┬───────────┘  └─────────┘  └──────────────┘
+                    │
+                    │  same DATABASE_URL, shared Drizzle schema
+                    ▼
+           ┌────────────────────┐
+           │   mcp-server       │  (local stdio process;
+           │  tsup-bundled ESM  │   not deployed to prod)
+           │   4 MCP tools      │
+           └────────────────────┘
 
-The platform exposes 21 API routes, including authenticated endpoints for dashboard operations (`/api/settings`, `/api/messages`) and webhook handlers for Stripe and WhatsApp. Two cron jobs—`/api/cron/reminders` (daily at 8 AM) and `/api/cron/whatsapp-watchdog` (daily at 9 AM)—run on Vercel to send automated reminders and monitor the Evolution API health. These are defined in `vercel.json` and executed in the same runtime as the main app.
+  Side services:  Resend (email) · Upstash Redis (rate limits + reply routing)
+                  Sentry (errors) · PostHog (product analytics)
+                  Groq   (LLM for AI intake agent + dashboard assistant)
+```
 
-Data flows through a clear hierarchy: professionals (`professionals` table) own clients (`clients`), appointments (`appointments`), and messages (`messages`), with referential integrity enforced via foreign keys and `ON DELETE CASCADE`. Sensitive identifiers like `userId` are stored as opaque text fields, while financial data (e.g., `sessionPrice` in cents) avoids direct exposure. WhatsApp communication is abstracted through a unified `sendWhatsApp()` interface, with 19 predefined message templates covering booking, reminders, and notifications.
+## Where the data lives
 
-## Design decisions
+Three tiers, important to keep separate:
 
-The architecture prioritizes operational simplicity and developer velocity. Next.js App Router consolidates pages and API routes, eliminating the need for a separate backend service. Drizzle ORM provides fully typed database access, reducing runtime errors and improving refactoring safety. Supabase is chosen for its integrated auth, real-time capabilities, and managed PostgreSQL, allowing focus on product logic over infrastructure.
+- **Browser (client)** — almost no state. Supabase issues an HttpOnly session cookie; React Server Components do the initial hydration; a handful of `"use client"` components (booking widget, notification bell, assistant chat, cookie banner) add interactivity.
+- **Vercel edge + Node runtime** — terminates TLS, runs the Next.js router, executes Server Components and API routes. Sentry beacons are rewritten through `/monitoring` to bypass ad-blockers.
+- **Persisted storage**:
+  - Supabase Postgres (`sa-east-1`) — the 10-table application schema
+  - Supabase Storage — uploaded avatars
+  - Upstash Redis — rate limits + WhatsApp reply routing (`last_outbound:{phone}`)
+  - Railway Postgres (separate Supabase project) — Evolution API's own database
+  - Stripe — subscription state, payment history
 
-The single WhatsApp number—managed via Evolution API—enables a scalable, multi-tenant communication model without requiring professionals to expose personal numbers. This is critical for user adoption and privacy. Rate limiting via Upstash Redis (`rl:booking`, `rl:api`) protects against abuse, particularly on high-risk endpoints like `/api/booking` and `/api/auth/register`.
+## Runtimes in use
 
-Stripe webhooks (`checkout.session.completed`, `customer.subscription.updated`) are used to synchronize subscription state, ensuring plan limits (Free, Basic, Pro, Premium) are enforced accurately. The MCP tools (`get_appointments_today`, `update_appointment_status`) expose internal state to AI agents, enabling conversational scheduling.
+Odys runs across **three runtimes**:
 
-## Potential improvements
+- **Node (Vercel)** — most API routes, Server Components, the main application
+- **Edge (Vercel)** — Sentry's edge bootstrap only; no routes currently use edge runtime
+- **Local stdio (developer laptop)** — the MCP server, not deployed
 
-1. **Centralize cron logic**: The cron handlers in `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` could benefit from shared utilities in `lib/cron.ts` to reduce duplication in scheduling and error handling.
+No Node workers, no background job queue, no separate microservices. Periodic work runs through **Vercel Cron** — two schedules, both daily UTC: `/api/cron/reminders` at 08:00 and `/api/cron/whatsapp-watchdog` at 09:00.
 
-2. **Enforce plan limits at schema level**: While `plan-guard.ts` enforces feature access, adding a `CHECK` constraint on `professionals.plan` to restrict values to `free|basic|pro|premium` would prevent invalid states at the database level.
+## Supporting services
 
-3. **Index `appointments.status` and `startsAt` together**: The query for today’s appointments likely filters on both `professionalId`, `status`, and `startsAt`. A composite index on `(professional_id, status, starts_at)` in `src/lib/db/schema.ts` would improve dashboard load performance.
+| Service | Purpose | Tier |
+|---|---|---|
+| Supabase | Postgres + Auth + Storage (`sa-east-1`) | Managed |
+| Stripe | Subscription billing | Managed |
+| Evolution API | WhatsApp Web runtime on Railway | Self-hosted Docker |
+| Groq | LLM inference (Llama 3.3 70B, two-pass tool-calling) | Managed API |
+| Upstash Redis | Rate limits + WhatsApp reply context | Managed |
+| Sentry | Error tracking (server, edge, browser) | Managed |
+| PostHog | Product analytics + session replay | Managed |
+| Resend | Transactional email | Managed |
+
+## MCP server — a note on architecture scope
+
+The MCP server is a **separate process, not a separate service**. It shares the same `DATABASE_URL` and the same Drizzle schema (imported via relative path from `../../src/lib/db/schema`) and communicates with Claude Code via JSON-RPC over stdio. It runs on the developer's laptop — no HTTP endpoint, no auth layer, because there is no remote caller. It lets any AI agent answer *"how many appointments does Dr. Ana have today?"* without opening Drizzle Studio.
+
+Deployment path for the MCP server when an in-product AI assistant needs it: either expose it as an authenticated HTTP service, or collapse it into direct Groq tool-calls that hit the existing API routes.
+
+## Data residency
+
+- **Supabase (database, auth, storage)** — `sa-east-1` São Paulo. **Brazilian user data stays in Brazil at rest.**
+- **Sentry** — `*.ingest.us.sentry.io` (US). Only error traces, no business data.
+- **PostHog** — `https://us.i.posthog.com` (US). Product analytics events.
+- **Vercel** — default region `iad1` (US East) for the edge layer.
+
+For an LGPD-strict buyer, the primary data store is already in Brazil. The remaining US-hosted layers (error tracking, analytics, HTTP edge) can be migrated to EU or São Paulo alternatives via configuration — not a rewrite.
+
+## What this isn't
+
+- **Not a microservice architecture.** One Next.js app, one DB, ancillary managed services.
+- **Not using Kubernetes.** Vercel's serverless runtime + Railway's container runtime for Evolution.
+- **No separate backend.** API routes + Server Components are the backend.
+- **No GraphQL, no gRPC.** Plain REST with Zod validation.
+- **No multi-region replication.** Single-region Postgres.
+
+That's intentional. The goal was a production-grade SaaS shippable by one founder — not a CV of infrastructure complexity.
