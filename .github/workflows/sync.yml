@@ -8,6 +8,11 @@ on:
         description: "Project key (must exist in projects/<name>/config.json)"
         required: true
         type: string
+      source_repo:
+        description: "Full source repo (owner/name). Defaults to <owner>/<project>."
+        required: false
+        type: string
+        default: ""
       source_ref:
         description: "Ref in the source repo to sync against (defaults to main)"
         required: false
@@ -17,6 +22,14 @@ on:
       DOCS_WRITE_TOKEN:
         description: "Fine-scoped PAT with contents:write on the docs repo"
         required: true
+      GROQ_API_KEY:
+        required: false
+      GEMINI_API_KEY:
+        required: false
+      CEREBRAS_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
 
   # Manual trigger for ad-hoc syncs.
   workflow_dispatch:
@@ -36,13 +49,23 @@ jobs:
           token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
+      - name: Resolve source repo
+        id: src
+        run: |
+          if [ -n "${{ inputs.source_repo }}" ]; then
+            echo "repo=${{ inputs.source_repo }}" >> $GITHUB_OUTPUT
+          else
+            echo "repo=${{ github.repository_owner }}/${{ inputs.project }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout source project
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/${{ inputs.project }}
+          repository: ${{ steps.src.outputs.repo }}
           path: .source/${{ inputs.project }}
           ref: ${{ inputs.source_ref }}
           fetch-depth: 30
+          token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Point config at checked-out source
         run: |

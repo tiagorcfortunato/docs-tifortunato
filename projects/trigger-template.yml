@@ -15,5 +15,11 @@ jobs:
     uses: tiagorcfortunato/docs-tifortunato/.github/workflows/sync.yml@main
     with:
       project: PROJECT_KEY
+      # Uncomment if the source repo name differs from the project key (e.g. capital letters):
+      # source_repo: owner/Repo-Name
     secrets:
       DOCS_WRITE_TOKEN: ${{ secrets.DOCS_WRITE_TOKEN }}
+      GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+      GEMINI_API_KEY:   ${{ secrets.GEMINI_API_KEY }}
+      CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
