@@ -1,165 +1,40 @@
 ---
-title: "Database Overview"
-description: "Database overview: Drizzle on Supabase Postgres"
+title: "Database: Drizzle on Supabase Postgres"
+description: "Overview of Odys's database architecture using Drizzle ORM with Supabase Postgres."
 ---
 
-# Database Overview
+# Database: Drizzle on Supabase Postgres
 
-This page provides an overview of the database architecture, focusing on the integration of Drizzle ORM with Supabase Postgres. It covers the database client setup, schema definition, and the structure of the data model as implemented in the codebase.
+The Odys platform relies on a robust, type-safe database layer built with **Drizzle ORM** over **Supabase Postgres**, enabling efficient, scalable interactions across professional scheduling, client management, payments, and real-time communication. This page explores the schema design, integration patterns, and architectural rationale behind the persistence layer that powers core features like booking, messaging, and subscription management.
 
-## Database Client Setup
+## Overview
 
-The application connects to a Supabase Postgres instance using the `postgres-js` client, managed by Drizzle ORM. The database client is initialized in `src/lib/db/index.ts`.
+Odys’s database is a 10-table schema structured to support a two-sided marketplace between professionals (e.g., therapists, trainers) and their clients. Each table maps cleanly to a business domain: `professionals`, `clients`, `appointments`, `messages`, and `recurringSchedules` form the core workflow, while auxiliary tables like `availability`, `clientNotes`, and `reviews` enrich functionality. Relationships are strictly enforced via foreign keys with cascade deletes, ensuring referential integrity—especially critical when a professional deletes their account. The schema is fully reflected in Drizzle’s type system, enabling compile-time safety across API routes and cron jobs.
 
-```typescript
-import { drizzle } from "drizzle-orm/postgres-js"
-import postgres from "postgres"
-import * as schema from "./schema"
+## Schema in Practice
 
-const client = postgres(process.env.DATABASE_URL!, { prepare: false })
-export const db = drizzle(client, { schema })
-```
+The `professionals` table acts as the central identity for service providers, storing not only profile data (`name`, `slug`, `bio`) but also business logic fields like `sessionPrice` (in cents), `paymentType`, and Stripe integration keys. It supports multiple monetization models—upfront payments, revenue sharing (`paymentPercentage`), or post-session billing—making it adaptable across regions and professions.
 
-The `DATABASE_URL` environment variable is used for connection, and `prepare: false` disables prepared statements to avoid potential caching issues in serverless environments. The `db` object is exported as a Drizzle ORM instance with the schema applied, enabling type-safe queries across the application.
+Scheduling is powered by `availability` (weekly time slots) and `appointments` (instantiated sessions), with `recurringSchedules` enabling automated weekly or biweekly bookings. Appointments track both business state (`status`, `paymentStatus`) and engagement signals (`reminderSent24h`, `reminderSent1h`), which feed into cron-triggered WhatsApp reminders.
 
-## Schema Definition
+Communication is handled via the `messages` table, where `sender` distinguishes between client and professional, and `readAt` enables read receipts. The `notifications` table delivers in-app alerts for booking updates or messages, while `follows` tracks client interest in professionals—potentially for newsletter or recommendation features.
 
-The database schema is defined in `src/lib/db/schema.ts` using Drizzle ORM's `pgTable` and column types such as `uuid`, `text`, `timestamp`, `boolean`, and `integer`. All tables use UUID primary keys with `defaultRandom()` for unguessable IDs. Timestamps use `defaultNow()` for automatic population of `createdAt` and `updatedAt` fields.
+## Design decisions
 
-Foreign key relationships are declared with `references()` and consistently use `onDelete: "cascade"` to ensure referential integrity. This design supports data privacy requirements like the LGPD "right to be forgotten" — deleting a `professional` triggers deletion of all related records.
+Drizzle was chosen over raw SQL or heavier ORMs for its **type inference**, **schema-as-code** approach, and seamless Next.js compatibility. The use of `defaultRandom()` for UUIDs ensures global uniqueness, while `defaultNow()` standardizes timestamp handling. Indexes are strategically placed on foreign keys (`professionalId`, `clientId`) and query-heavy fields like `appointments.startsAt`, optimizing read performance for calendar views and dashboards.
 
-## Schema Structure
+Supabase Postgres provides immediate scalability, JSON support (not yet used), and Row Level Security (RLS)—though RLS policies are not yet defined in the current schema. The decision to store `startTime` and `endTime` as text (e.g., "09:00") in `availability` simplifies frontend parsing but sacrifices time arithmetic in SQL—likely a trade-off favoring application-level logic.
 
-The schema consists of ten core tables centered around the `professionals` table.
+## Potential improvements
 
-### `professionals`
+1. **Add RLS policies in Supabase** — Currently, row-level security is not enforced in the schema. For example, any user could query another professional’s `clientNotes` if authentication is misconfigured. Implementing RLS in Supabase (via SQL policies) would harden data isolation. See `src/lib/db/schema.ts`.
 
-Represents a professional user with business and payment configuration.
-- `id`: UUID primary key.
-- `userId`: Supabase auth ID, stored as `text`, unique.
-- `name`: Full name of the professional, required.
-- `slug`: Unique URL path for public profile.
-- `phone`: Contact phone number, required.
-- `email`: Contact email, optional.
-- `profession`: Professional category (e.g., psychologist, nutritionist), required.
-- `bio`: Professional biography, optional.
-- `avatarUrl`: URL to profile image, optional.
-- `sessionDuration`, `sessionPrice`: Integer values in minutes and cents.
-- `plan`: Subscription tier (`free`, `pro`, `premium`).
-- `paymentType`, `paymentPercentage`, `pixKeyType`, `pixKey`: PIX payment configuration.
-- `stripeCustomerId`, `stripeSubscriptionId`: Stripe identifiers.
-- `trialEndsAt`: Timestamp for Pro trial expiration.
-- `welcomeMessage`: Custom message sent to new clients, optional.
-- `autoConfirm`: Boolean for automatic appointment confirmation.
-- `active`: Boolean flag for account status.
+2. **Normalize `paymentType` and `status` fields** — String literals like `"upfront"` or `"pending_confirmation"` are prone to typos. Introducing a `payment_types` or `statuses` lookup table—or using PostgreSQL enums—would ensure consistency. See `professionals.paymentType` and `appointments.status`.
 
-### `availability`
+3. **Index `appointments.startsAt` for time-range queries** — While indexed, the current `appointments_starts_at_idx` is a basic B-tree. For time-based queries (e.g., “today’s appointments”), a BRIN index might be more efficient given the append-heavy write pattern. Consider tuning in `src/lib/db/schema.ts`.
 
-Defines recurring time slots for a professional.
-- `professionalId`: Foreign key to `professionals`.
-- `dayOfWeek`: Integer (0–6).
-- `startTime`, `endTime`: Text in `"HH:mm"` format.
-- Indexed on `professionalId`.
+## References
 
-### `clients`
-
-Stores client information scoped to a professional.
-- `userId`: Optional Supabase ID (nullable `text`).
-- `professionalId`: Required foreign key.
-- Indexed on `professionalId` and `userId`.
-
-### `clientNotes`
-
-Private notes by professionals on clients.
-- `professionalId`, `clientId`: Foreign keys.
-- `content`: Free-form text.
-- `createdAt`, `updatedAt`: Timestamps.
-
-### `recurringSchedules`
-
-Captures recurring appointment patterns.
-- `professionalId`, `clientId`: Foreign keys.
-- `frequency`: `weekly`, `biweekly`, `twice_weekly`.
-- `dayOfWeek`, `secondDayOfWeek`: Day integers.
-- `time`: Text in `"HH:mm"`.
-- `active`: Boolean toggle.
-- `createdAt`: Timestamp of record creation.
-
-### `appointments`
-
-Main booking record with lifecycle and payment state.
-- `professionalId`, `clientId`: Foreign keys.
-- `recurringScheduleId`: Optional link to recurrence pattern.
-- `startsAt`, `endsAt`: Appointment timestamps.
-- `status`: Lifecycle state (`pending_confirmation`, `confirmed`, etc.).
-- `paymentStatus`: (`none`, `authorized`, `captured`, `refunded`).
-- `stripePaymentIntentId`: Stripe Payment Intent identifier, optional.
-- `reminderSent24h`, `reminderSent1h`: Booleans to prevent duplicate emails.
-- `notes`: Internal notes for the appointment, optional.
-- Indexed on `professionalId`, `clientId`, `startsAt`, and `status`.
-
-### `messages`
-
-In-product chat between professional and client.
-- `sender`: `professional` or `client`.
-- `type`: `text`, `link`, `pdf`.
-- `content`: Message text.
-- `fileUrl`: URL to attached file (e.g., PDF), optional.
-- `readAt`: Timestamp, null until read.
-- Composite index on `(professionalId, clientId)`.
-
-### `follows`
-
-Social follow relationship (client → professional).
-- `userId`: Supabase ID.
-- `professionalId`: Foreign key.
-- Indexed on both fields.
-
-### `reviews`
-
-Client feedback on completed appointments.
-- `appointmentId`: Unique foreign key (one review per appointment).
-- `rating`: Integer 1–5.
-- `comment`: Optional text.
-- Indexed on `professionalId`.
-
-### `notifications`
-
-In-app notifications.
-- `recipientId`: Supabase user ID.
-- `recipientType`: `professional` or `client`.
-- `type`: Categorization (e.g., `booking_confirmed`, `new_message`), example values: `booking_confirmed`, `new_message`, `payment_captured`.
-- `title`: Notification headline, required.
-- `body`: Notification content, required.
-- `read`: Boolean status.
-- Indexed on `recipientId`.
-
-## Drizzle Configuration
-
-Drizzle Kit is configured in `drizzle.config.ts` for schema management and migration generation.
-
-```typescript
-import type { Config } from "drizzle-kit"
-import { config } from "dotenv"
-
-config({ path: ".env.local" })
-
-export default {
-  schema: "./src/lib/db/schema.ts",
-  out: "./drizzle",
-  dialect: "postgresql",
-  dbCredentials: {
-    url: process.env.DATABASE_URL!,
-  },
-} satisfies Config
-```
-
-This configuration points to the schema file, sets the migration output directory, specifies PostgreSQL as the dialect, and uses `DATABASE_URL` for connection credentials during introspection and migration operations.
-
-## Why this shape
-
-The schema is designed as a clean, relational model with Drizzle ORM enabling full TypeScript type safety. The use of `onDelete: "cascade"` ensures data consistency and simplifies deletion workflows, particularly for compliance with data privacy regulations. All business logic, derived data, and access control are intentionally kept in the application layer, avoiding database-level complexity such as views, triggers, or RLS policies.
-
-## Known gaps
-
-The current design does not use Row Level Security (RLS) in Supabase Postgres. Access control is entirely application-managed via Drizzle queries that scope data by `professionalId` or `userId`. This centralizes logic in TypeScript but shifts the burden of enforcing data isolation entirely to the application code, increasing the risk of accidental data leaks if query construction is inconsistent. For example, a missing `where` clause on `professionalId` could expose another professional's appointments.
+- `src/lib/db/schema.ts` — Full schema definition
+- `src/lib/db/index.ts` — Drizzle client instantiation
+- `drizzle.config.ts` — Drizzle CLI configuration
