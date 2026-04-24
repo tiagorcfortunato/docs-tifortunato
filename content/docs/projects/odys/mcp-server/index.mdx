@@ -1,77 +1,68 @@
 ---
 title: "MCP Server Overview"
-description: "MCP server overview: purpose, architecture, not deployed"
+description: "An overview of the Odys Model Context Protocol (MCP) server, its purpose, architecture, and current non-deployed status."
 ---
 
 # MCP Server Overview
 
-This page provides an overview of the Odys MCP (Model Context Protocol) server, detailing its purpose, architectural design, and how it integrates with AI agents without being a traditionally deployed service.
+Tiago, let's dive into the Model Context Protocol (MCP) server within Odys. This component is designed to expose specific business logic and data queries to external models or AI agents in a structured, discoverable way. While the `odys-mcp-server` is currently configured but not actively deployed as a standalone service, understanding its architecture and the capabilities it offers is crucial for future integrations and for grasping how Odys intends to interact with intelligent systems.
 
-## Purpose
+## Overview
 
-The MCP server was introduced to enable AI agents, such as Claude Code sessions and the in-product assistant, to interact with the Odys application's data and business logic through a well-defined tool interface. This abstraction allows agents to perform actions like querying appointment schedules or updating statuses without direct access to the database layer or requiring knowledge of Drizzle ORM. The server exposes a JSON-RPC over stdio interface, providing a clean and secure surface for tool invocation.
+The `odys-mcp-server` acts as an interface, translating requests from an MCP client (likely an AI model) into concrete actions within the Odys application's backend. It adheres to the Model Context Protocol, which provides a standardized way for models to discover and invoke "tools" or functions exposed by a service.
+
+Your `package.json` in `mcp-server` defines this as `odys-mcp-server` with version `0.1.0`. The server is configured to run via Node.js, as specified in the `.mcp.json` file, which points to `node ./mcp-server/dist/server.js` as its execution command. This setup allows an MCP client to discover and interact with the server by executing this command and communicating over standard I/O.
+
+At its core, the server exposes a set of four distinct tools, each designed to perform a specific operation related to professional and client management within Odys. These tools are: `get_appointments_today`, `get_customer_by_phone`, `get_revenue_summary`, and `update_appointment_status`.
 
 ## Architecture
 
-The MCP server is structured as a self-contained Node.js sub-project within the main repository, located at `mcp-server/`.
+The MCP server's architecture is cleanly separated into two primary files: `mcp-server/src/server.ts` and `mcp-server/src/tools.ts`.
 
-### Sub-project Structure
+### `mcp-server/src/server.ts`
 
-The `mcp-server/` directory contains its own `package.json`, `node_modules`, and `tsconfig.json`. This isolation ensures that the main application's CI/CD pipeline does not attempt to compile the MCP server, as indicated by the root `tsconfig.json` excluding `mcp-server`.
+This file is the entry point for the MCP server. It initializes an instance of the `Server` class from the `@modelcontextprotocol/sdk` and sets up the communication transport using `StdioServerTransport`. This means the server communicates with its client over standard input/output streams, which is a common pattern for local or containerized tool execution.
 
-The server is bundled into a single ESM file, `dist/server.js`, using `tsup` (`mcp-server/package.json`). This output file includes a `#!/usr/bin/env node` banner and is made executable (`chmod +x`), allowing it to be run directly as a command.
+The `server.ts` file defines two main request handlers:
 
-### Dependency Management
+1.  **`ListToolsRequestSchema`**: When an MCP client asks what tools are available, this handler responds by providing the `TOOL_DEFINITIONS` array, which is imported from `mcp-server/src/tools.ts`. This allows the client to understand the capabilities of the `odys` server, including each tool's name, description, and expected input schema.
+2.  **`CallToolRequestSchema`**: This is the core handler for executing tools. When a client requests to call a specific tool, this handler receives the tool's `name` and `arguments`. It then uses a `switch` statement to dispatch the request to the appropriate function (e.g., `getAppointmentsToday`, `getCustomerByPhone`), also imported from `mcp-server/src/tools.ts`. The result of the tool execution is then formatted and returned to the MCP client. Error handling is robust, catching any exceptions during tool execution and returning a structured error message to the client.
 
-A specific configuration in `tsup.config.ts` marks `zod` and `@modelcontextprotocol/sdk` as `noExternal`. This instructs esbuild to inline these dependencies rather than treating them as runtime imports. This approach resolves potential CJS/ESM dual-package hazard issues that could lead to startup crashes, particularly with the MCP SDK. `dotenv` remains an external dependency as it does not exhibit these issues.
+### `mcp-server/src/tools.ts`
 
-### Data Access and Environment
+This file contains the actual business logic for each of the four exposed tools. It leverages `zod` for input validation and `drizzle-orm` for interacting with the Odys database.
 
-The MCP server shares the core database schema by importing `../../src/lib/db/schema.js` into `mcp-server/src/db.ts`. Due to the bundling process, only one compiled copy of the schema exists in the final output, preventing schema drift.
+Each tool function (e.g., `getAppointmentsToday`) takes a raw input, parses it against a `zod` schema (like `GetAppointmentsTodayInput`), and then performs the necessary database operations.
 
-Environment variables, primarily `DATABASE_URL`, are loaded using `dotenv` from the repository root's `.env.local` and `.env` files. The server logs errors to `stderr` and exits if `DATABASE_URL` is missing, reserving `stdout` exclusively for JSON-RPC framing.
+Let's look at the specific tools:
 
-### Server Entry Point
+*   **`get_appointments_today`**: This tool retrieves all appointments scheduled for a given `professionalId` on the current day, considering a specified `timezone` (defaulting to `America/Sao_Paulo`). It queries the `appointments` table, joining with `clients` and `professionals` to enrich the output with customer names and the professional's service type. The `tzOffsetMs` helper function is used to correctly determine the start and end of "today" in the specified timezone.
+*   **`get_customer_by_phone`**: This tool allows looking up client information using a phone number. It normalizes the input phone number to a Brazilian E.164 format and queries the `clients` table. If a client is found, it also fetches their last 5 appointments from the `appointments` table, providing a historical context. The `clients` table has 8 columns, including `name`, `phone`, and `email`.
+*   **`get_revenue_summary`**: This tool calculates revenue metrics for a `professionalId` over a specified `period` (week, month, or year). It queries the `professionals` table (which has 24 columns, including `sessionPrice`) to get the professional's standard session price and then counts `appointments` with a `paymentStatus` of 'captured' within the defined period. It returns the total revenue, appointment count, and average ticket value.
+*   **`update_appointment_status`**: This tool modifies the `status` of an existing appointment. It requires both `appointmentId` and `professionalId` to ensure that only the owning professional can update an appointment. The `APPOINTMENT_STATUSES` constant defines the allowed statuses: `pending_confirmation`, `confirmed`, `rejected`, `completed`, `cancelled`, `no_show`. If a `reason` is provided, it updates the `notes` column of the `appointments` table. The `appointments` table has 13 columns, including `status` and `notes`.
 
-The `mcp-server/src/server.ts` file serves as the main entry point for the MCP server. It initializes an `@modelcontextprotocol/sdk/server/index.js` `Server` instance and sets up request handlers for `ListToolsRequestSchema` and `CallToolRequestSchema`.
+All these tools interact with the Odys database, which consists of 10 tables. Notably, many tables like `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews` have foreign key relationships to `professionalId` or `clientId` with `onDelete: cascade` behavior, ensuring that related records are automatically removed when a professional or client is deleted.
 
-*   The `ListToolsRequestSchema` handler returns the `TOOL_DEFINITIONS` array, which describes the available tools and their input schemas.
-*   The `CallToolRequestSchema` handler dispatches incoming tool calls to the appropriate functions defined in `mcp-server/src/tools.ts` based on the tool `name`. It wraps tool execution in a `try/catch` block to handle errors gracefully, returning a structured error response to the caller.
+## Design decisions
 
-### Tool Definitions and Logic
+The design of the `odys-mcp-server` reflects several deliberate choices:
 
-The `mcp-server/src/tools.ts` file defines the four primary tools exposed by the MCP server:
+*   **AI/Model Integration**: The primary motivation for using the Model Context Protocol is to enable AI models to programmatically interact with Odys's backend. By exposing specific, well-defined tools, you're creating a controlled and auditable interface for AI agents to query data and perform actions, rather than giving them direct database access or complex API endpoints. This simplifies the AI's task and enhances system security.
+*   **Clear Separation of Concerns**: The division between `mcp-server/src/server.ts` and `mcp-server/src/tools.ts` is a good practice. `server.ts` focuses solely on the MCP communication protocol and dispatching requests, while `tools.ts` encapsulates the application-specific business logic and database interactions. This makes each part easier to understand, test, and maintain independently.
+*   **Input Validation with Zod**: The use of `zod` for defining input schemas (e.g., `GetAppointmentsTodayInput`) is a strong choice for type safety and runtime validation. It ensures that incoming tool arguments conform to expected structures and types before any business logic is executed, preventing common errors and improving the robustness of the tools.
+*   **Declarative Tool Definitions**: The `TOOL_DEFINITIONS` array provides a declarative way to describe each tool's capabilities, including its `name`, `description`, and `inputSchema`. This JSON Schema representation is essential for MCP clients to dynamically discover and understand how to use the tools without prior knowledge of the Odys codebase.
+*   **Drizzle ORM for Database Access**: Leveraging `drizzle-orm` provides a type-safe and expressive way to interact with the database. This reduces the likelihood of SQL injection vulnerabilities and makes database queries more readable and maintainable compared to raw SQL.
 
-1.  **`get_appointments_today`**: Retrieves a professional's appointments for the current civil date, resolving "today" based on a specified IANA timezone (defaulting to `America/Sao_Paulo`). It uses `Intl.DateTimeFormat` for accurate timezone handling, including historical DST rules.
-2.  **`get_customer_by_phone`**: Looks up customer records by phone number. It normalizes Brazilian phone numbers and queries for both E.164 and 11-digit variants to ensure matches across different storage formats.
-3.  **`get_revenue_summary`**: Calculates revenue for a professional over rolling periods (7, 30, or 365 days). It counts appointments with `paymentStatus = 'captured'` and derives revenue from `professional.sessionPrice`.
-4.  **`update_appointment_status`**: A write tool that updates an appointment's status. It includes an ownership check (`existing.professionalId !== input.professionalId`) to prevent unauthorized modifications and is designed to be idempotent. If a `reason` is provided, it overwrites the appointment's `notes` field.
+## Potential improvements
 
-## Integration and Deployment
+1.  **Consistent Error Response Structure**: In `mcp-server/src/tools.ts`, the error responses from tool functions are not entirely consistent. For instance, `getAppointmentsToday` and `getRevenueSummary` return an object with an `error` field alongside other data, while `updateAppointmentStatus` returns `{ success: false, error: "..." }`. Standardizing these error responses (e.g., always returning an object with `success: boolean` and an optional `error: string` or `errorMessage: string`) would make it easier for MCP clients to parse and handle errors uniformly across all tools.
+2.  **Robust Timezone Handling**: The `tzOffsetMs` function in `mcp-server/src/tools.ts` is a custom implementation for calculating timezone offsets. While it works for basic cases, timezone calculations can be complex due to Daylight Saving Time (DST) changes, historical data, and various edge cases. Consider replacing this custom logic with a more robust, well-tested library like `date-fns-tz` or `Luxon` to ensure accuracy and reduce potential bugs related to time zone conversions, especially for critical features like appointment scheduling.
+3.  **Dynamic Revenue Calculation**: The `getRevenueSummary` tool in `mcp-server/src/tools.ts` calculates `totalRevenueCents` as `appointmentCount * professional.sessionPrice`. This assumes a fixed `sessionPrice` for all appointments of a professional. If `sessionPrice` can vary per appointment (e.g., due to discounts, different service types, or price changes over time), this calculation might not be accurate. A more robust approach would be to store the actual price charged for each appointment in the `appointments` table and sum those values, or to join with a `services` table that defines prices.
+4.  **Synchronization of Zod and JSON Schemas**: The `mcp-server/src/tools.ts` file defines both `zod` schemas (e.g., `GetAppointmentsTodayInput`) for runtime validation and JSON schemas within `TOOL_DEFINITIONS` for MCP client discovery. It's crucial that these two representations remain synchronized. You could explore generating the JSON schemas directly from the Zod schemas to eliminate duplication and prevent inconsistencies, perhaps using a library like `zod-to-json-schema`. This would ensure that the validation logic and the advertised tool interface are always aligned.
 
-The MCP server is not deployed as a traditional long-running service (e.g., a web server or API). Instead, it is designed to be invoked on demand by AI agent environments. This integration is configured via the `.mcp.json` file at the repository root:
+## References
 
-```json
-{
-  "mcpServers": {
-    "odys": {
-      "command": "node",
-      "args": ["./mcp-server/dist/server.js"]
-    }
-  }
-}
-```
-
-This configuration instructs environments like Claude Code sessions to execute `node ./mcp-server/dist/server.js` when they need to interact with the "odys" MCP server. The server then communicates over standard I/O (stdio) using the JSON-RPC protocol.
-
-## Testing
-
-The `mcp-server` sub-project includes Vitest tests under `src/__tests__/`. These tests specifically cover critical utility functions like phone number normalization (`phone.test.ts`) and timezone offset calculation (`timezone.test.ts`), as well as the `update_appointment_status` tool's Zod schema (`update.test.ts`). Live-database integration tests are currently deferred.
-
-## Known Gaps
-
-The `get_customer_by_phone` tool in `mcp-server/src/tools.ts` currently employs a pragmatic workaround for phone number normalization by querying for both E.164 and 11-digit variants. The underlying issue stems from the application storing 11-digit phone numbers while the MCP and intake agents prefer E.164. A more robust, long-term solution involving a shared `src/lib/phone.ts` utility and a database migration to standardize phone number storage is tracked in `mcp-server/TODO.md` as a medium-priority item.
-
-## Why this shape
-
-The MCP server is designed as a distinct, stdio-based sub-project to provide a secure and isolated interface for AI agents. This architecture abstracts away direct database access and complex business logic, exposing only a curated set of tools via JSON-RPC. This approach minimizes the attack surface, simplifies agent integration, and ensures that AI interactions adhere to defined operational boundaries and ownership checks, such as those enforced in `updateAppointmentStatus` in `mcp-server/src/tools.ts`. The self-contained nature also allows for independent development, testing, and bundling, reducing coupling with the main application's build process.
+*   `mcp-server/src/server.ts`
+*   `mcp-server/src/tools.ts`
+*   `mcp-server/package.json`
+*   `.mcp.json`
