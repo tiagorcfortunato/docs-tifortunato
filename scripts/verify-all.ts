@@ -103,21 +103,39 @@ async function main() {
     }
 
     if (initial.status === "DRIFT") {
-      console.log(`  → regenerating…`)
-      const ok = await regeneratePage(projectKey, pagePath)
-      result.regenerated = true
+      console.log(`  → refining (surgical fix based on findings)…`)
 
-      if (ok) {
+      // Write findings to temp file for refine script to consume
+      const tmpFindingsPath = `/tmp/refine-findings-${Date.now()}.json`
+      const { unlinkSync } = await import("fs")
+      writeFileSync(tmpFindingsPath, JSON.stringify(initial.findings, null, 2))
+
+      try {
+        execSync(`pnpm docs:refine ${projectKey} ${pagePath} ${tmpFindingsPath}`, { stdio: "inherit" })
+        result.regenerated = true
+
         await sleep(2000)
         console.log(`  → re-auditing…`)
         const final = await auditPage(projectKey, pagePath)
         result.finalStatus = final.status
         result.finalFindings = final.findings || []
-        console.log(`  → after regen: ${final.status} ${final.status === "CLEAN" ? "✅ auto-fixed" : "⚠️  still needs review"}`)
-      } else {
-        console.log(`  → regeneration failed`)
-        result.finalStatus = "ERROR"
-        result.finalFindings = [{ error: "Regeneration command failed" }]
+        console.log(`  → after refine: ${final.status} ${final.status === "CLEAN" ? "✅ auto-fixed via refine" : "⚠️  still needs review"}`)
+      } catch (err) {
+        console.log(`  → refine failed, falling back to full regenerate…`)
+        const ok = await regeneratePage(projectKey, pagePath)
+        result.regenerated = true
+        if (ok) {
+          await sleep(2000)
+          const final = await auditPage(projectKey, pagePath)
+          result.finalStatus = final.status
+          result.finalFindings = final.findings || []
+          console.log(`  → after fallback regen: ${final.status}`)
+        } else {
+          result.finalStatus = "ERROR"
+          result.finalFindings = [{ error: "Both refine and regenerate failed" }]
+        }
+      } finally {
+        try { unlinkSync(tmpFindingsPath) } catch {}
       }
     }
 
