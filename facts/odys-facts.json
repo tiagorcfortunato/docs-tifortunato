@@ -1,5 +1,5 @@
 {
-  "extracted_at": "2026-04-24T10:05:43.102Z",
+  "extracted_at": "2026-04-24T10:34:39.806Z",
   "source_repo": "/Users/tiagofortunato/Desktop/Money App/odys",
   "schema": {
     "tableCount": 10,
@@ -7,12 +7,12 @@
       {
         "varName": "professionals",
         "sqlName": "professionals",
-        "columnCount": 14,
+        "columnCount": 24,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -30,10 +30,30 @@
             "hasOnDeleteCascade": false
           },
           {
+            "name": "name",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
             "name": "slug",
             "type": "text",
             "nullable": false,
             "unique": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "phone",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
             "primaryKey": false,
             "hasDefault": false,
             "hasReference": false,
@@ -60,6 +80,16 @@
             "hasOnDeleteCascade": false
           },
           {
+            "name": "bio",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
             "name": "avatarUrl",
             "type": "text",
             "nullable": true,
@@ -76,6 +106,76 @@
             "unique": false,
             "primaryKey": false,
             "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "sessionPrice",
+            "type": "integer",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "plan",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "paymentType",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "paymentPercentage",
+            "type": "integer",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "pixKeyType",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "pixKey",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "stripeCustomerId",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
             "hasReference": false,
             "hasOnDeleteCascade": false
           },
@@ -154,12 +254,12 @@
       {
         "varName": "availability",
         "sqlName": "availability",
-        "columnCount": 2,
+        "columnCount": 5,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -175,18 +275,48 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "dayOfWeek",
+            "type": "integer",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "startTime",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "endTime",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "clients",
         "sqlName": "clients",
-        "columnCount": 2,
+        "columnCount": 8,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -196,24 +326,84 @@
           {
             "name": "userId",
             "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
             "nullable": false,
             "unique": false,
             "primaryKey": false,
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "name",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "phone",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "email",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "avatarUrl",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "clientNotes",
         "sqlName": "client_notes",
-        "columnCount": 2,
+        "columnCount": 6,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -229,18 +419,58 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "clientId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "content",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "updatedAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "recurringSchedules",
         "sqlName": "recurring_schedules",
-        "columnCount": 2,
+        "columnCount": 9,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -256,18 +486,88 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "clientId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "frequency",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "dayOfWeek",
+            "type": "integer",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "secondDayOfWeek",
+            "type": "integer",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "time",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "active",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "appointments",
         "sqlName": "appointments",
-        "columnCount": 2,
+        "columnCount": 13,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -283,18 +583,128 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "clientId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "recurringScheduleId",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "startsAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "endsAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "status",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "paymentStatus",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "stripePaymentIntentId",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "reminderSent24h",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "reminderSent1h",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "notes",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "messages",
         "sqlName": "messages",
-        "columnCount": 2,
+        "columnCount": 9,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -310,18 +720,88 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "clientId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "sender",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "type",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "content",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "fileUrl",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "readAt",
+            "type": "timestamp",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "follows",
         "sqlName": "follows",
-        "columnCount": 3,
+        "columnCount": 4,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -347,18 +827,28 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "reviews",
         "sqlName": "reviews",
-        "columnCount": 2,
+        "columnCount": 7,
         "columns": [
           {
             "name": "id",
             "type": "uuid",
-            "nullable": true,
+            "nullable": false,
             "unique": false,
             "primaryKey": true,
             "hasDefault": true,
@@ -374,14 +864,145 @@
             "hasDefault": false,
             "hasReference": true,
             "hasOnDeleteCascade": true
+          },
+          {
+            "name": "clientId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "appointmentId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          },
+          {
+            "name": "rating",
+            "type": "integer",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "comment",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
           }
         ]
       },
       {
         "varName": "notifications",
         "sqlName": "notifications",
-        "columnCount": 0,
-        "columns": []
+        "columnCount": 8,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "recipientId",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "recipientType",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "type",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "title",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "body",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "read",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          }
+        ]
       }
     ]
   },

@@ -1,4 +1,4 @@
-import { Project } from "ts-morph"
+import { Project, Node } from "ts-morph"
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs"
 import { join } from "path"
 import { loadMapping, getProject } from "./lib/mapping"
@@ -32,37 +32,59 @@ async function main() {
     const tables: any[] = []
     for (const varDecl of schemaFile.getVariableDeclarations()) {
       const init = varDecl.getInitializer()
-      if (!init) continue
-      const initText = init.getText()
-      if (!initText.startsWith("pgTable(")) continue
+      if (!init || !Node.isCallExpression(init)) continue
+      const callee = init.getExpression()
+      if (!Node.isIdentifier(callee) || callee.getText() !== "pgTable") continue
+
+      const args = init.getArguments()
+      if (args.length < 2) continue
 
       const varName = varDecl.getName()
-      const sqlName = initText.match(/pgTable\(\s*"([^"]+)"/)?.[1] ?? varName
+      const firstArg = args[0]
+      const sqlName = Node.isStringLiteral(firstArg) ? firstArg.getLiteralValue() : varName
 
-      // Extract column block
-      const colsMatch = initText.match(/pgTable\([^,]+,\s*\{([\s\S]+?)\}\s*(?:,\s*\(.+?\)\s*=>\s*\(.+?\))?\s*\)/)
-      const columnBlock = colsMatch?.[1] ?? ""
+      const colsArg = args[1]
+      if (!Node.isObjectLiteralExpression(colsArg)) continue
 
-      // Parse each column line
       const columns: any[] = []
-      const colLines = columnBlock.split(/,\s*\n/).filter(l => /^\s*\w+:/.test(l))
-      for (const line of colLines) {
-        const nameMatch = line.match(/^\s*(\w+):/)
-        if (!nameMatch) continue
-        const name = nameMatch[1]
-        const typeMatch = line.match(/:\s*(\w+)\s*\(/)
-        const type = typeMatch?.[1] ?? "unknown"
-        const nullable = !line.includes(".notNull()")
-        const unique = line.includes(".unique()")
-        const primaryKey = line.includes(".primaryKey()")
-        const hasDefault = /\.default\(|\.defaultNow\(|\.defaultRandom\(/.test(line)
-        const hasReference = line.includes(".references(")
-        const hasOnDeleteCascade = line.includes('onDelete: "cascade"')
+      for (const prop of colsArg.getProperties()) {
+        if (!Node.isPropertyAssignment(prop)) continue
+        const name = prop.getName()
+        const initializer = prop.getInitializer()
+        if (!initializer) continue
+
+        const chainText = initializer.getText()
+
+        // Walk the call chain to find the base type (e.g., uuid, text, timestamp)
+        let type = "unknown"
+        let cur: Node = initializer
+        while (Node.isCallExpression(cur)) {
+          const expr = cur.getExpression()
+          if (Node.isPropertyAccessExpression(expr)) {
+            const next = expr.getExpression()
+            if (Node.isCallExpression(next)) {
+              cur = next
+              continue
+            }
+            break
+          }
+          if (Node.isIdentifier(expr)) {
+            type = expr.getText()
+          }
+          break
+        }
+
+        const nullable = !/\.notNull\s*\(/.test(chainText)
+        const unique = /\.unique\s*\(/.test(chainText)
+        const primaryKey = /\.primaryKey\s*\(/.test(chainText)
+        const hasDefault = /\.default\s*\(|\.defaultNow\s*\(|\.defaultRandom\s*\(/.test(chainText)
+        const hasReference = /\.references\s*\(/.test(chainText)
+        const hasOnDeleteCascade = /onDelete:\s*["']cascade["']/.test(chainText)
 
         columns.push({
           name,
           type,
-          nullable,
+          nullable: primaryKey ? false : nullable,
           unique,
           primaryKey,
           hasDefault,
