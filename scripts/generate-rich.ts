@@ -43,7 +43,13 @@ async function main() {
   let findings: Finding[] = []
   for (let i = 1; i <= MAX_REFINE_ITERATIONS; i++) {
     console.log(`[rich] Audit pass ${i}/${MAX_REFINE_ITERATIONS}...`)
-    const audit = await auditPage(project, page, pagePath, mdx)
+    let audit
+    try {
+      audit = await auditPage(project, page, pagePath, mdx)
+    } catch (err) {
+      console.warn(`[rich] Audit pass ${i} failed (${(err as Error).message?.slice(0, 120)}) — keeping prior draft.`)
+      break
+    }
     status = audit.status
     findings = audit.findings
     const actionable = findings.filter(f => f.type === "drift" || f.type === "missing")
@@ -57,7 +63,13 @@ async function main() {
       break
     }
     console.log(`[rich] ${actionable.length} finding(s). Refining...`)
-    const refined = await refinePage(project, page, pagePath, mdx, findings)
+    let refined: string
+    try {
+      refined = await refinePage(project, page, pagePath, mdx, findings)
+    } catch (err) {
+      console.warn(`[rich] Refine pass ${i} failed (${(err as Error).message?.slice(0, 120)}) — keeping prior draft.`)
+      break
+    }
     if (!refined.startsWith("---")) {
       console.warn(`[rich] Refine pass ${i} produced invalid output — keeping prior draft.`)
       break
