@@ -68,14 +68,19 @@ jobs:
           fetch-depth: 30
 
       - name: Point config at checked-out source
+        env:
+          PROJECT: ${{ inputs.project }}
         run: |
-          node -e "
-          const fs = require('fs');
-          const path = 'projects/${{ inputs.project }}/config.json';
-          const cfg = JSON.parse(fs.readFileSync(path, 'utf8'));
-          cfg.repo_path = '\${PWD}/.source/${{ inputs.project }}';
-          fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
-          "
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const project = process.env.PROJECT;
+            const cfgPath = `projects/${project}/config.json`;
+            const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+            cfg.repo_path = path.join(process.cwd(), ".source", project);
+            fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2) + "\n");
+            console.log("[workflow] repo_path ->", cfg.repo_path);
+          '
 
       - uses: pnpm/action-setup@v4
         with: { version: 9 }
