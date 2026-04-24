@@ -246,5 +246,36 @@ function cleanOutput(raw: string): string {
   if (mdx.startsWith("```")) {
     mdx = mdx.replace(/^```\w*\n/, "").replace(/\n```$/, "")
   }
-  return mdx
+  return sanitizeFrontmatter(mdx)
+}
+
+/**
+ * Guardrail: ensure frontmatter is valid YAML. The LLM often produces descriptions like
+ * `description: Database overview: Drizzle on Supabase` where the unquoted colon+space
+ * breaks YAML parsing. We auto-quote any value that contains YAML-special characters,
+ * and insert a missing closing `---` fence when the model forgets it.
+ */
+function sanitizeFrontmatter(content: string): string {
+  if (!content.startsWith("---\n")) return content
+  const afterFirst = content.indexOf("\n---\n", 4)
+  if (afterFirst === -1) {
+    const h1 = content.search(/\n#\s/)
+    if (h1 === -1) return content
+    const fm = content.slice(4, h1).trimEnd()
+    const body = content.slice(h1)
+    return `---\n${fm}\n---\n${body}`
+  }
+  const fmRaw = content.slice(4, afterFirst)
+  const body = content.slice(afterFirst + 5)
+  const lines = fmRaw.split("\n").map(line => {
+    const m = line.match(/^(\w+):\s*(.*)$/)
+    if (!m) return line
+    const [, key, value] = m
+    if (!value) return line
+    if (value.startsWith('"') || value.startsWith("'")) return line
+    if (!/:\s|[#&*!|>%@`?\[\]{}]/.test(value)) return line
+    const escaped = value.replace(/"/g, '\\"')
+    return `${key}: "${escaped}"`
+  })
+  return `---\n${lines.join("\n")}\n---\n${body}`
 }
