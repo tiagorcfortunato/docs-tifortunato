@@ -39,14 +39,16 @@ ${docContent}
 CURRENT CODE (excerpts):
 ${codeSections || "[no code files mapped — treat doc as stale-safe]"}
 
-For each specific factual claim in the doc that has drifted from the current code, report:
+For each specific factual claim in the doc, classify into one of three types:
+
+- **drift**: claim in doc contradicts code (e.g., "10 tables" but code shows 9)
+- **missing**: code contains a fact not mentioned in doc, worth adding
+- **suspect**: a claim APPEARS TO CONTRADICT available code but is unclear. ONLY flag as suspect when the code you see directly conflicts with the claim. DO NOT flag as suspect merely because a fact is not present in the provided code files — most pages reference facts from other files of the project, and that is expected. Absence of evidence ≠ evidence of absence.
+
+For each finding, report:
 - claim: the exact sentence or phrase from the doc
 - reality: what the current code actually shows (cite file)
-- fix: suggested replacement text
-
-Also surface:
-- missing: claims the code supports that aren't in the doc yet
-- suspect: claims you can't verify from the code excerpts
+- fix: suggested replacement text (can be null for suspect findings you can't resolve)
 
 Return JSON:
 {
