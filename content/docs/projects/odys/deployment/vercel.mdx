@@ -1,57 +1,76 @@
 ---
 title: "Vercel Deployment"
-description: "Vercel deployment: auto-deploy on main, env vars, regions"
+description: "Understanding Odys's deployment strategy on Vercel, including continuous integration, environment variable management, cron jobs, and observability."
 ---
 
 # Vercel Deployment
 
-This page details the deployment strategy for the application on Vercel, covering automatic deployments, environment variable management, and configured cron jobs.
+For Odys, Vercel serves as the primary platform for deploying the application, providing a streamlined path from development to production. This document delves into the architectural choices and configurations that underpin Odys's deployment on Vercel, explaining the *why* behind each decision and highlighting areas for future enhancement. Understanding this setup is crucial for maintaining the application's reliability, performance, and operational efficiency.
 
-## Automatic Deployment
+## Overview
 
-The application is hosted on Vercel, leveraging its native integration with GitHub. Pushes to the `main` branch automatically trigger a production deployment. For pull requests, Vercel creates preview deployments, allowing for testing changes in an isolated environment before merging to `main`. This process is handled by Vercel's GitHub application, not by custom GitHub Actions workflows.
+Odys leverages Vercel's platform for its robust integration with Next.js, enabling rapid iteration and continuous deployment. The core of this strategy revolves around automatic deployments triggered by pushes to the `main` branch, ensuring that the latest stable code is always live. Beyond simple hosting, Vercel facilitates critical operational aspects such as managing environment variables, scheduling background tasks via cron jobs, and integrating with observability tools like Sentry.
+
+The deployment configuration is primarily managed through `vercel.json` for Vercel-specific features like cron jobs, and `next.config.ts` for Next.js build and runtime configurations, including image optimization and Sentry integration. This separation of concerns allows for clear management of infrastructure-as-code alongside application-level settings.
+
+## Continuous Deployment
+
+Odys benefits from Vercel's native continuous deployment capabilities. Any push to the `main` branch automatically triggers a new build and deployment. This approach minimizes manual intervention, reduces the risk of human error, and ensures that new features and bug fixes are delivered to users quickly and consistently. The choice of Vercel for this purpose aligns with the project's need for a developer-friendly platform that handles much of the deployment complexity out of the box.
 
 ## Environment Variables
 
-Environment variables required for the application are managed directly within the Vercel dashboard. While a local `.env.example` file enumerates the necessary variables for local development, their production values are securely configured and injected by Vercel during the build and runtime phases.
+Environment variables are fundamental to Odys's deployment, providing a secure mechanism to configure the application for different environments (development, staging, production) without hardcoding sensitive information. While specific values are not committed to the repository, Vercel's dashboard allows for their secure management. For instance, the various Stripe price IDs, such as `STRIPE_BASIC_PRICE_ID`, `STRIPE_PRO_PRICE_ID`, and `STRIPE_PREMIUM_PRICE_ID`, are crucial for managing subscription plans and are configured as environment variables. Similarly, database connection strings, API keys for external services like Groq SDK, and Supabase, and Sentry DSNs are all managed this way. This practice ensures that credentials and configuration secrets are kept out of source control, adhering to security best practices.
 
-## Vercel Cron Jobs
+## Cron Jobs
 
-Vercel Cron Jobs are used to schedule recurring tasks. These are declared in the `vercel.json` file:
+Odys utilizes Vercel's built-in cron job functionality to schedule recurring background tasks. These are defined within the `vercel.json` file, which acts as the manifest for Vercel's serverless functions and cron schedules.
 
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron/reminders",
-      "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/whatsapp-watchdog",
-      "schedule": "0 9 * * *"
-    }
-  ]
-}
-```
+Currently, two critical cron jobs are configured:
 
-The `/api/cron/reminders` endpoint is scheduled to run daily at 8 AM UTC, handling tasks such as sending WhatsApp reminders for appointments and trial expiration emails. The `/api/cron/whatsapp-watchdog` endpoint runs daily at 9 AM UTC.
+*   **`/api/cron/reminders`**: This job runs daily at `0 8 * * *` (8:00 AM UTC). Its purpose is to send out automated reminders for upcoming appointments, likely leveraging the `appointments` table to identify relevant entries and the `whatsapp` message templates like `msgReminder24h` and `msgReminder1h`. This ensures clients and professionals are kept informed, reducing no-shows and improving engagement.
+*   **`/api/cron/whatsapp-watchdog`**: Scheduled for `0 9 * * *` (9:00 AM UTC) daily, this cron job likely monitors the status of WhatsApp messages, perhaps retrying failed sends or flagging issues. Given the extensive use of WhatsApp message templates (19 in total, including `msgBookingConfirmed`, `msgBookingRejected`, `msgNewMessageToClient`, etc.), a watchdog is essential for maintaining reliable communication.
 
-Authentication for these cron job handlers relies on a shared secret, which is expected in either the `x-cron-secret` header or as a `Bearer` token in the `Authorization` header.
+These cron jobs are implemented as API routes, allowing them to execute server-side logic without exposing them directly to public web traffic, as Vercel handles their scheduled invocation.
 
-Sentry's integration, configured in `next.config.ts`, includes `automaticVercelMonitors: true` within its `webpack` options. This enables automatic instrumentation of Vercel Cron Monitors, providing visibility into the health and execution of these scheduled tasks.
+## Monitoring and Observability
 
-## Sentry Integration
+Odys integrates Sentry for comprehensive error tracking and performance monitoring. The configuration for Sentry is managed within `next.config.ts` using `withSentryConfig`.
 
-The application integrates with Sentry for error monitoring and performance tracing, configured via `next.config.ts`. The `withSentryConfig` wrapper is used to set up Sentry for Next.js.
+Key aspects of this integration include:
 
-Key Sentry configurations include:
+*   **Project Identification**: Sentry is configured with `org: "odys-hx"` and `project: "javascript-nextjs"`, ensuring that error reports and performance data are correctly attributed within the Sentry platform.
+*   **Source Map Uploads**: The `silent: !process.env.CI` option ensures that logs for uploading source maps are only printed in CI environments, keeping local development output clean. `widenClientFileUpload: true` is enabled to upload a larger set of source maps, which provides more detailed and prettier stack traces for debugging.
+*   **Ad-blocker Circumvention**: A `tunnelRoute: "/monitoring"` is configured. This routes browser requests to Sentry through a Next.js rewrite, which helps circumvent ad-blockers that might otherwise prevent Sentry from reporting client-side errors.
+*   **Vercel Cron Monitors**: The `webpack.automaticVercelMonitors: true` setting enables automatic instrumentation of Vercel Cron Monitors. This is a crucial feature for the `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` jobs, as it allows Sentry to automatically track their execution, success, and failure, providing proactive alerts if a scheduled task doesn't run as expected.
 
-*   `org: "odys-hx"` and `project: "javascript-nextjs"` identify the Sentry project.
-*   `silent: !process.env.CI` ensures Sentry logs for source map uploads are only printed in CI environments.
-*   `widenClientFileUpload: true` uploads a broader set of source maps for more detailed stack traces.
-*   `tunnelRoute: "/monitoring"` routes browser requests to Sentry through a Next.js rewrite, which can help circumvent ad-blockers.
-*   `automaticVercelMonitors: true` (as mentioned above) enables Sentry's Cron Monitors for Vercel cron jobs.
+This robust monitoring setup is vital for quickly identifying and resolving issues, ensuring the stability and reliability of Odys.
 
-## Known Gaps
+## Image Optimization
 
-The authentication mechanism for Vercel Cron Jobs, which checks for a shared secret in `x-cron-secret` or `Authorization: Bearer <CRON_SECRET>`, uses a plain `===` comparison. This is not a timing-safe comparison, which could potentially be vulnerable to timing attacks. A timing-safe comparison mechanism is needed to mitigate this risk.
+The `next.config.ts` also includes configurations for image optimization, specifically defining `remotePatterns` for the Next.js Image component. This allows Odys to securely load images from trusted external sources:
+
+*   `https://*.supabase.co`: This pattern permits loading images hosted on Supabase, which is likely used for storing user avatars or other media.
+*   `https://lh3.googleusercontent.com`: This pattern enables loading images from Google's user content domain, typically used for user profile pictures when signing in via Google.
+
+By explicitly defining these patterns, Odys enhances security by preventing arbitrary image loading and improves performance by allowing Next.js to optimize these external images.
+
+## Design decisions
+
+The decision to deploy Odys on Vercel was primarily driven by its tight integration with Next.js, which is the chosen framework for the application. This integration simplifies the deployment pipeline significantly, allowing developers to focus more on feature development rather than infrastructure management. Vercel's serverless function model naturally aligns with Odys's API routes, providing automatic scaling and cost efficiency.
+
+The use of `vercel.json` for cron jobs was a deliberate choice to leverage Vercel's native scheduling capabilities. This avoids the need for external cron services or custom server setups, keeping the deployment architecture lean and integrated. The specific schedules for `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` were chosen to align with typical daily operational windows, ensuring timely delivery of critical communications.
+
+Integrating Sentry early in the project's lifecycle, as seen in `next.config.ts`, reflects a proactive stance on observability. The trade-off of slightly increased build times due to `widenClientFileUpload` is accepted for the benefit of richer stack traces, which are invaluable for debugging production issues. The `tunnelRoute` for Sentry demonstrates an awareness of potential real-world deployment challenges, such as ad-blockers, and a commitment to ensuring comprehensive error reporting.
+
+Finally, defining `images.remotePatterns` in `next.config.ts` is a security-conscious decision. It prevents the application from fetching images from untrusted domains, mitigating potential vulnerabilities like SSRF (Server-Side Request Forgery) or content injection, while still allowing necessary external image sources like Supabase and Google.
+
+## Potential improvements
+
+1.  **Formalize Environment Variable Documentation**: While environment variables are used, there isn't a centralized, version-controlled document or `.env.example` file listing all required variables for a complete Vercel deployment. Creating a comprehensive `.env.example` that includes placeholders for `STRIPE_BASIC_PRICE_ID`, `STRIPE_PRO_PRICE_ID`, `STRIPE_PREMIUM_PRICE_ID` (from `facts.plans`), Supabase credentials, Groq API keys (from `facts.mcp`), and Sentry DSNs (from `next.config.ts`) would significantly improve developer onboarding and ensure consistency across environments.
+2.  **Optimize Vercel Build Caching**: Currently, the `next.config.ts` focuses on Sentry and image optimization. Investigating and implementing more explicit Vercel build caching strategies could further reduce deployment times. This might involve configuring `cache-paths` in `vercel.json` or fine-tuning `package.json` scripts to leverage Vercel's build cache more effectively for dependencies and intermediate build artifacts.
+3.  **Granular Sentry Cron Monitoring**: Although `webpack.automaticVercelMonitors: true` is enabled in `next.config.ts`, providing automatic monitoring for cron jobs, consider adding explicit Sentry Cron Monitor configurations for `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` directly within the Sentry dashboard. This would allow for more granular control over alerting thresholds, custom health check pings, and detailed reporting specific to each cron job's expected behavior, beyond what automatic detection might provide.
+
+## References
+
+*   `vercel.json`
+*   `next.config.ts`
