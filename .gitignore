@@ -24,3 +24,6 @@ yarn-error.log*
 .env*.local
 .vercel
 next-env.d.ts
+
+# docs tooling artifacts
+audit-report-*.md
