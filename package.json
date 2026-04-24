@@ -14,7 +14,8 @@
     "docs:batch": "tsx scripts/batch-generate.ts",
     "docs:sync": "tsx scripts/docs-sync.ts",
     "docs:verify": "tsx scripts/verify-all.ts",
-    "docs:refine": "tsx scripts/refine-page.ts"
+    "docs:refine": "tsx scripts/refine-page.ts",
+    "facts:extract": "tsx scripts/extract-facts.ts"
   },
   "dependencies": {
     "fumadocs-core": "16.8.2",
@@ -41,6 +42,7 @@
     "openai": "^6.34.0",
     "postcss": "^8.5.10",
     "tailwindcss": "^4.2.2",
+    "ts-morph": "^28.0.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }

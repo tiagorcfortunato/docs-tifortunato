@@ -1,0 +1,634 @@
+{
+  "extracted_at": "2026-04-24T10:05:43.102Z",
+  "source_repo": "/Users/tiagofortunato/Desktop/Money App/odys",
+  "schema": {
+    "tableCount": 10,
+    "tables": [
+      {
+        "varName": "professionals",
+        "sqlName": "professionals",
+        "columnCount": 14,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "userId",
+            "type": "text",
+            "nullable": false,
+            "unique": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "slug",
+            "type": "text",
+            "nullable": false,
+            "unique": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "email",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "profession",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "avatarUrl",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "sessionDuration",
+            "type": "integer",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "stripeSubscriptionId",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "trialEndsAt",
+            "type": "timestamp",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "welcomeMessage",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "autoConfirm",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "active",
+            "type": "boolean",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "updatedAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          }
+        ]
+      },
+      {
+        "varName": "availability",
+        "sqlName": "availability",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "clients",
+        "sqlName": "clients",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "userId",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "clientNotes",
+        "sqlName": "client_notes",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "recurringSchedules",
+        "sqlName": "recurring_schedules",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "appointments",
+        "sqlName": "appointments",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "messages",
+        "sqlName": "messages",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "follows",
+        "sqlName": "follows",
+        "columnCount": 3,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "userId",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "reviews",
+        "sqlName": "reviews",
+        "columnCount": 2,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "professionalId",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": true,
+            "hasOnDeleteCascade": true
+          }
+        ]
+      },
+      {
+        "varName": "notifications",
+        "sqlName": "notifications",
+        "columnCount": 0,
+        "columns": []
+      }
+    ]
+  },
+  "apiRoutes": {
+    "count": 21,
+    "routes": [
+      {
+        "path": "/api/account",
+        "methods": [
+          "DELETE"
+        ]
+      },
+      {
+        "path": "/api/booking",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/client-profile",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/follows",
+        "methods": [
+          "GET",
+          "POST",
+          "DELETE"
+        ]
+      },
+      {
+        "path": "/api/messages",
+        "methods": [
+          "GET",
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/notifications",
+        "methods": [
+          "GET",
+          "PATCH"
+        ]
+      },
+      {
+        "path": "/api/onboarding",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/recurring",
+        "methods": [
+          "POST",
+          "DELETE"
+        ]
+      },
+      {
+        "path": "/api/reviews",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/settings",
+        "methods": [
+          "PATCH"
+        ]
+      },
+      {
+        "path": "/api/trial",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/ai/chat",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/appointments/[id]",
+        "methods": [
+          "PATCH"
+        ]
+      },
+      {
+        "path": "/api/auth/register",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/clients/notes",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/cron/reminders",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/api/cron/whatsapp-watchdog",
+        "methods": [
+          "GET"
+        ]
+      },
+      {
+        "path": "/api/stripe/checkout",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/stripe/webhook",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/upload/avatar",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
+        "path": "/api/whatsapp/webhook",
+        "methods": [
+          "POST"
+        ]
+      }
+    ]
+  },
+  "cron": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "0 8 * * *"
+    },
+    {
+      "path": "/api/cron/whatsapp-watchdog",
+      "schedule": "0 9 * * *"
+    }
+  ],
+  "plans": {
+    "free": {
+      "price": 0,
+      "priceIdEnvVar": null,
+      "limits": {}
+    },
+    "basic": {
+      "price": 39,
+      "priceIdEnvVar": "STRIPE_BASIC_PRICE_ID",
+      "limits": {}
+    },
+    "pro": {
+      "price": 79,
+      "priceIdEnvVar": "STRIPE_PRO_PRICE_ID",
+      "limits": {}
+    },
+    "premium": {
+      "price": 149,
+      "priceIdEnvVar": "STRIPE_PREMIUM_PRICE_ID",
+      "limits": {}
+    }
+  },
+  "mcp": {
+    "toolCount": 4,
+    "tools": [
+      "get_appointments_today",
+      "get_customer_by_phone",
+      "get_revenue_summary",
+      "update_appointment_status"
+    ]
+  },
+  "rateLimits": {
+    "booking": {
+      "limit": 5,
+      "window": "10 m",
+      "prefix": "rl:booking"
+    },
+    "api": {
+      "limit": 60,
+      "window": "1 m",
+      "prefix": "rl:api"
+    },
+    "onboarding": {
+      "limit": 3,
+      "window": "1 h",
+      "prefix": "rl:onboarding"
+    },
+    "register": {
+      "limit": 5,
+      "window": "1 h",
+      "prefix": "rl:register"
+    },
+    "whatsapp": {
+      "limit": 10,
+      "window": "1 m",
+      "prefix": "rl:whatsapp"
+    }
+  },
+  "stripeWebhookEvents": [
+    "checkout.session.completed",
+    "customer.subscription.updated",
+    "customer.subscription.deleted"
+  ],
+  "pkg": {
+    "name": "odys",
+    "version": "0.1.0",
+    "next": "16.2.1",
+    "react": "19.2.4",
+    "drizzle": "^0.45.2",
+    "supabase": "^2.100.1",
+    "stripe": "^21.0.1",
+    "groqSdk": "^1.1.2",
+    "depCount": 32,
+    "devDepCount": 8
+  },
+  "whatsapp": {
+    "messageTemplateCount": 19,
+    "templates": [
+      "msgBookingRequest",
+      "msgBookingConfirmed",
+      "msgBookingRejected",
+      "msgBookingCancelled",
+      "msgReminder24h",
+      "msgReminder1h",
+      "msgCancelledByClientToPro",
+      "msgCancelledByProToClient",
+      "msgBookingConfirmedReceipt",
+      "msgBookingRejectedReceipt",
+      "msgRegistrationInvite",
+      "msgPaymentConfirmedToClient",
+      "msgPaymentConfirmedToPro",
+      "msgAppointmentCompletedToClient",
+      "msgAppointmentCompletedToPro",
+      "msgNoShowToClient",
+      "msgNoShowToPro",
+      "msgNewMessageToClient",
+      "msgNewMessageToPro"
+    ]
+  }
+}
