@@ -1,96 +1,80 @@
 ---
-title: "Evolution API: WhatsApp Integration"
-description: "Deep dive into Odys's WhatsApp integration via Evolution API, covering its architecture, message templating, deployment on Railway, and the rationale behind its design choices."
+title: Evolution API
+description: Evolution API client and deployment for WhatsApp integration in Odys.
 ---
 
-# Evolution API: WhatsApp Integration
+# Evolution API
 
-At the heart of Odys's "WhatsApp-first" philosophy lies the Evolution API, a critical component that enables seamless communication between professionals, clients, and the platform's automated systems. This document will guide you through the architecture and implementation of Odys's WhatsApp integration, explaining the *why* behind its design, how it's deployed, and where we can refine it further. Understanding this integration is key to appreciating how Odys tackles the core problem of appointment management and client engagement in a WhatsApp-centric market.
+The Evolution API serves as the foundational layer for Odys's WhatsApp-first communication strategy, enabling both automated transactional messages and conversational AI interactions. This document delves into the design choices behind its integration, how it's deployed, and the mechanisms that ensure a cohesive user experience across different communication channels.
 
 ## Overview
 
-Odys leverages the Evolution API to manage all WhatsApp interactions, serving as the single conduit for both automated transactional messages and conversational AI. This strategic choice allows Odys to operate a dedicated corporate WhatsApp number, centralizing all communications without requiring professionals to link their personal phones or manage separate WhatsApp Business accounts. The system is designed to handle outbound messages, route inbound replies intelligently, and provide a consistent user experience through carefully crafted message templates.
+Odys leverages the Evolution API to manage all WhatsApp interactions, centralizing communication through a single, dedicated corporate WhatsApp number. This approach allows Odys to send automated reminders, confirmations, and operational alerts, as well as facilitate client-professional messaging and AI-driven scheduling, all without requiring professionals to integrate their personal WhatsApp accounts. The `src/lib/whatsapp.ts` file encapsulates the entire client-side logic for interacting with the Evolution API, defining 19 distinct message templates and the core `sendWhatsApp` function. For local development, the Evolution API runs as a Docker container, configured via `docker-compose.evolution.yml`, while in production, it's self-hosted on Railway.
 
-The Evolution API instance for local development is defined in `docker-compose.evolution.yml`, utilizing the `atendai/evolution-api:v1.8.2` Docker image. For production, the platform generally refers to Evolution API v2, which is self-hosted on Railway, as detailed in the `README.md`. This setup ensures that the WhatsApp integration is robust and isolated, running as a dedicated service.
+## Evolution API Client
 
-## The `src/lib/whatsapp.ts` Module: The Communication Hub
+The `src/lib/whatsapp.ts` file is the heart of Odys's WhatsApp integration. It provides a robust, abstracted interface for sending messages, ensuring consistency and maintainability across the application.
 
-The `src/lib/whatsapp.ts` file is the central nervous system for all WhatsApp communications within Odys. Its primary purpose is to abstract away the complexities of the Evolution API, providing a consistent and safe interface for sending messages.
-
-At its core, the module relies on three environment variables: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE`. The `isConfigured()` function acts as a guard, ensuring that no messages are attempted if these critical settings are missing, preventing runtime errors in misconfigured environments.
+At its core, the client relies on three environment variables: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE`. These are crucial for establishing a connection to the Evolution API instance, with the `isConfigured` function acting as a guard to prevent message attempts when the API is not properly set up.
 
 ### Phone Number Normalization
 
-A crucial utility within this module is `normalizeBrazilianPhone()`. This function addresses a common challenge in WhatsApp integrations: the varied formats of phone numbers. It intelligently converts phone numbers into a standardized international format without the leading `+`. For Brazilian numbers, it prepends `55` if the country code is missing, while preserving other international numbers. This ensures that messages are always sent to the correct recipient, regardless of how their phone number was initially entered into the system.
+A critical utility within `src/lib/whatsapp.ts` is the `normalizeBrazilianPhone` function. This function addresses the common challenge of varying phone number formats by converting them into a standardized international format without the leading `+`. It intelligently handles Brazilian numbers, prepending `55` if the country code is missing, while preserving other international numbers that already include their respective country codes. This normalization ensures that messages are always directed to the correct recipient, regardless of how the phone number was initially captured.
 
-### Sending Messages with Context
+### Sending Messages
 
-The `sendWhatsApp()` function is the workhorse for all outbound messages. It takes a `phone` number (which is first normalized), the `text` content, and an optional `context` object. This `context` is a powerful design choice: when provided, it stores the `professionalId` and `appointmentId` in Redis, keyed by the client's phone number. This mechanism is vital for routing client replies. If a client responds to a reminder or confirmation, the incoming message webhook can look up this context to understand which professional or appointment the client is referring to, enabling a more intelligent and personalized AI interaction.
+The `sendWhatsApp` function is the primary entry point for all outbound WhatsApp messages. It takes a `phone` number (which is first normalized), the `text` content, and an optional `context` object. The `context` parameter is a key design choice: when provided, it instructs the system to record the `professionalId` and `appointmentId` in Redis under a `last_outbound:{phone}` key. This mechanism is vital for routing client replies back to the correct professional and appointment, especially in a multi-professional platform where a single Odys WhatsApp number serves many. This ensures that a client's response to a reminder, for instance, is correctly associated with the ongoing conversation.
 
-The function also includes basic error handling, logging any failures to connect to the Evolution API or issues with the API response, and gracefully returning `false` rather than throwing exceptions. This design prioritizes system resilience, ensuring that a WhatsApp delivery failure doesn't cascade into a broader application crash.
+The function handles network requests to the Evolution API, including `POST` requests to `${BASE_URL}/message/sendText/${INSTANCE}`. It includes basic error handling, logging failures to the console rather than throwing exceptions, which allows the calling code to continue execution gracefully. A fixed `delay` of `1200` milliseconds is included in the message payload, likely to mimic human-like typing or to prevent rate limiting issues with the WhatsApp platform itself.
 
-### Visual Templating for Clarity
+### Visual Templating
 
-Odys employs a clever visual templating system for client-facing transactional messages. Functions like `transactionalHeader()` and the `TRANSACTIONAL_FOOTER` constant are used to wrap automated notifications with distinct rule lines and professional names. This visual separation, using `HEADER_RULE` and `TRANSACTIONAL_FOOTER`, is critical for user experience. It helps clients quickly distinguish between automated system alerts (like reminders or confirmations) and conversational AI replies within the same WhatsApp chat thread, preventing confusion when the same Odys number handles both channels.
+To enhance clarity and user experience, `src/lib/whatsapp.ts` implements a visual templating system for client-facing transactional messages. The `transactionalHeader` function, utilizing `HEADER_RULE` and `TRANSACTIONAL_FOOTER`, wraps messages with distinct rule lines and includes the professional's name and an emoji. This visual distinction is crucial for clients, helping them differentiate automated notifications from conversational AI replies within the same WhatsApp thread, especially since the same Odys number handles both channels.
 
 ### Message Templates
 
-The `src/lib/whatsapp.ts` module defines 19 distinct message templates, each encapsulated in its own named function (e.g., `msgBookingConfirmed`, `msgReminder24h`, `msgNewMessageToPro`). This approach centralizes all message content, ensuring consistency across the platform and making it easier to manage and update communication flows. These templates are broadly categorized into:
+The file defines 19 pre-formatted message templates, categorized for different scenarios:
+*   **Client-facing transactional**: These include confirmations, rejections, cancellations, 24-hour and 1-hour reminders, payment confirmations, and appointment completion notifications. They all leverage the `transactionalHeader` and `TRANSACTIONAL_FOOTER` for consistent branding and context.
+*   **Professional-facing operational**: These messages, such as new booking requests, client cancellations, and payment receipts, are sent directly to the professional's phone from the corporate Odys number, providing critical operational alerts.
+*   **Special templates**: `msgRegistrationInvite` is a unique template appended to confirmation messages for clients without an Odys account, encouraging them to register and manage their appointments.
 
-*   **Client-facing transactional messages**: These include confirmations, rejections, cancellations, 24-hour and 1-hour reminders, payment confirmations, and appointment completion notifications. They typically use the `transactionalHeader` and `TRANSACTIONAL_FOOTER` for visual disambiguation.
-*   **Professional-facing operational messages**: These are alerts for new booking requests, client cancellations, payment receipts, and new client messages. These messages are designed to be concise and actionable, delivered directly to the professional's phone from the corporate Odys number.
+## Evolution API Deployment
 
-## Evolution API Deployment on Railway
+For local development, the Evolution API is configured using `docker-compose.evolution.yml`. This setup ensures that developers can run a fully functional WhatsApp integration stack without complex manual configurations.
 
-The Evolution API is deployed as a Docker container on Railway, ensuring a dedicated and isolated environment for WhatsApp operations. The `docker-compose.evolution.yml` file provides the blueprint for this deployment, specifying the `atendai/evolution-api:v1.8.2` image.
+The `docker-compose.evolution.yml` specifies the `atendai/evolution-api:v1.8.2` Docker image. Key environment variables are set to configure the local instance:
+*   `SERVER_URL: "http://localhost:8080"`: Defines the local access point for the API.
+*   `AUTHENTICATION_TYPE: "apikey"` and `AUTHENTICATION_API_KEY: "odys-local-key-2026"`: Establish a simple API key-based authentication for local testing.
+*   `DATABASE_ENABLED: "false"` and `REDIS_ENABLED: "false"`: These settings are crucial for simplifying local development. By disabling external database and Redis connections, the Evolution API stores its instance data in local files within the container, reducing external dependencies.
+*   `WEBHOOK_GLOBAL_ENABLED: "false"`: Webhooks are globally disabled in this local configuration. The `README.md` clarifies that webhooks are enabled per instance via an API call (e.g., `POST {EVOLUTION_API_URL}/webhook/set/{INSTANCE}`), allowing for fine-grained control over event subscriptions like `MESSAGES_UPSERT`.
+*   A Docker volume named `evolution_data` is used to persist instance data, ensuring that WhatsApp sessions are not lost when the container restarts.
 
-Key configurations within the Docker setup include:
+In production, the `README.md` indicates that Odys self-hosts Evolution API v2 on Railway, using a custom Docker image `tiagorcfortunato/evolution-api-odys`. This setup likely involves a more robust database (a separate Supabase project `odys-evolution`) and potentially a more advanced Redis configuration for scalability and reliability.
 
-*   `SERVER_URL`: Set to `http://localhost:8080` for local development, indicating the API's public endpoint.
-*   `AUTHENTICATION_TYPE` and `AUTHENTICATION_API_KEY`: Configured for `apikey` authentication, with `odys-local-key-2026` as the key for local environments. This secures access to the Evolution API.
-*   `DATABASE_ENABLED` and `REDIS_ENABLED`: Both set to `false` in the local Docker setup, indicating that the Evolution API uses local file storage for instance data rather than an external database or Redis. This simplifies local development.
-*   `WEBHOOK_GLOBAL_ENABLED`: Set to `false`. This is a deliberate choice, as webhooks are enabled *per instance* via an API call (`POST {EVOLUTION_API_URL}/webhook/set/{INSTANCE}`) after an instance is created. This allows for fine-grained control over webhook behavior, directing inbound messages to Odys's `POST /api/whatsapp/webhook` endpoint.
-*   A Docker volume named `evolution_data` is used to persist instance data, ensuring that WhatsApp sessions are maintained across container restarts.
+## Integration with Odys
 
-## Webhook and Context Routing
+The Evolution API is deeply integrated into Odys's operational flows:
 
-The `POST /api/whatsapp/webhook` API route is the entry point for all inbound WhatsApp messages. When a client sends a message, the Evolution API forwards it to this endpoint. The webhook's intelligence lies in its ability to route these messages effectively. By performing a Redis lookup using `last_outbound:{phone}`, the system can retrieve the `professionalId` and `appointmentId` associated with the client's most recent outbound interaction. This context is then used to seed the AI intake agent (`src/lib/ai-intake.ts`), allowing the Groq LLM to understand the conversation's history and respond appropriately, even if the client doesn't explicitly mention the professional or appointment in their reply.
-
-## Cron Jobs for Automated Communication
-
-Odys relies on two critical cron jobs, defined in `vercel.json` and exposed as API routes, to manage automated WhatsApp communications:
-
-*   `GET /api/cron/reminders` (scheduled daily at `0 8 * * *`): This endpoint is responsible for sending 24-hour and 1-hour appointment reminders. A clever design choice here is the "conversation-aware delivery" mechanism: reminders are skipped if a client is actively conversing with the AI agent (idle for less than 15 minutes). Deferred reminders are then retried on the next cycle, preventing disruptive interleaving of automated alerts with ongoing dialogues.
-*   `GET /api/cron/whatsapp-watchdog` (scheduled daily at `0 9 * * *`): This cron job performs a health check on the Evolution API, ensuring its operational status and alerting if there are any issues.
-
-## Rate Limiting
-
-To protect the Evolution API from abuse and ensure fair usage, Odys implements a rate limit specifically for WhatsApp interactions. The `whatsapp` rate limiter, configured for 10 requests per minute with the prefix `rl:whatsapp`, helps manage the flow of messages and prevents overwhelming the API.
+*   **Outbound Messaging**: All automated communications, including the 19 message templates defined in `src/lib/whatsapp.ts`, are dispatched through the `sendWhatsApp` function. This includes cron jobs like `GET /api/cron/reminders` (scheduled daily at 8 AM) for sending 24-hour and 1-hour reminders, and various alerts triggered by booking confirmations, cancellations, and payment updates.
+*   **Inbound Messaging**: The Evolution API is configured to post all incoming messages to Odys's `POST /api/whatsapp/webhook` endpoint. This webhook is responsible for processing client replies, routing them to the AI intake agent (`src/lib/ai-intake.ts`), and leveraging Groq LLM tool-calling for tasks like availability lookups and appointment creation.
+*   **Reply Routing**: The `setOutboundContext` function, called after a successful `sendWhatsApp` operation with a `context` object, stores relevant `professionalId` and `appointmentId` information in Redis. When a client replies, the `whatsapp/webhook` uses this `last_outbound:{phone}` context to correctly route the message and seed the AI's understanding, preventing the need for clients to re-specify the professional in ongoing conversations.
+*   **Conversation-Aware Delivery**: The system includes logic to prevent interrupting active client-AI conversations. The `GET /api/cron/reminders` cron job will skip sending a reminder if a client is currently engaged in a conversation (defined as less than 15 minutes idle), deferring the reminder to the next cycle. This ensures a smoother, less intrusive user experience.
 
 ## Design Decisions
 
-### Why Evolution API?
+The choice and implementation of the Evolution API reflect several key design decisions:
 
-The decision to use Evolution API was driven by the "WhatsApp-first" strategy and the practical realities of integrating with WhatsApp. Unlike Meta's official WhatsApp Business Cloud API, which can be expensive and has strict template requirements, Evolution API offers a more flexible, self-hosted solution. It acts as a shim over WhatsApp Web, allowing Odys to operate a single, managed corporate WhatsApp number that serves all professionals and clients. This avoids the complexity and cost of requiring each professional to set up their own WhatsApp Business account or link their personal phone, which would be a significant barrier to adoption. The `sendWhatsApp()` abstraction is a forward-looking design, allowing for a seamless transition to Meta's official API if scale or compliance requirements necessitate it, without rewriting every call site.
-
-### Why `src/lib/whatsapp.ts` as a Central Hub?
-
-Centralizing all WhatsApp message logic in `src/lib/whatsapp.ts` was a deliberate choice to enforce consistency, improve maintainability, and separate concerns. By defining all 19 message templates as named functions, Odys ensures that every message sent adheres to a consistent tone and structure. This approach also makes it easier to audit and update messages, as all content lives in a single, well-defined location.
-
-### Why Visual Templating?
-
-The use of `transactionalHeader` and `TRANSACTIONAL_FOOTER` for client-facing messages is a user experience-driven decision. In a scenario where a single WhatsApp thread might contain both automated reminders and conversational AI responses, clear visual cues are essential. These headers and footers disambiguate the message source, helping clients understand whether they are receiving an automated notification or interacting with the AI agent, thereby reducing confusion and improving the overall communication flow.
-
-### Why `normalizeBrazilianPhone` and `context`?
-
-The `normalizeBrazilianPhone` function addresses the real-world challenge of inconsistent phone number inputs, ensuring message deliverability. The `context` parameter in `sendWhatsApp` and its subsequent Redis lookup for inbound messages is a sophisticated solution to a common problem in multi-entity communication systems. Without it, a client replying to a reminder would have to explicitly state which professional or appointment they are referring to, leading to a cumbersome user experience. By automatically inferring context, Odys makes the AI agent feel more intelligent and the interaction more natural.
+*   **WhatsApp-First Strategy**: The core decision to make Odys "WhatsApp-first" necessitated a robust, programmatic way to interact with WhatsApp. The Evolution API, acting as a WhatsApp Web shim, provided a viable path to achieve this without the immediate complexities and costs of Meta's official WhatsApp Business Cloud API.
+*   **Abstraction for Future Scalability**: By centralizing all WhatsApp message sending logic within a single `sendWhatsApp` function and defining all message content as named functions in `src/lib/whatsapp.ts`, the system is designed for future flexibility. This abstraction means that if Odys decides to migrate to Meta's WhatsApp Business Cloud API for greater scale and official support, the underlying messaging engine can be swapped out with minimal changes to the application's call sites.
+*   **Simplified Local Development**: Setting `DATABASE_ENABLED: "false"` and `REDIS_ENABLED: "false"` in `docker-compose.evolution.yml` for the local Evolution API instance was a deliberate choice to streamline the development environment. It allows developers to run the WhatsApp integration locally without needing to set up external database or Redis services, relying instead on file-based persistence within the Docker container.
+*   **Enhanced User Experience through Context**: The implementation of the `context` parameter in `sendWhatsApp` and the subsequent use of Redis for `last_outbound:{phone}` is a crucial design choice for maintaining conversational continuity. It addresses the challenge of routing replies in a multi-professional environment, ensuring that client interactions are always relevant and personalized.
+*   **Visual Disambiguation**: The `transactionalHeader` and `TRANSACTIONAL_FOOTER` are not merely aesthetic. They serve a functional purpose by visually distinguishing automated system messages from conversational AI responses within the same WhatsApp thread, preventing confusion for the end-user.
 
 ## Potential Improvements
 
-1.  **Externalize Message Templates for Dynamic Content**: Currently, all 19 message templates are hardcoded as functions within `src/lib/whatsapp.ts`. While this centralizes content, it requires a code deployment for any text changes. Consider moving these templates to a database or a dedicated content management system. This would allow for dynamic updates, A/B testing of message wording, and easier localization without touching the codebase. For example, the `msgBookingConfirmed` function could fetch its content from a configurable source.
-2.  **Enhanced Error Handling and Observability for `sendWhatsApp`**: The `sendWhatsApp` function currently logs errors to the console and returns `false` on failure. While functional, this approach could be improved. Implementing a retry mechanism with exponential backoff for transient network issues, or integrating with a dedicated error tracking service (beyond basic console logging) for WhatsApp-specific failures, would increase reliability. Additionally, emitting metrics (e.g., message sent count, failure rate) would provide better observability into the WhatsApp integration's health.
-3.  **Configuration of Transactional Visual Elements**: The `HEADER_RULE` and `TRANSACTIONAL_FOOTER` are hardcoded strings in `src/lib/whatsapp.ts`. While effective, making these configurable via environment variables or a settings panel would offer greater flexibility for branding or future design adjustments. Similarly, the `delay: 1200` in the `sendWhatsApp` body is a magic number that could be externalized as a configuration.
-4.  **Consistent `APP_URL` Usage**: The `APP_URL` constant is imported from `src/lib/constants.ts`, but in several message templates (e.g., `msgBookingRequest`, `msgCancelledByProToClient`, `msgRegistrationInvite`), the URL is constructed directly or hardcoded. Ensuring all URL constructions consistently use the `APP_URL` constant would prevent potential issues if the base URL ever changes and improve maintainability.
+1.  **Evolution API Version Alignment**: The `docker-compose.evolution.yml` file specifies `atendai/evolution-api:v1.8.2` for local development, while the `README.md` states that Evolution API v2 is used in production on Railway. This version discrepancy could lead to behavioral differences or unexpected issues between development and production environments. It would be beneficial to align the local Docker image version with the production version or clearly document any known differences and their implications.
+2.  **Automated Webhook Configuration**: The `docker-compose.evolution.yml` comments indicate that `WEBHOOK_GLOBAL_ENABLED` is `false` and webhooks are enabled per instance via a `POST` API call. While this offers flexibility, it implies a manual step or an external script to configure webhooks after the Evolution API instance is deployed or restarted. Integrating this webhook setup directly into the Odys application's startup process or a dedicated management endpoint could enhance deployment reliability and reduce operational overhead.
+3.  **Configurable Message Delay**: The `sendWhatsApp` function in `src/lib/whatsapp.ts` uses a hardcoded `delay: 1200` milliseconds in its `JSON.stringify` body. While this delay might be suitable for current needs, making it configurable (e.g., via an environment variable or a parameter in `SendTextParams`) could provide more control over message pacing. This would allow for adjustments based on Evolution API's rate limits, WhatsApp's own policies, or specific user experience requirements without modifying the core `sendWhatsApp` implementation.
 
 ## References
 
