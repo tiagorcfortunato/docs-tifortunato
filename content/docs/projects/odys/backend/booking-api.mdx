@@ -1,64 +1,39 @@
 ---
-title: "Booking API Endpoints"
-description: "Booking GET + POST endpoint internals"
+title: "Booking GET + POST endpoint internals"
+description: "Internals of the booking API endpoints handling availability lookup and appointment creation"
 ---
 
-# Booking API Endpoints
-This page details the internal logic of the `GET /api/booking` and `POST /api/booking` endpoints, covering data retrieval, validation, plan limit enforcement, and appointment conflict detection.
+# Booking GET + POST endpoint internals
 
-## GET Endpoint Internals
-The `GET /api/booking` endpoint retrieves a professional's availability and existing appointments for a given date.
+The `/api/booking` endpoint is the core interaction point between clients and professionals in Odys, enabling real-time availability checks and secure appointment booking. This document explores how the GET and POST handlers leverage the 10-table schema to deliver reliable, rate-limited, and plan-aware scheduling while maintaining data consistency across `professionals`, `availability`, `appointments`, and `clients`.
 
-It expects two query parameters: `slug` and `date`. The `slug` is used to look up the professional in the `professionals` table via `eq(professionals.slug, slug)` in `src/app/api/booking/route.ts`. If no matching professional is found, the endpoint returns a `404` response.
+## Overview
 
-For the specified date, it fetches:
-- Weekly availability rules from the `availability` table.
-- Existing appointments from the `appointments` table, filtered by `professionalId`, the requested date range (using `startOfDay` and `endOfDay`), and excluding `rejected` or `cancelled` statuses.
+Odys’s booking system operates on a schema with 10 tables, where `professionals`, `availability`, `appointments`, and `clients` form the scheduling backbone. The `/api/booking` route supports two operations: **GET** for fetching a professional’s availability on a given date, and **POST** for creating a new appointment. Both are protected by rate limiting (`rl:booking`, 5 requests per 10 minutes) and integrate with WhatsApp and email notifications. The logic enforces plan-based limits from the `PLANS` configuration—Free, Basic, Pro, and Premium—via `effectivePlan`, ensuring tenants stay within their tier’s constraints.
 
-The response includes the professional's data, their availability rules, and a list of existing appointment time slots, which the client uses to generate selectable booking options.
+## GET: Fetching Availability
 
-## POST Endpoint Internals
-The `POST /api/booking` endpoint handles new appointment creation with multiple validation and business rule checks.
+The GET handler retrieves a professional’s weekly availability rules and existing appointments for a specific day. It first looks up the professional by `slug`, then concurrently fetches their `availability` (weekly time slots) and `appointments` (daily booked slots). The query filters out `rejected` or `cancelled` appointments using `notInArray`, ensuring only active bookings block time. This two-layer model—static rules + dynamic appointments—allows flexible scheduling while preventing double-booking.
 
-### Rate Limiting
-Requests are rate-limited using `getBookingLimiter()` from `src/lib/ratelimit`, based on the client's IP address retrieved via `getIp(req)`. If the limit is exceeded, the endpoint returns a `429 Too Many Requests` response using the `tooManyRequests()` helper.
+## POST: Creating Appointments
 
-### Validation
-The request body is validated using `zod` against the `bookingSchema` defined in `src/app/api/booking/route.ts`. Required fields include `slug`, `startsAt`, `clientName`, `clientPhone`, and optional `clientEmail`. Invalid input results in a `400 Bad Request` response with structured error details.
+The POST handler orchestrates client upserting, conflict detection, plan limit enforcement, and notifications. It validates input via `bookingSchema`, ensuring required fields like `clientPhone` and `startsAt` are present. If the client doesn’t exist, it’s created via `insert(clients)`; otherwise, their email is updated if missing. The system checks for time overlap using `lt(appointments.startsAt, endDate)` and `gt(appointments.endsAt, startDate)`, rejecting conflicting slots. After insertion, a notification is sent to the professional via `notifications` table, WhatsApp (`sendWhatsApp`), and optionally email.
 
-### Plan Limits
-The endpoint enforces client and monthly appointment limits based on the professional's current plan, determined by `effectivePlan(professional.plan, professional.trialEndsAt)`.
+## Design decisions
 
-- **Client Limit**: If the plan's `clients` limit is finite, the endpoint counts existing clients. If the limit is reached and the booking client is not found by phone (or email, if provided), it returns a `403 Forbidden` response.
-- **Monthly Appointment Limit**: If the plan's `appointmentsPerMonth` limit is finite, the endpoint counts appointments in the current month (`startOfMonth` to `endOfMonth`). If the limit is exceeded, it returns a `403 Forbidden` response.
+The code uses optimistic conflict detection instead of transactions to avoid database contention, accepting a small race condition risk in favor of simplicity. Client identity is resolved by phone or email, prioritizing usability over strict uniqueness. Rate limiting is applied at the IP level using `getIp(req)`, protecting against abuse without requiring authentication. The use of `returning()` ensures immediate access to inserted records, reducing round trips.
 
-These checks occur before the overlap validation.
+## Potential improvements
 
-### Overlap Prevention
-To prevent double-booking, the endpoint performs an overlap check using a `SELECT` query on the `appointments` table:
+1. **Move client deduplication into database** — In `src/app/api/booking/route.ts`, the client upsert uses application-level logic. Adding a partial unique index on `(professionalId, phone)` and using `onConflictDoUpdate` in Drizzle would make this atomic and safer under concurrency.
 
-```ts
-const conflict = await db
-  .select({ id: appointments.id })
-  .from(appointments)
-  .where(
-    and(
-      eq(appointments.professionalId, professional.id),
-      notInArray(appointments.status, ["rejected", "cancelled"]),
-      lt(appointments.startsAt, endDate),
-      gt(appointments.endsAt, startDate)
-    )
-  )
-  .limit(1)
-```
+2. **Prevent notification spam on retries** — The `sendWhatsApp` and `sendBookingRequestEmailToProfessional` calls are fire-and-forget. If the client retries the POST due to timeout, multiple notifications may send. Storing notification state in the `notifications` table and checking before sending would prevent duplicates.
 
-This query checks for any non-cancelled or non-rejected appointments that overlap with the proposed `[startDate, endDate]` window. If a conflict is found, the endpoint returns a `409 Conflict` response with a user-facing message in Portuguese.
+3. **Enforce plan limits consistently** — The plan limit check in `POST` handles `clients` and `appointmentsPerMonth`, but the schema’s `PLANS` object shows other potential limits. Centralizing this logic in `effectivePlan` or a dedicated guard would ensure all endpoints apply limits uniformly.
 
-### Client Upsert
-The endpoint attempts to find an existing client using the provided `clientPhone` or `clientEmail` (if present) for the professional. If no match is found, a new client is created. If a client is found but lacks an email and one is now provided, the record is updated.
+## References
 
-## Known Gaps
-*   **Race Condition in Overlap Check**: The overlap check and subsequent insert are not wrapped in a transaction with a locking strategy. This creates a theoretical race condition where two concurrent requests could both pass the `SELECT` check and proceed to insert, resulting in a double-booking. The current implementation relies on the narrow timing window and low booking volume to avoid this issue. A stronger guarantee would require a Postgres `EXCLUSION CONSTRAINT` or `SELECT ... FOR UPDATE` within a transaction.
-
-## Why This Shape
-The Booking API separates read (`GET`) and write (`POST`) concerns for clarity. The `GET` endpoint provides all necessary data for the client to render available slots, while the `POST` endpoint enforces business rules, validation, and conflict detection server-side. Validation with `zod` ensures data integrity at the boundary. Plan limits are enforced early to prevent unnecessary processing. The overlap check, while not transactionally locked, provides practical protection against double-booking under current load. This design balances correctness, maintainability, and performance for the core booking workflow.
+- `src/app/api/booking/route.ts`: Main implementation of GET and POST
+- `@/lib/ratelimit.ts`: Defines `getBookingLimiter` with 5/10m limit
+- `@/lib/plan-guard.ts`: Contains `effectivePlan` used for tier enforcement
+- `@/lib/whatsapp.ts`: Houses `msgBookingRequest` template and send logic
