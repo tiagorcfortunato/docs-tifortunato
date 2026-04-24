@@ -46,7 +46,8 @@ jobs:
       - name: Checkout docs repo
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
+          repository: tiagorcfortunato/docs-tifortunato
+          token: ${{ secrets.DOCS_WRITE_TOKEN }}
           fetch-depth: 0
 
       - name: Resolve source repo
