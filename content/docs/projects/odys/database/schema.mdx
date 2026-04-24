@@ -5,34 +5,34 @@ description: "Detailed breakdown of the Odys database schema, covering all 10 ta
 
 # Database Schema: The 10 tables in detail
 
-The Odys platform is built on a clean, relational PostgreSQL schema that powers both the professional and client experience. This document dives deep into the 10 core tables that define data flow, user interactions, and business logic — from scheduling and payments to messaging and reviews.
+Understanding the database schema is essential to grasping how Odys orchestrates professional-client interactions, scheduling, payments, and communication. This document dives into the 10 core tables that power the platform, revealing how data flows and interconnects across features.
 
 ## Overview
 
-The schema consists of **10 tables**, each serving a distinct domain concern. At the center sits the `professionals` table, which anchors all other entities. Relationships are enforced via foreign keys with `ON DELETE CASCADE`, ensuring data integrity when a professional or client is removed. Timestamps like `createdAt` and `updatedAt` are consistently applied, and UUIDs provide secure, scalable primary keys. The design supports real-time booking, recurring sessions, Stripe integration, and WhatsApp notifications — all while maintaining clarity and performance.
+The Odys schema consists of **10 tables** that model professionals, their availability, client relationships, appointments, and auxiliary data like messages and reviews. Every table uses UUIDs for primary keys and leverages Drizzle ORM with PostgreSQL. Foreign keys enforce referential integrity, and cascading deletes ensure data consistency when a professional is removed. Timestamps with defaults (`createdAt`, `updatedAt`) are standard, and indexes optimize common query patterns—especially around `professionalId`, `clientId`, and temporal fields.
 
-## Core Tables & Their Roles
+## Core Tables and Their Roles
 
-The `professionals` table (24 columns) stores all practitioner data: contact info, service details (`sessionDuration`, `sessionPrice`), payment preferences (`paymentType`, `pixKey`), and subscription state (`plan`, `stripeSubscriptionId`). Unique constraints on `userId` and `slug` ensure one account per user and a clean public profile URL.
+The `professionals` table anchors the system, storing key profile data like `name`, `slug`, `sessionPrice`, and `plan`. It links to Stripe via `stripeCustomerId` and `stripeSubscriptionId`, supports Pix payments through `pixKeyType` and `pixKey`, and tracks trial status with `trialEndsAt`. The `userId` field ties each professional to Supabase auth.
 
-Linked via `professionalId`, the `availability` table defines weekly time slots using `dayOfWeek`, `startTime`, and `endTime`. This enables precise calendar rendering. The `clients` table tracks client profiles, while `clientNotes` stores private, encrypted notes tied to both professional and client.
+Scheduling is managed through `availability`, which defines daily time slots per professional using `dayOfWeek`, `startTime`, and `endTime`. Appointments are stored in `appointments`, capturing `startsAt`, `endsAt`, `status`, and `paymentStatus`, with optional linkage to `recurringSchedules`. The latter supports weekly, biweekly, or twice-weekly patterns, enabling automated session planning.
 
-Recurring bookings are managed by `recurringSchedules`, supporting weekly, biweekly, or twice-weekly patterns. Appointments derive from these or one-off bookings, with status tracking in `appointments` — including payment state via `stripePaymentIntentId` and reminder flags.
+Client management spans `clients`, `clientNotes`, and `follows`. Clients are tied to professionals and may have a `userId` if registered. Notes are private, indexed by professional and client. Follows track which users are interested in a professional’s availability.
 
-Communication is handled by `messages`, where `sender` distinguishes between professional and client. The `reviews` table enforces one review per appointment via a unique constraint on `appointmentId`. Finally, `follows` tracks user interest in professionals, and `notifications` delivers timely alerts across the system.
+Communication is handled by `messages`, allowing message exchange with `sender` and `readAt` tracking. `reviews` are tied to completed appointments, ensuring one review per session via the unique `appointmentId` constraint. Finally, `notifications` deliver alerts to `recipientId` (Supabase user ID) with a `read` flag for state tracking.
 
 ## Design decisions
 
-The schema avoids joins where possible by denormalizing key fields (e.g., `professionalId` on `appointments`). This optimizes read performance for dashboard queries. Using `text` for time fields (`"09:00"`) simplifies frontend handling, though it sacrifices native time operations. All foreign keys cascade-delete, reflecting the tenant-like ownership model: a professional’s data belongs to them. Defaults like `autoConfirm: false` and `active: true` ensure safe initial states.
+The schema prioritizes data integrity and query efficiency. Cascading deletes (`onDelete: "cascade"`) prevent orphaned records—critical when a professional leaves. Default values (e.g., `autoConfirm`, `active`) reduce client-side logic. Text fields store enums like `status` and `paymentType`, favoring flexibility over rigid constraints. Indexes on foreign keys and frequently filtered columns (e.g., `appointments.startsAt`) support performance at scale. The use of `timestamp` with `defaultNow()` ensures consistent time tracking.
 
 ## Potential improvements
 
-1. **Add index on `appointments.recurringScheduleId`** — This join is likely frequent for recurring session management. Add it in `schema.ts` around line 180 to speed up lookups.  
-2. **Enforce `dayOfWeek` constraints at DB level** — Add a check constraint to `availability.dayOfWeek` (0–6) to prevent invalid values. Currently, this is only validated in code.  
-3. **Split `paymentType` logic into a dedicated table** — The current string-based `paymentType` (`upfront`, `percentage`) could be normalized to support future methods. Consider a `payment_methods` table to avoid magic strings.
+1. **Add `updatedAt` to `appointments`** — While most tables have `updatedAt`, `appointments` lacks it. This makes auditing state changes difficult. Adding it in `src/lib/db/schema.ts` would improve traceability of status or payment updates.
+
+2. **Normalize `frequency` in `recurringSchedules`** — The `frequency` field uses text values like "weekly". Introducing a lookup table or constraint would prevent inconsistencies. This could be enforced in the same schema file.
+
+3. **Index `notifications.read`** — With high notification volume, filtering unread items will become slow. Adding an index on `read` in `notifications` (in `schema.ts`) would optimize user-facing queries.
 
 ## References
 
-- `src/lib/db/schema.ts`: Lines 1–300 — Full schema definition with Drizzle ORM  
-- `api/appointments/[id]/route.ts` — Uses `appointments` and `recurringSchedules`  
-- `api/stripe/webhook/route.ts` — Updates `professionals.plan` and `stripeSubscriptionId`
+- `src/lib/db/schema.ts` — Full schema definition with Drizzle ORM syntax and index configurations.
