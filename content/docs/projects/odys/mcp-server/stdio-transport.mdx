@@ -1,52 +1,40 @@
 ---
-title: "MCP Server stdio Transport"
-description: "stdio transport, JSON-RPC, tsup bundling, noExternal quirk"
+title: "MCP Server: Stdio Transport"
+description: "Explores the Odys Model Context Protocol (MCP) server's use of stdio transport, JSON-RPC, and tsup bundling, including the `noExternal` configuration quirk."
 ---
 
-# MCP Server stdio Transport
+# MCP Server: Stdio Transport
 
-This page details the implementation of the Odys MCP server, focusing on its stdio-based JSON-RPC transport, `tsup` bundling configuration, and the specific `noExternal` quirk required for its build process.
+Tiago, let's dive into the `mcp-server` directory, which houses the Model Context Protocol (MCP) server for Odys. This server is a crucial piece of infrastructure, acting as the bridge between any AI agent or external system that speaks MCP and the core business logic of Odys. It allows these external entities to discover and invoke specific functionalities, or "tools," exposed by our application. This document will walk you through its architecture, focusing on its communication mechanism, how it handles requests, and the build process that makes it a self-contained executable.
 
-## JSON-RPC over stdio
+## Overview
 
-The Odys MCP server communicates using JSON-RPC over standard input/output (stdio). This approach provides a clean, language-agnostic interface for AI agents, such as Claude Code sessions, to interact with the Odys backend without direct database access.
+The `mcp-server` is designed to be a lightweight, standalone process that communicates over standard input/output (stdio). This choice simplifies its integration into various environments, particularly when it's spawned as a child process by an orchestrator. At its heart, the server uses the `@modelcontextprotocol/sdk` to establish a JSON-RPC-like communication channel. It exposes a set of predefined tools, allowing an MCP client to query for available tools and then execute them with specific arguments.
 
-The core server logic is implemented in `mcp-server/src/server.ts`. It leverages the `@modelcontextprotocol/sdk` to establish the server and handle requests:
+The server's lifecycle begins by initializing an MCP `Server` instance, declaring its capabilities, and setting up handlers for incoming requests. It then connects to a `StdioServerTransport`, which manages the actual data exchange over `stdin` and `stdout`. To ensure it runs efficiently and without external dependencies at runtime, the server is bundled into a single executable JavaScript file using `tsup`, with a specific configuration to embed its core dependencies.
 
--   A `Server` instance from `@modelcontextprotocol/sdk/server/index.js` is initialized with the server's name and version.
--   `StdioServerTransport` from `@modelcontextprotocol/sdk/server/stdio.js` is used to manage the stdio communication.
--   The server registers handlers for two primary request types, defined by `ListToolsRequestSchema` and `CallToolRequestSchema` from `@modelcontextprotocol/sdk/types.js`:
-    -   `ListToolsRequestSchema`: Returns the `TOOL_DEFINITIONS` available to the client.
-    -   `CallToolRequestSchema`: Dispatches incoming tool calls to the appropriate internal function (e.g., `getAppointmentsToday`, `updateAppointmentStatus`) based on the `name` field in the request.
+## The Model Context Protocol Server
 
-Errors during tool execution are caught, logged to `console.error`, and returned to the client as a JSON object with an `error` field and `isError: true`. This ensures that `stdout` remains reserved for valid JSON-RPC responses.
+The core of this component resides in `mcp-server/src/server.ts`. Here, we instantiate a new `Server` from the `@modelcontextprotocol/sdk/server/index.js`. Notice how we explicitly name our server `odys` and provide its `version: "0.1.0"`, aligning with the overall package details of Odys. This metadata is important for clients to identify and understand the server they are interacting with.
 
 ```typescript
-// mcp-server/src/server.ts
-import { Server } from "@modelcontextprotocol/sdk/server/index.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js"
-
-import {
-  TOOL_DEFINITIONS,
-  getAppointmentsToday,
-  getCustomerByPhone,
-  getRevenueSummary,
-  updateAppointmentStatus,
-} from "./tools.js"
-
 const server = new Server(
   { name: "odys", version: "0.1.0" },
   { capabilities: { tools: {} } },
 )
+```
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: TOOL_DEFINITIONS,
-}))
+The `capabilities: { tools: {} }` declaration signals to any connecting MCP client that this server offers tools for invocation. This is a fundamental aspect of the MCP specification, allowing for capability discovery.
 
+### Request Handling and Tool Dispatch
+
+The server is configured to handle two primary types of requests defined by the MCP SDK: `ListToolsRequestSchema` and `CallToolRequestSchema`.
+
+When an MCP client wants to know what functionalities Odys offers, it sends a `ListToolsRequestSchema` request. The server responds by providing a list of `TOOL_DEFINITIONS`, which are imported from `./tools.js`. These definitions describe the name, purpose, and expected arguments for each tool. Odys currently exposes 4 such tools: `get_appointments_today`, `get_customer_by_phone`, `get_revenue_summary`, and `update_appointment_status`.
+
+The more dynamic interaction happens when a client sends a `CallToolRequestSchema`. This request specifies the `name` of the tool to be called and its `arguments`. The server's handler for this schema uses a `switch` statement to dispatch the call to the appropriate internal function, such as `getAppointmentsToday` or `updateAppointmentStatus`, passing along the provided arguments.
+
+```typescript
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params
 
@@ -56,72 +44,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_appointments_today":
         result = await getAppointmentsToday(args)
         break
-      case "get_customer_by_phone":
-        result = await getCustomerByPhone(args)
-        break
-      case "get_revenue_summary":
-        result = await getRevenueSummary(args)
-        break
-      case "update_appointment_status":
-        result = await updateAppointmentStatus(args)
-        break
-      default:
-        throw new Error(`Unknown tool: ${name}`)
+      // ... other tool cases
     }
-
     return {
       content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    console.error(`[odys-mcp] tool "${name}" failed:`, message)
-    return {
-      content: [{ type: "text", text: JSON.stringify({ error: message }) }],
-      isError: true,
-    }
+    // ... error handling
   }
 })
+```
 
+Robust error handling is built into this request handler. If a tool call fails, or if an unknown tool name is provided, the server catches the error, logs it to `console.error` (prefixed with `[odys-mcp]` for easy identification), and returns an MCP response indicating an error, including the error message. This ensures that the client receives clear feedback on failed operations.
+
+### Stdio Transport for Inter-Process Communication
+
+The choice of `StdioServerTransport` is central to how this server operates. Instead of listening on a network port, the server communicates by reading from its standard input (`stdin`) and writing to its standard output (`stdout`).
+
+```typescript
 async function main() {
   const transport = new StdioServerTransport()
   await server.connect(transport)
   console.error("[odys-mcp] odys MCP server running on stdio")
 }
-
-main().catch((err) => {
-  console.error("[odys-mcp] fatal error:", err)
-  process.exit(1)
-})
 ```
 
-The server is registered for Claude Code sessions via the `.mcp.json` file at the repository root, which specifies the command to execute the bundled server:
+This setup is particularly well-suited for scenarios where the MCP server is launched as a child process by another application (e.g., a Python script, another Node.js service, or an AI agent orchestrator). The parent process can simply spawn the `mcp-server` and pipe data to its `stdin` while reading its `stdout` for responses. The `console.error` message upon startup is a useful signal to the parent process or operator that the server is ready to accept commands.
 
-```json
-// .mcp.json
-{
-  "mcpServers": {
-    "odys": {
-      "command": "node",
-      "args": ["./mcp-server/dist/server.js"]
-    }
-  }
-}
-```
+## Bundling with `tsup`
 
-## Bundling with tsup
-
-The MCP server is a self-contained sub-project within the repository. It is bundled into a single ESM file, `dist/server.js`, using `tsup`. The `mcp-server/tsup.config.ts` configuration ensures a production-ready output:
-
--   `entry: ["src/server.ts"]`: Specifies the main entry point.
--   `format: ["esm"]`: Outputs an ECMAScript Module.
--   `target: "node20"`: Targets Node.js version 20.
--   `bundle: true`, `splitting: false`: Ensures all dependencies are bundled into a single output file.
--   `banner: { js: "#!/usr/bin/env node" }` and `onSuccess: "chmod +x dist/server.js"`: Make the output file directly executable as a Node.js script.
+The `mcp-server` is bundled using `tsup`, a fast TypeScript bundler, as configured in `mcp-server/tsup.config.ts`. The goal here is to produce a single, self-contained JavaScript file that can be executed directly.
 
 ```typescript
-// mcp-server/tsup.config.ts
-import { defineConfig } from "tsup"
-
 export default defineConfig({
   entry: ["src/server.ts"],
   format: ["esm"],
@@ -138,12 +92,58 @@ export default defineConfig({
 })
 ```
 
-## The `noExternal` quirk
+Key aspects of this configuration include:
+- `entry: ["src/server.ts"]`: Specifies the main entry point for the bundle.
+- `format: ["esm"]`: Outputs an ES module, which is standard for modern Node.js applications.
+- `target: "node20"`: Ensures compatibility with Node.js version 20 features.
+- `outDir: "dist"`: Places the bundled output in the `dist` directory.
+- `bundle: true` and `splitting: false`: These work together to create a single output file, `dist/server.js`.
+- `banner: { js: "#!/usr/bin/env node" }`: Adds a shebang line to the top of the output file, making it directly executable on Unix-like systems.
+- `onSuccess: "chmod +x dist/server.js"`: After a successful build, this command makes the bundled file executable.
 
-A specific configuration in `mcp-server/tsup.config.ts` is the `noExternal` option, which forces `esbuild` (used internally by `tsup`) to inline certain dependencies rather than treating them as external runtime imports.
+### The `noExternal` Quirk
 
-Specifically, `zod` and `@modelcontextprotocol/sdk` are listed in `noExternal: ["zod", "@modelcontextprotocol/sdk"]`. This was necessary to resolve a dual-package hazard where the MCP SDK ships both CommonJS (CJS) and ECMAScript Module (ESM) entry points. Bundling with `noExternal` ensures that `esbuild` correctly resolves and inlines the ESM version of the SDK, preventing startup crashes related to module resolution.
+One particularly important configuration is `noExternal: ["zod", "@modelcontextprotocol/sdk"]`. Typically, bundlers like `tsup` will treat packages in `node_modules` as "external" by default, meaning they won't be included in the bundle but will instead be `require`d or `import`ed at runtime from the `node_modules` directory.
 
-## Why this shape
+The `noExternal` option explicitly tells `tsup` to *bundle* `zod` and `@modelcontextprotocol/sdk` (and their dependencies) directly into `dist/server.js`. This is a deliberate choice to make the `mcp-server` truly self-contained. It means that when `dist/server.js` is executed, it doesn't need a `node_modules` directory alongside it, simplifying deployment and ensuring that the exact versions of these critical SDK components are always present.
 
-The choice of JSON-RPC over stdio for the MCP server was driven by the need for a robust, low-overhead, and language-agnostic communication channel with AI agents. This design allows agents to interact with specific, controlled tools without exposing the underlying database or application logic directly. The `tsup` bundling strategy ensures the server is deployed as a single, self-contained executable, simplifying deployment and reducing potential dependency conflicts. The `noExternal` quirk addresses specific module resolution challenges inherent in bundling complex JavaScript ecosystems, ensuring reliable startup and operation.
+The `.mcp.json` file then points to this bundled executable:
+
+```json
+{
+  "mcpServers": {
+    "odys": {
+      "command": "node",
+      "args": ["./mcp-server/dist/server.js"]
+    }
+  }
+}
+```
+
+This configuration tells any MCP client how to launch and interact with the `odys` server, specifically by running the bundled `server.js` file.
+
+## Design decisions
+
+The design of the `mcp-server` reflects several intentional choices aimed at simplicity, robustness, and ease of integration:
+
+*   **Stdio Transport over Network Sockets:** The decision to use `StdioServerTransport` was likely driven by the need for straightforward inter-process communication (IPC). For a server that is typically spawned as a child process by another orchestrating application, stdio is often the simplest and most reliable mechanism. It avoids the complexities of network port management, firewall rules, and network latency that come with HTTP or TCP sockets, making it ideal for local, tightly coupled interactions. The trade-off is that it's not designed for distributed communication across different machines, but that's not its intended purpose.
+
+*   **Leveraging `@modelcontextprotocol/sdk`:** By using the official SDK, Odys benefits from a standardized, well-defined protocol for tool discovery and invocation. This means less custom code for message parsing and serialization, and more focus on implementing the actual business logic of the tools. The SDK handles the JSON-RPC messaging format, schema validation, and the underlying stdio communication, significantly reducing development effort and potential for errors.
+
+*   **Bundling with `tsup` and `noExternal`:** The choice to bundle the server into a single file using `tsup` is a common practice for CLI tools or backend services that need to be deployed as atomic units. It simplifies deployment by eliminating the need to manage a `node_modules` directory at runtime. The `noExternal` configuration for `zod` and `@modelcontextprotocol/sdk` is a critical part of this strategy. While it increases the bundle size slightly, it guarantees that the server is fully self-contained and will run consistently regardless of the host environment's `node_modules` state. This avoids potential dependency hell or version mismatches, ensuring the server's reliability.
+
+## Potential improvements
+
+While the current `mcp-server` is functional and well-structured, here are a few areas where we could consider enhancements:
+
+1.  **Centralized Tool Execution Logic:** The `switch` statement within the `CallToolRequestSchema` handler in `mcp-server/src/server.ts` is effective, but as the number of tools grows beyond the current 4, it could become verbose. We could refactor this into a more dynamic dispatch mechanism. For instance, we could maintain a map of tool names to their corresponding functions and `TOOL_DEFINITIONS`, allowing for a single, generic `executeTool(name, args)` function. This would reduce repetition and make it easier to add new tools without modifying the core `switch` logic.
+
+2.  **Input Validation for Tool Arguments:** Currently, the `CallToolRequestSchema` handler passes `request.params.arguments` directly to the tool functions (e.g., `getAppointmentsToday(args)` in `mcp-server/src/server.ts`). While the tool functions themselves might perform validation, adding a layer of validation *before* dispatching to the tool could provide more immediate and consistent error feedback to the MCP client. We could leverage the `zod` schemas defined for each tool's arguments (which are part of `TOOL_DEFINITIONS`) to validate `args` right after the `switch` statement identifies the tool, but before the tool function is invoked. This would catch malformed requests earlier and prevent internal tool functions from having to deal with invalid input.
+
+3.  **Configurable Logging:** The server currently uses `console.error` for both startup messages and error logging in `mcp-server/src/server.ts`. For a production environment, it would be beneficial to introduce a more sophisticated logging solution. This could involve using a dedicated logging library (like Winston or Pino) that allows for configurable log levels (e.g., `debug`, `info`, `warn`, `error`). This would enable operators to adjust the verbosity of the server's output based on their needs, making debugging easier in development and keeping logs cleaner in production.
+
+## References
+
+*   `mcp-server/src/server.ts`
+*   `.mcp.json`
+*   `mcp-server/tsup.config.ts`
