@@ -37,12 +37,19 @@ The schema consists of ten core tables centered around the `professionals` table
 Represents a professional user with business and payment configuration.
 - `id`: UUID primary key.
 - `userId`: Supabase auth ID, stored as `text`, unique.
+- `name`: Full name of the professional, required.
 - `slug`: Unique URL path for public profile.
+- `phone`: Contact phone number, required.
+- `email`: Contact email, optional.
+- `profession`: Professional category (e.g., psychologist, nutritionist), required.
+- `bio`: Professional biography, optional.
+- `avatarUrl`: URL to profile image, optional.
 - `sessionDuration`, `sessionPrice`: Integer values in minutes and cents.
 - `plan`: Subscription tier (`free`, `pro`, `premium`).
 - `paymentType`, `paymentPercentage`, `pixKeyType`, `pixKey`: PIX payment configuration.
 - `stripeCustomerId`, `stripeSubscriptionId`: Stripe identifiers.
 - `trialEndsAt`: Timestamp for Pro trial expiration.
+- `welcomeMessage`: Custom message sent to new clients, optional.
 - `autoConfirm`: Boolean for automatic appointment confirmation.
 - `active`: Boolean flag for account status.
 
@@ -71,10 +78,12 @@ Private notes by professionals on clients.
 ### `recurringSchedules`
 
 Captures recurring appointment patterns.
+- `professionalId`, `clientId`: Foreign keys.
 - `frequency`: `weekly`, `biweekly`, `twice_weekly`.
 - `dayOfWeek`, `secondDayOfWeek`: Day integers.
 - `time`: Text in `"HH:mm"`.
 - `active`: Boolean toggle.
+- `createdAt`: Timestamp of record creation.
 
 ### `appointments`
 
@@ -84,7 +93,9 @@ Main booking record with lifecycle and payment state.
 - `startsAt`, `endsAt`: Appointment timestamps.
 - `status`: Lifecycle state (`pending_confirmation`, `confirmed`, etc.).
 - `paymentStatus`: (`none`, `authorized`, `captured`, `refunded`).
+- `stripePaymentIntentId`: Stripe Payment Intent identifier, optional.
 - `reminderSent24h`, `reminderSent1h`: Booleans to prevent duplicate emails.
+- `notes`: Internal notes for the appointment, optional.
 - Indexed on `professionalId`, `clientId`, `startsAt`, and `status`.
 
 ### `messages`
@@ -92,6 +103,8 @@ Main booking record with lifecycle and payment state.
 In-product chat between professional and client.
 - `sender`: `professional` or `client`.
 - `type`: `text`, `link`, `pdf`.
+- `content`: Message text.
+- `fileUrl`: URL to attached file (e.g., PDF), optional.
 - `readAt`: Timestamp, null until read.
 - Composite index on `(professionalId, clientId)`.
 
@@ -115,7 +128,9 @@ Client feedback on completed appointments.
 In-app notifications.
 - `recipientId`: Supabase user ID.
 - `recipientType`: `professional` or `client`.
-- `type`: Categorization (e.g., `booking_confirmed`, `new_message`).
+- `type`: Categorization (e.g., `booking_confirmed`, `new_message`), example values: `booking_confirmed`, `new_message`, `payment_captured`.
+- `title`: Notification headline, required.
+- `body`: Notification content, required.
 - `read`: Boolean status.
 - Indexed on `recipientId`.
 

@@ -11,7 +11,7 @@ This page covers the implementation of PIX EMV BR Code generation, including pay
 
 The `buildPixPayload` function in `src/lib/pix.ts` generates a valid EMV BR Code string for static QR codes, conforming to the Banco Central do Brasil's specification.
 
-It accepts a `key` (PIX key), `name` (merchant name), optional `city` (defaults to "Brasil"), and optional `amount` in cents. The function normalizes `name` and `city` by removing diacritics via Unicode normalization (`NFD`) and stripping combining characters (`[\u0300-\u036f]`). The normalized values are truncated to 25 characters for `name` and 15 for `city`, then converted to uppercase.
+It accepts a `key` (PIX key), `name` (merchant name), optional `city` (defaults to "Brasil"), and optional `amount` in cents. The function normalizes `name` and `city` by removing diacritics via Unicode normalization (`NFD`) and stripping combining characters (`[\u0300-\u036f]`). The normalized values are truncated to 25 characters for `name` and 15 for `city` **after** Unicode normalization and diacritic removal, then converted to uppercase.
 
 Fields are assembled using the `field(id, value)` helper, which formats each segment as `${id}${length}${value}` with a two-digit length prefix. The payload includes:
 
@@ -36,7 +36,7 @@ It initializes `crc` to `0xffff`. For each character in the input string:
 - XOR the character code (shifted left by 8 bits) into `crc`
 - Perform 8 bits of feedback shift using polynomial `0x1021`
 
-The result is masked to 16 bits, converted to uppercase hexadecimal, and zero-padded to 4 characters. This value is appended directly to the payload string after the `6304` placeholder.
+The result is masked to 16 bits, converted to uppercase hexadecimal, and zero-padded to 4 characters. This 4-character CRC value is appended as the final part of the payload, forming the `6304{CRC}` segment per EMV specification.
 
 The CRC is calculated over the entire payload **before** the checksum is added, ensuring compliance with the EMV standard.
 

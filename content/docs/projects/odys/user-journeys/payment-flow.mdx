@@ -12,7 +12,7 @@ This page details the two distinct payment flows implemented in Odys: the client
 This flow facilitates session payments using PIX, Brazil's instant payment system. Stripe is not involved in this process.
 
 1.  The professional configures their PIX key within the `/dashboard/settings` interface.
-2.  For a confirmed appointment with `paymentType: "upfront"`, the booking widget renders a `<PixQR>` component. This component generates an EMV BR Code payload using the pure-TypeScript implementation in `src/lib/pix.ts`. This implementation includes inline CRC-CCITT (polynomial `0x1021`, initial `0xffff`) and ID-length-value fields, adhering to the Banco Central's "Manual de Padrões para Iniciação do Pix". The `buildPixPayload` function in `src/lib/pix.ts` constructs the payload, including fields for merchant name, city, and an optional amount.
+2.  For a confirmed appointment with `paymentType: "upfront"`, the booking widget renders a `<PixQR>` component. This component generates an EMV BR Code payload using the pure-TypeScript implementation in `src/lib/pix.ts`. This implementation includes inline CRC-CCITT (polynomial `0x1021`, initial `0xffff`) and ID-length-value fields, adhering to the Banco Central's "Manual de Padrões para Iniciação do Pix". The `buildPixPayload` function in `src/lib/pix.ts` constructs the payload, including fields for merchant name and city, and conditionally includes the amount only if it is greater than zero (converted from cents to reais). This enables both fixed-amount and open-amount (dynamic) PIX QR codes.
 3.  The client scans the generated QR code with their Brazilian banking application and makes a **bank-to-bank** payment directly to the professional.
 4.  The professional manually updates the appointment status to `paid` from their dashboard by sending a `PATCH` request to `/api/appointments/[id]` with `action: "paid"`. This action updates the `appointments.paymentStatus` column to `captured`.
 
@@ -27,7 +27,7 @@ The decision to prioritize PIX for client-to-professional payments is driven by 
 *   **Universal adoption**: PIX is widely adopted, with approximately 90% of the Brazilian population using it.
 *   **Avoids Stripe's Brazilian fee structure**: This approach bypasses Stripe's transaction fees (typically ~4-6% plus FX) on small-ticket service payments.
 
-Refunds for PIX payments are marked as `refunded` in the database, but the actual money transfer is a manual bank operation performed by the professional; Odys does not facilitate fund movement for refunds.
+Refunds for PIX payments are marked as `refunded` in the database, but the actual money transfer is a manual bank operation performed by the professional; Odys does not facilitate fund movement for refunds. The documentation states that PIX refunds are marked as `refunded` in the database, but no code implementing this state transition is present in the provided files. This functionality may exist in another API route (e.g., `PATCH /api/appointments/[id]` with `action: "refunded"`), but it is not included in the current code excerpts.
 
 ## Flow 2 — Professional pays Odys (Stripe Checkout, subscription)
 
@@ -40,7 +40,7 @@ The `src/lib/stripe/plans.ts` file serves as the single source of truth for all 
 *   **Free**: Limited to 10 clients and 20 appointments per month, with `priceId: null` as it does not correspond to a Stripe product.
 *   **Basic / Pro / Premium**: Each paid plan maps to a specific Stripe Price ID, retrieved from environment variables like `process.env.STRIPE_BASIC_PRICE_ID`, `process.env.STRIPE_PRO_PRICE_ID`, and `process.env.STRIPE_PREMIUM_PRICE_ID`. If an environment variable is missing, it explicitly defaults to `null`.
 
-Each plan object in `PLANS` includes a `limits` object (e.g., `clients`, `appointmentsPerMonth`) and a list of `features` for display on the `/dashboard/plans` page. The `PLAN_FEATURES` array defines the master list of all features.
+Each plan object in `PLANS` includes a `limits` object (e.g., `clients`, `appointmentsPerMonth`) and a list of `features` for display on the `/dashboard/plans` page. The `PLAN_FEATURES` array defines the master list of all features for display purposes, including their order and labels in the UI. However, each plan's `features` array in `PLANS` contains the actual feature strings that determine what is enabled. These must match the `label` fields in `PLAN_FEATURES` exactly for proper rendering.
 
 ### Checkout
 
@@ -63,7 +63,7 @@ The subscription checkout process is initiated as follows:
       // ... other parameters
     })
     ```
-5.  If the professional is within their 14-day Pro trial period (determined by `trialDaysLeft(professional.trialEndsAt)`), `subscription_data.trial_end` is set, and `payment_method_collection: "if_required"` is used. This configuration means a payment method is not required upfront, reducing friction for trial activation.
+5.  If the professional is upgrading to the Pro plan and is within their 14-day trial period (determined by `trialDaysLeft(professional.trialEndsAt)`), `subscription_data.trial_end` is set and `payment_method_collection: "if_required"` is used. This behavior is specific to the Pro plan and does not apply to other paid plans.
 6.  The API route returns `session.url`, and the browser redirects (`window.location.href`) to the Stripe-hosted checkout page.
 
 This approach uses a **hosted, not embedded**, Stripe Checkout page. This keeps Odys entirely out of PCI scope, as no sensitive card data touches Odys's servers. The `locale: "pt-BR"` parameter ensures the Stripe checkout page is rendered in Portuguese for Brazilian professionals.

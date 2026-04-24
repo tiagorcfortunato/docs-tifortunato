@@ -9,7 +9,7 @@ This page covers the WhatsApp integration architecture, including the corporate 
 
 ## Corporate Number Architecture
 
-The WhatsApp integration uses the Evolution API as the backend service for sending and receiving messages through a corporate WhatsApp number. The API runs as a Docker container defined in `docker-compose.evolution.yml`, using the image `atendai/evolution-api:v1.82`.
+The WhatsApp integration uses the Evolution API as the backend service for sending and receiving messages through a corporate WhatsApp number. The API runs as a Docker container defined in `docker-compose.evolution.yml`, using the image `atendai/evolution-api:v1.8.2`.
 
 The local instance is configured with API key authentication (`AUTHENTICATION_TYPE: "apikey"`) and a predefined key (`AUTHENTICATION_API_KEY: "odys-local-key-2026"`). Session metadata identifies the client as "Odys" (`CONFIG_SESSION_PHONE_CLIENT: "Odys"`).
 
