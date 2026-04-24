@@ -1,42 +1,70 @@
 ---
-title: "Evolution API Deployment"
-description: "Railway for Evolution API: Docker image, separate Postgres"
+title: "Railway for Evolution API: Docker image, separate Postgres"
+description: "Deep dive into the deployment strategy for Odys's Evolution API on Railway, covering its Docker image, environment configuration, and isolated data persistence."
 ---
 
-# Evolution API Deployment
+# Railway for Evolution API: Docker image, separate Postgres
 
-This page details the deployment strategy for the Evolution API, which handles WhatsApp integration. It covers its independent hosting on Railway, the Docker image used, and its dedicated PostgreSQL database.
+This document provides a detailed explanation of how the Evolution API, a crucial component for Odys's WhatsApp integration, is deployed and managed. Understanding this setup is key to grasping how Odys handles its conversational AI and automated messaging, as well as the architectural choices made to isolate this external dependency.
 
-## Independent Deployment on Railway
+## Overview
 
-The Evolution API is deployed as a separate service from the main application, hosted on Railway. This architectural decision provides isolation and dedicated resources for the critical WhatsApp integration component. The `README.md` confirms Railway as the hosting provider for the Evolution API server.
+Odys leverages the Evolution API to power its WhatsApp-first communication strategy. This API acts as the bridge between Odys's core application logic and the WhatsApp messaging platform, enabling features like automated reminders, booking confirmations, and the AI-driven conversational agent. For its deployment, the Evolution API runs as a dedicated Docker container on Railway, distinct from the main Odys application hosted on Vercel. This separation of concerns is a deliberate architectural choice, ensuring that the WhatsApp integration layer operates independently, with its own resource allocation and data persistence strategy.
 
-## Docker Image
+The `docker-compose.evolution.yml` file outlines the specific configuration for this deployment. It specifies the Docker image to be used, sets up critical environment variables for authentication and behavior, and defines how the Evolution API manages its internal data, notably by opting out of external database connections and instead relying on local file-based storage within a dedicated volume.
 
-The Evolution API is deployed as a Docker image. The deep-dive indicates the image used for the Railway deployment is `tiagorcfortunato/evolution-api-odys`. For local development, the `docker-compose.evolution.yml` file specifies the image `atendai/evolution-api:v1.8.2` and exposes port `8080` for API access.
+## Evolution API's Role in Odys
 
-## Database Configuration
+The Evolution API is central to Odys's promise of a "WhatsApp-first" experience. It's the mechanism through which Odys sends and receives all WhatsApp messages, abstracting away the complexities of the WhatsApp Web protocol. As detailed in the `README.md`, a single Odys-managed WhatsApp account, connected via an Evolution instance, serves all professionals and clients on the platform.
 
-For its production deployment on Railway, the Evolution API utilizes its own Supabase Postgres instance. This database is entirely independent of the main application's database, operating with an `evolution_api` schema and PgBouncer on port `6543`.
+Odys interacts with the Evolution API in two primary ways:
+1.  **Outbound Messaging**: Whenever Odys needs to send a message—be it a 24-hour reminder, a booking confirmation, or a professional alert—it calls the `sendWhatsApp()` function within `src/lib/whatsapp.ts`. This function, in turn, communicates with the Evolution API. Odys currently utilizes 19 distinct WhatsApp message templates, ranging from `msgBookingRequest` to `msgNewMessageToPro`, all orchestrated through this integration.
+2.  **Inbound Messaging**: The Evolution API is configured to forward all incoming WhatsApp messages to Odys's `POST /api/whatsapp/webhook` endpoint. This webhook is the entry point for client replies and new conversations, which are then processed by Odys's AI intake agent to handle scheduling, queries, and other interactions.
 
-**Honest flag**: The `docker-compose.evolution.yml` file, which configures a local instance of the Evolution API, explicitly disables external database usage by setting `DATABASE_ENABLED: "false"` and `REDIS_ENABLED: "false"`. In this local configuration, data is stored in local files, diverging from the production Railway setup.
+Furthermore, Odys includes cron jobs that interact with the Evolution API. The `/api/cron/reminders` endpoint, scheduled daily at 8 AM, sends automated reminders, while `/api/cron/whatsapp-watchdog`, scheduled daily at 9 AM, performs a health check on the Evolution API instance to ensure its operational status.
 
-## Key Environment Variables (Local Configuration)
+## Deployment on Railway
 
-The `docker-compose.evolution.yml` file defines several environment variables for configuring the Evolution API locally:
+The Evolution API is deployed on Railway using a Docker container, as defined in `docker-compose.evolution.yml`. This file specifies a single service, `evolution-api`, which is configured as follows:
 
-*   `SERVER_URL`: Configures the API's public URL, set to `http://localhost:8080` in the local setup.
-*   `AUTHENTICATION_TYPE`: Set to `apikey` for authentication.
-*   `AUTHENTICATION_API_KEY`: Uses `odys-local-key-2026` for local API key authentication.
-*   `DATABASE_ENABLED`: Set to `false`, indicating local file storage for the provided `docker-compose.evolution.yml`.
-*   `REDIS_ENABLED`: Set to `false`.
-*   `WEBHOOK_GLOBAL_ENABLED`: Set to `false`, with webhooks intended to be enabled per instance via API calls.
+*   **Image**: It uses the `atendai/evolution-api:v1.8.2` Docker image. This ensures a consistent and version-controlled deployment of the Evolution API.
+*   **Container Name**: The container is explicitly named `evolution-api` for easy identification within the Railway environment.
+*   **Restart Policy**: The `restart: unless-stopped` policy ensures that the Evolution API container automatically restarts if it crashes or the host machine reboots, maintaining continuous availability.
+*   **Port Mapping**: The `ports: - "8080:8080"` mapping exposes the container's internal port 8080 to port 8080 on the host, allowing Odys and other services to communicate with it.
+*   **Environment Variables**: A comprehensive set of environment variables configures the Evolution API's behavior:
+    *   `SERVER_URL`: Set to `"http://localhost:8080"` for local testing, indicating the public URL where the API is accessible.
+    *   `AUTHENTICATION_TYPE`: Configured as `"apikey"`, meaning access to the Evolution API is secured using a static API key.
+    *   `AUTHENTICATION_API_KEY`: Set to `"odys-local-key-2026"`, which is the specific key Odys uses to authenticate its requests to the Evolution API.
+    *   `AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES`: Set to `"true"`, likely to allow the API key to be exposed when fetching instance details, which can be useful for debugging or specific operational needs.
+    *   `DATABASE_ENABLED` and `REDIS_ENABLED`: Both are set to `"false"`. This is a critical design choice, indicating that the Evolution API does not connect to an external database or Redis instance for its operational data. Instead, it manages its state locally.
+    *   `LOG_LEVEL`: Set to `"ERROR"`, which means only error-level logs and above will be outputted, reducing verbosity in production.
+    *   `WEBHOOK_GLOBAL_ENABLED`: Set to `"false"`. This means webhooks are not globally active but are configured on a per-instance basis via API calls, allowing for fine-grained control over which WhatsApp instances send events to Odys. The `MESSAGES_UPSERT` event is specifically mentioned as one that Odys would subscribe to.
+*   **Volumes**: A named volume, `evolution_data`, is mounted to `/evolution/instances` inside the container. This volume is crucial for persisting the Evolution API's internal state, such as WhatsApp session data, across container restarts. By using a named volume, the data is stored persistently on the host system, even if the container itself is removed and recreated.
 
-## Known Gaps
+## Design Decisions
 
-*   The specific Railway configuration files or deployment workflows are not present in the repository. Deployment to Railway is assumed to be managed via the Railway dashboard, requiring manual configuration of environment variables and service settings.
-*   There is a divergence in the Docker image name and database configuration between the deep-dive's description of the Railway deployment and the provided `docker-compose.evolution.yml` for local setup. The deep-dive specifies `tiagorcfortunato/evolution-api-odys` and a dedicated Supabase Postgres for Railway, while the `docker-compose.evolution.yml` uses `atendai/evolution-api:v1.8.2` and disables external database usage.
+The deployment strategy for the Evolution API on Railway reflects several deliberate design decisions:
 
-## Why this shape
+*   **Isolation of WhatsApp Integration**: By deploying the Evolution API as a separate service on Railway, Odys isolates its core application logic from the complexities and potential volatility of the WhatsApp integration layer. This separation, as highlighted in the `README.md`'s "Architecture Decisions", allows the Evolution API to be managed independently, minimizing its impact on the main Odys application's stability and performance.
+*   **Evolution API for WhatsApp Web Shim**: The choice of Evolution API, as explained in the `README.md`, stems from its ability to act as a WhatsApp Web shim. This allows Odys to send messages from a dedicated corporate WhatsApp number without requiring the official, more restrictive, and often more expensive WhatsApp Business Cloud API. This provides flexibility and cost-effectiveness, especially during initial development and scaling.
+*   **Local Data Persistence for Evolution API**: The decision to set `DATABASE_ENABLED: "false"` and `REDIS_ENABLED: "false"` for the Evolution API means it relies on its internal, file-based storage, persisted via the `evolution_data` volume. This simplifies the Evolution API's deployment by removing external database dependencies for its own operational data. It also means that the Evolution API's state, primarily WhatsApp session information, is entirely separate from Odys's main 10-table PostgreSQL database hosted on Supabase, which uses Drizzle ORM. This prevents potential conflicts or tight coupling between the two systems' data models.
+*   **Railway for Docker Hosting**: Railway is chosen as the hosting platform for the Evolution API due to its robust support for Docker container deployments. It provides a managed environment suitable for running such a service, handling aspects like container orchestration and persistent volumes.
 
-The Evolution API is deployed as a distinct service to provide isolation and dedicated resources for the critical WhatsApp integration. This microservice-like approach allows for independent scaling and management of the WhatsApp component, minimizing its impact on the main application's performance and stability. It also enables the use of a specialized database for WhatsApp-related data, separate from the core application's PostgreSQL instance.
+## Potential Improvements
+
+While the current setup is functional and well-reasoned, a few areas could be considered for future enhancements:
+
+1.  **Automated Webhook Configuration**: The `docker-compose.evolution.yml` comments indicate that webhooks are globally disabled and must be enabled per instance via a `POST {EVOLUTION_API_URL}/webhook/set/{INSTANCE}` API call. This manual step could be automated. Odys could implement a startup script or a dedicated internal API endpoint that, upon Evolution API deployment or instance creation, automatically configures the necessary webhooks (e.g., for `MESSAGES_UPSERT` events) to point to Odys's `/api/whatsapp/webhook`. This would reduce manual intervention and ensure consistent webhook setup.
+2.  **Dynamic Authentication Key Management**: The `AUTHENTICATION_API_KEY` is hardcoded as `"odys-local-key-2026"` in the `docker-compose.evolution.yml`. While acceptable for local development, for a production Railway deployment, this key should ideally be managed as a secret, injected dynamically into the environment. This enhances security by preventing sensitive credentials from being directly committed to version control.
+3.  **Enhanced Evolution API Health Checks**: The `/api/cron/whatsapp-watchdog` endpoint is mentioned for health checks. It would be beneficial to expand on what this watchdog specifically checks. Does it merely ping the Evolution API, or does it verify the status of connected WhatsApp instances? Implementing more granular checks, such as verifying active WhatsApp sessions or message delivery capabilities, could provide more robust monitoring and proactive alerts for potential issues with the WhatsApp integration.
+4.  **Flexible Logging Configuration**: The `LOG_LEVEL` is set to `"ERROR"`. While this reduces log volume, it might hinder debugging in certain scenarios. Introducing a mechanism to dynamically adjust the `LOG_LEVEL` (e.g., via an environment variable that can be changed without redeploying the `docker-compose.evolution.yml` file) could be valuable for troubleshooting specific issues in a production environment.
+
+## References
+
+*   `deployment/railway-evolution.mdx` (this file)
+*   `docker-compose.evolution.yml`
+*   `README.md`
+*   `src/lib/whatsapp.ts`
+*   `src/app/api/whatsapp/webhook/route.ts`
+*   `src/app/api/cron/reminders/route.ts`
+*   `src/app/api/cron/whatsapp-watchdog/route.ts`
