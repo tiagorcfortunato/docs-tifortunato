@@ -1,48 +1,77 @@
 ---
-title: Shared Drizzle Schema
-description: Shared Drizzle schema via relative import, tsconfig exclude
+title: "Shared Drizzle Schema"
+description: "Understanding how Odys shares its Drizzle schema definition across different services, specifically focusing on the mcp-server's integration."
 ---
 
 # Shared Drizzle Schema
 
-This page details how the Model Context Protocol (MCP) server shares the Drizzle database schema with the main application. It covers the use of relative imports for schema definition and the TypeScript configuration that enables this sharing while maintaining independent build processes.
+In the Odys ecosystem, maintaining a consistent and authoritative definition of the database schema is paramount. This page delves into how the core Drizzle schema is defined and, crucially, how it's shared and consumed by different parts of the application, particularly the `mcp-server`. This architectural choice ensures that all services interacting with the database operate on the same understanding of the data structure, fostering consistency and reducing potential integration issues.
 
-## Schema Sharing Mechanism
+## Overview
 
-The MCP server, located in the `mcp-server/` subdirectory, directly imports the Drizzle schema definition from the main application's codebase. This is achieved via a relative import in `mcp-server/src/db.ts`:
+The heart of Odys's data model resides in a single, centralized Drizzle schema definition located at `src/lib/db/schema.ts`. This file acts as the single source of truth for all database tables and their respective columns, types, and relationships. Odys currently defines 10 distinct tables, including core entities like `professionals`, `clients`, `appointments`, and supporting structures such as `availability`, `recurringSchedules`, and `messages`.
+
+The `mcp-server`, which handles various backend operations, needs to interact with this database. Instead of duplicating the schema definition or relying on a separate package, `mcp-server` directly imports the schema from its canonical location. This is achieved through a relative import in `mcp-server/src/db.ts`, which then initializes the Drizzle ORM client with this shared schema. To ensure that TypeScript correctly understands these cross-directory imports and provides proper type checking, the `mcp-server/tsconfig.json` explicitly includes the schema file in its compilation scope.
+
+## The Odys Database Schema
+
+The `src/lib/db/schema.ts` file is where the entire database structure for Odys is meticulously laid out using Drizzle ORM. This comprehensive schema defines the relationships and data types for all entities within the application.
+
+At its core, the `professionals` table serves as a central entity, capturing extensive details about each professional user. With 24 columns, it stores essential information such as `userId` (likely referencing an external authentication system), `name`, `slug` for public profile URLs, contact details like `phone` and `email`, and professional specifics like `profession` and `bio`. It also includes critical business logic fields like `sessionDuration`, `sessionPrice`, the professional's `plan` (e.g., "free", "pro", "premium"), and `paymentType` preferences. For financial integrations, it includes `pixKeyType`, `pixKey`, and Stripe-related identifiers like `stripeCustomerId` and `stripeSubscriptionId`. Operational flags like `autoConfirm` and `active`, along with standard `createdAt` and `updatedAt` timestamps, complete this robust definition.
+
+Many other tables in Odys are designed around the `professionalId` and `clientId` to establish clear relationships and ensure data integrity. For instance:
+
+*   The `availability` table tracks a professional's working hours, linking directly to `professionals.id` with an `onDelete: "cascade"` rule, meaning if a professional is removed, their availability schedules are automatically cleaned up.
+*   The `clients` table stores information about clients, each associated with a `professionalId`, also with `onDelete: "cascade"`. It includes a nullable `userId`, suggesting clients can exist without a full Odys user account.
+*   `clientNotes` provides a private space for professionals to record observations about their clients, referencing both `professionalId` and `clientId` with cascading deletes.
+*   `recurringSchedules` manages repeating appointments, again linked to both `professionalId` and `clientId` with cascading deletes.
+*   The `appointments` table, a critical component for Odys, details individual sessions, linking to `professionalId`, `clientId`, and optionally `recurringScheduleId`. It tracks `startsAt`, `endsAt`, `status` (e.g., "pending_confirmation", "confirmed"), and `paymentStatus`.
+*   `messages` facilitates communication between professionals and clients, referencing both `professionalId` and `clientId` with cascading deletes.
+*   `follows` tracks when a user follows a professional, linking `userId` to `professionalId` with cascading deletes.
+*   `reviews` allows clients to rate and comment on appointments, uniquely linking to `appointmentId` and also referencing `professionalId` and `clientId`, all with cascading deletes.
+*   Finally, `notifications` handles system alerts, targeting a `recipientId` and `recipientType`.
+
+Across the schema, `uuid` is consistently used for primary keys, with `defaultRandom()` ensuring unique identifiers. Timestamp columns like `createdAt` and `updatedAt` are frequently set with `defaultNow()` to automatically record creation and modification times. The extensive use of `onDelete: "cascade"` on foreign key relationships simplifies data management by automatically cleaning up dependent records when a parent record is deleted.
+
+## Schema Consumption in `mcp-server`
+
+The `mcp-server` is designed to interact with the Odys database, and it achieves this by importing the shared schema. In `mcp-server/src/db.ts`, you'll find the following import:
 
 ```typescript
 import * as schema from "../../src/lib/db/schema.js"
 ```
 
-This approach ensures that the MCP server uses the exact same schema definition as the main application, preventing schema drift and maintaining a single source of truth for database structure. The `mcp-server/src/db.ts` file then initializes Drizzle with this shared schema:
+This relative import allows the `mcp-server` to directly access the Drizzle schema definitions. Once imported, the `db` client is initialized using `drizzle(client, { schema })`, making all 10 tables and their relationships available for database operations within the `mcp-server`. This setup ensures that any database queries or mutations performed by the `mcp-server` are type-safe and consistent with the overall Odys data model. The `mcp-server/src/db.ts` also handles loading environment variables, specifically ensuring that `DATABASE_URL` is available for the `postgres` client connection.
 
-```typescript
-import { drizzle } from "drizzle-orm/postgres-js"
-import postgres from "postgres"
-// ...
-const client = postgres(DATABASE_URL, { prepare: false })
-export const db = drizzle(client, { schema })
-export { schema }
-```
+## TypeScript Configuration for Shared Schema
 
-Environment variables, specifically `DATABASE_URL`, are loaded using `dotenv` from the repository root's `.env.local` and `.env` files to ensure the MCP server connects to the correct database instance. A missing `DATABASE_URL` results in a critical error and process exit, as seen in `mcp-server/src/db.ts:14`.
-
-## TypeScript Configuration
-
-To facilitate this shared schema while treating `mcp-server/` as a distinct sub-project, specific TypeScript configurations are in place. The `mcp-server/tsconfig.json` file explicitly includes the shared schema path:
+For the TypeScript compiler to correctly process the shared schema across different parts of the Odys repository, a specific configuration is necessary. The `mcp-server/tsconfig.json` file includes the following entry in its `include` array:
 
 ```json
-{
-  "compilerOptions": {
-    // ...
-  },
-  "include": ["src/**/*", "../src/lib/db/schema.ts", "tsup.config.ts"]
-}
+"../src/lib/db/schema.ts"
 ```
 
-This `include` directive allows the MCP server's TypeScript compiler to correctly resolve types from `src/lib/db/schema.ts`. Concurrently, the main application's build system is configured to exclude the `mcp-server` directory, preventing redundant compilation and ensuring that the two projects can be built and deployed independently.
+This explicit inclusion tells the TypeScript compiler for the `mcp-server` to consider the `src/lib/db/schema.ts` file as part of its compilation context. Without this, the compiler might not be aware of the types defined in the schema file, leading to potential type errors or a lack of intelligent autocompletion when `mcp-server` code interacts with the database schema. This ensures that the benefits of TypeScript's static analysis extend seamlessly to the shared schema.
 
-## Why this shape
+## Design Decisions
 
-This architecture was chosen to provide a robust and maintainable way for the MCP server to interact with the application's database. By directly importing the schema, we guarantee that the MCP server's database operations are always aligned with the latest schema definition, eliminating the risk of inconsistencies that could arise from duplicated or manually synchronized schema files. The `tsconfig.json` setup ensures that this sharing is managed effectively within the TypeScript ecosystem, allowing for strong type checking in both the main application and the MCP server without creating circular dependencies or build conflicts.
+The current structure for sharing the Drizzle schema reflects several deliberate design choices aimed at balancing consistency, development experience, and project organization:
+
+1.  **Centralized Schema Definition**: Defining the entire Drizzle schema in a single file, `src/lib/db/schema.ts`, was a foundational decision. The primary *why* here is to establish a single source of truth for the database structure. This prevents schema drift, where different services might operate on slightly varied understandings of the database, leading to subtle bugs and integration headaches. It simplifies schema evolution, as any change is made in one place and immediately visible to all consumers.
+2.  **Direct Relative Import**: The `mcp-server` consumes the schema via a direct relative import (`../../src/lib/db/schema.js`). This choice avoids the overhead of publishing the schema as a separate npm package, which would introduce versioning complexities and a more involved build process for what is essentially an internal dependency within a monorepo-like structure. The trade-off is that the import path is relative and might need adjustment if file locations change significantly, but for a tightly coupled component like `mcp-server`, it offers simplicity.
+3.  **Explicit `tsconfig.json` Inclusion**: Explicitly listing `../src/lib/db/schema.ts` in `mcp-server/tsconfig.json`'s `include` array is crucial for maintaining a robust developer experience. The *why* behind this is to ensure that the TypeScript language server and compiler provide full type safety and autocompletion for the schema within the `mcp-server` context. Without this, the compiler would treat the imported schema as an external, untyped module, negating many benefits of using TypeScript with Drizzle.
+4.  **Cascading Deletes (`onDelete: "cascade"`)**: The widespread use of `onDelete: "cascade"` for foreign key relationships (e.g., `availability.professionalId` referencing `professionals.id`) is a design choice for data integrity and operational simplicity. When a parent record (like a professional) is deleted, all associated child records (like their availability, clients, appointments, etc.) are automatically removed by the database. This simplifies application logic by offloading cleanup responsibilities to the database, reducing the risk of orphaned records. The trade-off is that accidental deletions can have wide-ranging consequences, necessitating careful handling of delete operations at the application layer.
+
+## Potential Improvements
+
+While the current shared schema setup is functional and provides consistency, there are several areas where Odys could enhance its database management and developer experience:
+
+1.  **Automated Schema Migrations with Drizzle Kit**: Currently, the schema is defined, but there's no explicit mention of an automated migration process. Integrating Drizzle Kit for schema migrations would provide a robust way to evolve the database schema over time. This would involve generating migration files based on schema changes and applying them systematically, ensuring that database updates are tracked, reversible, and consistently applied across environments. This would live alongside `src/lib/db/schema.ts` and be managed by Drizzle Kit commands.
+2.  **Generated TypeScript Types for Application Logic**: Beyond Drizzle's internal type inference, generating explicit TypeScript types (e.g., using Drizzle Kit's `drizzle-kit generate` or similar tools) from the `src/lib/db/schema.ts` file could further enhance type safety. These generated types could then be used throughout the application, for example, to define Zod schemas for API validation, or to type data structures in frontend components, ensuring that data flowing through Odys strictly adheres to the database's shape.
+3.  **Centralized `tsconfig.json` `paths` for Imports**: The relative import `../../src/lib/db/schema.js` in `mcp-server/src/db.ts` works, but it can become brittle if the file structure changes or if more services need to import the schema. Introducing a root `tsconfig.json` with `paths` aliases (e.g., `"@odys/db/*": ["./src/lib/db/*"]`) would allow imports like `import * as schema from "@odys/db/schema"` which are more stable, readable, and less dependent on the exact file system depth. This would simplify maintenance and improve developer ergonomics across the Odys repository.
+
+## References
+
+*   Schema definition: `src/lib/db/schema.ts`
+*   `mcp-server` database connection: `mcp-server/src/db.ts`
+*   `mcp-server` TypeScript configuration: `mcp-server/tsconfig.json`
