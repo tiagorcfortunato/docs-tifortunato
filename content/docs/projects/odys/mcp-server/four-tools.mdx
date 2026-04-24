@@ -1,94 +1,117 @@
 ---
-title: "The Four Tools of Odys's Multi-Channel Platform Server"
-description: "A deep dive into the four specialized tools available within Odys's Multi-Channel Platform (MCP) server, detailing their purpose, implementation, and underlying design choices."
+title: Four Tools
+description: Detailed explanation of the four core tools in the mcp-server, including their handlers and design rationale.
 ---
 
-The Multi-Channel Platform (MCP) server in Odys is designed to empower professionals with automated assistance, and a core component of this capability lies in its set of specialized tools. These tools act as a bridge, allowing an intelligent agent (or other automated processes) to interact with Odys's core business logic and data. This document will walk you through the four distinct tools currently implemented, explaining their functionality, the rationale behind their design, and how they leverage Odys's database schema.
+# Four Tools
+
+The `mcp-server` module serves as the central processing unit for various business operations, exposing a set of well-defined tools that encapsulate specific functionalities. This document delves into the implementation details of these tools, explaining their purpose, how they interact with the database, and the design choices that shaped their current form. Understanding these tools is crucial for anyone looking to extend or integrate with the `mcp` (Money App Core Platform) backend.
 
 ## Overview
 
-Odys's MCP server exposes a collection of four distinct tools, each designed to perform a specific business operation. These tools are formally defined in the `mcp-server/src/tools.ts` file within the `TOOL_DEFINITIONS` array. This array serves as a manifest, providing a structured description of each tool, including its `name`, a human-readable `description`, and a machine-readable `inputSchema` that dictates the expected parameters.
+The `mcp-server` currently defines a total of 4 distinct tools, each designed to address a specific business need. These tools are declared in `mcp-server/src/tools.ts` and are intended to be callable by external systems, potentially including AI agents or other microservices. The tools are:
 
-The tools cover essential aspects of a professional's daily operations: managing appointments, retrieving client information, summarizing financial performance, and updating appointment statuses. Each tool is backed by a dedicated asynchronous function that handles the business logic, database interactions, and robust input validation using `zod`.
+*   `get_appointments_today`
+*   `get_customer_by_phone`
+*   `get_revenue_summary`
+*   `update_appointment_status`
 
-## The Four Tools in Detail
+Each tool comes with a clear description and a structured input schema, making them self-documenting and easy to integrate.
 
-### 1. `get_appointments_today`
+## Tool Implementations
 
-This tool is designed to provide a professional with a snapshot of their upcoming and ongoing appointments for the current day. It's particularly useful for agents needing to quickly inform a professional about their schedule.
+The `mcp-server/src/tools.ts` file is the heart of these tool definitions. It not only defines the input schemas using Zod but also provides the asynchronous handler functions that execute the actual business logic, primarily interacting with the Drizzle ORM for database operations.
 
-The input for this tool, defined by `GetAppointmentsTodayInput`, requires a `professionalId` (a UUID string) to identify whose schedule to retrieve. It also accepts an optional `timezone` string, defaulting to `"America/Sao_Paulo"`, which is crucial for accurately determining "today" in the professional's local context.
+### `get_appointments_today`
 
-The `getAppointmentsToday` function first parses and validates its input. It then calculates the `start` and `end` timestamps for the current day in the specified timezone. This calculation involves a helper function, `tzOffsetMs`, which determines the UTC offset for a given instant and timezone. This ensures that "today" correctly reflects the local calendar day, even across daylight saving time changes or different geographical locations.
+This tool is designed to retrieve all appointments scheduled for a specific professional on the current day, taking into account a given IANA timezone.
 
-The function then queries the `appointments` table, joining with `clients` to fetch the `customerName` and `professionals` to get the `serviceName` (from the `profession` column). It filters appointments by the `professionalId` and ensures their `startsAt` timestamp falls within the calculated `start` and `end` range. The results are ordered by `startsAt` to present a chronological schedule.
+The input for this tool is validated by `GetAppointmentsTodayInput`, which expects a `professionalId` (a UUID string) and an optional `timezone` (defaulting to "America/Sao_Paulo"). The `TOOL_DEFINITIONS` array provides a corresponding JSON Schema representation for external consumption.
 
-The output includes the `professionalId`, `timezone`, the `date` string, and an array of `appointments`, each containing the `appointment_id`, `time` (ISO string), `customer_name`, `status`, and `service_name`. In case of a database error, it returns an empty `appointments` array and an `error` message.
+The `getAppointmentsToday` handler function first parses its input. A key challenge in this function is accurately determining "today" across different timezones. It achieves this by:
+1.  Getting the current `Date`.
+2.  Formatting this date into a `YYYY-MM-DD` string using `Intl.DateTimeFormat` with the specified `timezone`. This gives a "naive" date string for the target timezone.
+3.  Constructing "naive" start and end `Date` objects (e.g., `2024-01-01T00:00:00Z` and `2024-01-01T23:59:59.999Z`).
+4.  Calculating the timezone offset using the custom `tzOffsetMs` helper function. This function determines the difference in milliseconds between a UTC date and its representation in the target timezone.
+5.  Adjusting the "naive" start and end dates by this offset to get the correct UTC timestamps that correspond to the beginning and end of "today" in the specified timezone.
 
-### 2. `get_customer_by_phone`
+With the correct `start` and `end` timestamps, the function then queries the database using Drizzle ORM. It selects `id`, `startsAt`, `status` from `appointments`, `name` from `clients`, and `profession` from `professionals`. It performs `innerJoin` operations between `appointments`, `clients`, and `professionals` tables. The `where` clause filters appointments by `professionalId` and ensures `startsAt` falls within the calculated `start` and `end` range. Results are ordered by `startsAt`.
 
-This tool allows for efficient lookup of client records based on a phone number. It's invaluable for scenarios where a professional or an agent needs to identify a client quickly using only their contact number.
+The function returns a structured object containing the `professionalId`, `timezone`, the `date` string, and an array of `appointments`, each mapped to a consistent output format. Basic `try/catch` error handling is in place to return an `error` message if a database issue occurs.
 
-The `GetCustomerByPhoneInput` schema simply expects a `phone` string. The `getCustomerByPhone` function first normalizes the provided phone number using `normalizeBrazilianPhone` and generates potential `variants` using `getPhoneVariants`. This is a critical step to handle various input formats (e.g., with or without country code, with or without a leading '9' for mobile numbers in Brazil) and ensure robust matching against the stored `phone` numbers in the `clients` table.
+### `get_customer_by_phone`
 
-It then queries the `clients` table using the `inArray` Drizzle operator to find any client whose `phone` matches one of the generated variants. If no clients are found, it returns an empty `matches` array.
+This tool is designed to look up customer records based on a phone number, providing flexibility for various input formats.
 
-For each matching client, it performs a secondary query to retrieve their last 5 appointments from the `appointments` table, ordered by `startsAt` in descending order. This provides immediate context about the client's recent interactions. The output includes the normalized `phone` number and an array of `matches`, where each match contains the client's details (including `id`, `professional_id`, `name`, `phone`, `email`, `created_at`) and their associated `appointments` history.
+The input is validated by `GetCustomerByPhoneInput`, which requires a `phone` string with a minimum length of 4 characters.
 
-### 3. `get_revenue_summary`
+The `getCustomerByPhone` handler function first normalizes the input `phone` number using `normalizeBrazilianPhone` from `mcp-server/src/phone.ts`. This helper function strips non-digit characters and ensures the number is prefixed with "55" if it's a Brazilian number and not already in E.164 format. It then generates `variants` of the phone number using `getPhoneVariants`, which includes both the full E.164 format (e.g., "5511987654321") and a shorter version without the "55" prefix (e.g., "11987654321") if applicable. This is crucial for matching phone numbers that might be stored in different formats in the database.
 
-This tool provides a financial overview for a professional, summarizing revenue over a specified period. It's useful for professionals tracking their earnings or for agents providing business insights.
+The function then queries the `clients` table, using `inArray` to match any of the generated phone `variants`. If no clients are found, it returns an empty `matches` array. If clients are found, it iterates through each matching client. For each client, it performs a separate query to fetch their last 5 appointments, ordered by `startsAt` in descending order. This results in a list of client details along with their recent appointment history.
 
-The `GetRevenueSummaryInput` requires a `professionalId` and a `period`, which can be `"week"`, `"month"`, or `"year"`. The `getRevenueSummary` function calculates the `start` timestamp based on the chosen `period` (7, 30, or 365 days ago from `now`).
+The output includes the `normalized` phone number and an array of `matches`, each containing `client` details and their `appointments`. Error handling is present to catch database issues.
 
-It first retrieves the `sessionPrice` from the `professionals` table for the given `professionalId`. This `sessionPrice` is a crucial piece of information, as it's used to calculate the total revenue. If the professional is not found, it returns a structured error response with zero values.
+### `get_revenue_summary`
 
-Next, it queries the `appointments` table, counting only those appointments that belong to the `professionalId`, have a `paymentStatus` of `"captured"`, and fall within the defined time window. The `totalRevenueCents` is then calculated by multiplying the `appointmentCount` by the professional's `sessionPrice`. The `averageTicketCents` is derived from these two values.
+This tool provides a summary of revenue for a given professional over a specified rolling period (week, month, or year).
 
-The tool returns a summary object including the `professionalId`, `period`, `windowStart`, `windowEnd`, `appointmentCount`, `totalRevenueCents`, `averageTicketCents`, and a fixed `currency` of `"BRL"`.
+The input is validated by `GetRevenueSummaryInput`, requiring a `professionalId` and a `period` enum value ("week", "month", or "year").
 
-### 4. `update_appointment_status`
+The `getRevenueSummary` handler function calculates the `start` date for the summary period based on the `period` input. "Week" covers the last 7 days, "month" the last 30, and "year" the last 365.
 
-This tool allows for changing the status of an existing appointment. This is a fundamental operation for managing a professional's schedule, enabling actions like confirming, rejecting, or completing appointments.
+It first fetches the `sessionPrice` for the specified `professionalId` from the `professionals` table. This is a critical step, as the revenue calculation relies on this value. If the professional is not found, it returns an error.
 
-The `UpdateAppointmentStatusInput` schema requires an `appointmentId`, the `professionalId` (for authorization), and the new `status` from the predefined `APPOINTMENT_STATUSES` list. An optional `reason` string can also be provided.
+Next, it performs an aggregate query on the `appointments` table. It counts appointments that belong to the `professionalId`, have a `paymentStatus` of "captured", and fall within the calculated `start` and `now` date range. The `sql<number>` template literal is used to cast the `count(*)` result to an integer.
 
-The `updateAppointmentStatus` function first fetches the existing appointment using its `appointmentId`. It performs two critical checks:
-1.  **Existence Check**: If the appointment is not found, it returns an error.
-2.  **Authorization Check**: It verifies that the `professionalId` provided in the input matches the `professionalId` associated with the existing appointment. This prevents unauthorized modifications.
+The `appointmentCount` is then used, along with the `professional.sessionPrice`, to calculate `totalRevenueCents` and `averageTicketCents`. A check prevents division by zero for `averageTicketCents` if no appointments are found.
 
-It also includes an **Idempotency Check**: if the appointment's current `status` is already the same as the requested `status`, no update is performed, and a `noChange: true` flag is returned. This avoids unnecessary database writes and potential side effects.
+The function returns a summary object including `professionalId`, `period`, `windowStart`, `windowEnd`, `appointmentCount`, `totalRevenueCents`, `averageTicketCents`, and a fixed `currency` of "BRL". Error handling is included for database operations or if the professional is not found.
 
-If the checks pass and an update is needed, the function updates the `appointments` table, setting the new `status`. If a `reason` was provided, it also updates the `notes` column of the appointment. The updated appointment record is then returned, serialized by the `serializeAppointment` helper function.
+### `update_appointment_status`
+
+This tool allows for updating the status of a specific appointment, with built-in ownership verification and idempotency.
+
+The input is validated by `UpdateAppointmentStatusInput`, which requires `appointmentId`, `professionalId`, and a `status` from the `APPOINTMENT_STATUSES` enum. An optional `reason` string can also be provided.
+
+The `updateAppointmentStatus` handler function first parses its input. It then fetches the existing appointment record using the `appointmentId`. Several checks are performed:
+1.  **Appointment existence**: If no appointment is found, an error is returned.
+2.  **Ownership verification**: It checks if the `professionalId` provided in the input matches the `professionalId` of the existing appointment. If they don't match, an "Unauthorized" error is returned, preventing a professional from modifying another's appointments.
+3.  **Idempotency**: If the `existing.status` is already the same as the target `status`, the function returns `success: true` and `noChange: true`, indicating that no database write was necessary.
+
+If the status needs updating, the function proceeds to update the `appointments` table. It sets the `status` to the new value. If a `reason` is provided, it also updates the `notes` column of the appointment. The `returning()` clause ensures that the updated record is returned from the database operation.
+
+Finally, it returns `success: true` along with the `appointment` details, serialized using the `serializeAppointment` helper function. Error handling is in place for database issues.
 
 ## Design Decisions
 
-The design of these tools reflects several key principles aimed at robustness, clarity, and maintainability:
+Several key design decisions underpin the structure and functionality of these tools:
 
-*   **Schema-First Input Validation**: The use of `zod` for defining `GetAppointmentsTodayInput`, `GetCustomerByPhoneInput`, `GetRevenueSummaryInput`, and `UpdateAppointmentStatusInput` ensures that all incoming data is strictly validated against a predefined schema. This prevents malformed requests from reaching the business logic and database, enhancing security and reliability. Furthermore, `zod` schemas can be easily converted into JSON Schema, which is used in the `TOOL_DEFINITIONS` array to describe the expected inputs to any consuming agent, such as an AI.
-*   **Clear Separation of Concerns**: The `TOOL_DEFINITIONS` array explicitly separates the metadata and schema description of each tool from its actual implementation logic. This makes it straightforward to understand what each tool does and how to interact with it, without needing to delve into the database queries. The handler functions (`getAppointmentsToday`, `getCustomerByPhone`, etc.) are responsible solely for executing the operation.
-*   **Robust Phone Number Handling**: The `getPhoneVariants` and `normalizeBrazilianPhone` functions in `mcp-server/src/phone.ts` demonstrate a pragmatic approach to handling the complexities of phone numbers, especially in a specific locale like Brazil. By normalizing and generating variants, the system increases the likelihood of successfully matching client records, even if the input phone number format varies. This design acknowledges that user input is often inconsistent and builds resilience against it.
-*   **Explicit Timezone Management**: For `getAppointmentsToday`, the explicit handling of timezones via the `timezone` parameter and the `tzOffsetMs` helper function is a crucial design choice. It prevents ambiguity and ensures that "today" is interpreted correctly from the perspective of the professional, regardless of where the server process is running. This is vital for a system that might serve professionals in different timezones.
-*   **Idempotency and Authorization**: In `updateAppointmentStatus`, the inclusion of an idempotency check (`existing.status === status`) and an authorization check (`existing.professionalId !== professionalId`) are fundamental for building a reliable API. Idempotency ensures that repeated calls with the same parameters have the same effect as a single call, simplifying client-side logic and error recovery. The authorization check is a basic security measure, preventing one professional from modifying another's appointments.
-*   **Consistent Error Reporting**: Each tool handler function wraps its core logic in a `try...catch` block and returns a consistent error structure (e.g., `{ error: "..." }`). This provides predictable feedback to the caller, making it easier to integrate these tools into larger systems and handle failures gracefully.
+*   **Separation of Concerns (Zod vs. `TOOL_DEFINITIONS`)**: The input validation schemas are defined using Zod (e.g., `GetAppointmentsTodayInput`). This provides robust runtime validation for incoming requests. Separately, the `TOOL_DEFINITIONS` array provides a JSON Schema-like representation of these inputs and tool descriptions. This separation allows the Zod schemas to be used directly in TypeScript for type safety and validation, while `TOOL_DEFINITIONS` can be exposed to external systems (like an LLM agent or an OpenAPI specification) that require a standardized, descriptive format for tool discovery and invocation. While this introduces some duplication, it caters to different consumers effectively.
+
+*   **Database Interaction with Drizzle ORM**: All database operations are performed using Drizzle ORM. This choice provides a type-safe and fluent API for interacting with the PostgreSQL database, reducing the likelihood of SQL injection vulnerabilities and improving developer experience compared to raw SQL queries. The use of `db` and `schema` from `mcp-server/src/db.js` centralizes database access.
+
+*   **Explicit Timezone Handling**: The `getAppointmentsToday` tool explicitly handles timezones using `Intl.DateTimeFormat` and a custom `tzOffsetMs` function. This is a deliberate choice to ensure that "today" is resolved correctly based on the professional's local time, rather than relying on server-local time or UTC, which could lead to incorrect results for users in different geographical locations.
+
+*   **Robust Phone Number Matching**: The `getCustomerByPhone` tool leverages `normalizeBrazilianPhone` and `getPhoneVariants` from `mcp-server/src/phone.ts`. This acknowledges the real-world complexity of phone number formats and aims to maximize match rates by trying multiple common representations, improving the user experience for customer lookups.
+
+*   **Idempotency in `updateAppointmentStatus`**: The `updateAppointmentStatus` tool includes an explicit check (`if (existing.status === status)`) to prevent unnecessary database writes if the appointment's status is already the target status. This makes the operation idempotent, which is a good practice for API design, especially in distributed systems where retries might occur.
+
+*   **Centralized Status Definitions**: The `APPOINTMENT_STATUSES` array is defined once as a `const` and then used to create a Zod enum (`z.enum(APPOINTMENT_STATUSES)`). This ensures consistency across the application regarding valid appointment statuses and provides type safety.
 
 ## Potential Improvements
 
-1.  **Dynamic Session Pricing in `getRevenueSummary`**: Currently, the `getRevenueSummary` function calculates `totalRevenueCents` by multiplying `appointmentCount` by the `sessionPrice` stored in the `professionals` table. This assumes all appointments have the same price. If Odys were to introduce variable pricing per appointment (e.g., different services, discounts, or custom rates), this calculation would become inaccurate. A more robust approach would be to store the actual `priceCents` on the `appointments` table and sum that value.
-    *   **File**: `mcp-server/src/tools.ts`
-    *   **Function**: `getRevenueSummary`
-    *   **Reasoning**: The current implementation in `getRevenueSummary` relies on `professional.sessionPrice`, which is a professional-level default. If individual appointments can have different prices, this calculation will not reflect actual revenue. Adding a `priceCents` column to the `appointments` table and summing it would provide a more accurate revenue summary.
+While the current implementation is functional, several areas could be improved to enhance robustness, maintainability, and performance:
 
-2.  **Enhanced Timezone Handling for `getAppointmentsToday`**: While `tzOffsetMs` correctly calculates the offset, the current implementation constructs `naiveStart` and `naiveEnd` using fixed `00:00:00Z` and `23:59:59.999Z` suffixes after formatting the date. This approach can be susceptible to edge cases around Daylight Saving Time (DST) transitions if the `timezone` itself has DST. A more robust method might involve using a dedicated timezone library (like `luxon` or `date-fns-tz`) to directly get the start and end of a day in a specific IANA timezone, which inherently handles DST rules.
-    *   **File**: `mcp-server/src/tools.ts`
-    *   **Function**: `getAppointmentsToday`, `tzOffsetMs`
-    *   **Reasoning**: The current timezone calculation, while functional, manually calculates offsets. Relying on a dedicated timezone library would provide more robust handling of complex DST rules and historical timezone data, reducing potential bugs around date boundaries.
+1.  **Automate `TOOL_DEFINITIONS` Generation**: The `TOOL_DEFINITIONS` array manually duplicates information already present in the Zod schemas (e.g., `GetAppointmentsTodayInput`). This is a source of potential inconsistencies. A build-time script or a utility function could automatically derive the JSON Schema representations for `TOOL_DEFINITIONS` directly from the Zod schemas, ensuring they always stay in sync. This would reduce boilerplate and the risk of human error in `mcp-server/src/tools.ts`.
 
-3.  **Centralized Error Handling and Logging**: The `try...catch` blocks in each tool handler currently return a simple error message. For a production system, it would be beneficial to centralize error handling, potentially logging the full error stack trace to a monitoring system (e.g., Sentry, DataDog) while returning a more user-friendly or generic error message to the client. This would improve observability and debugging capabilities.
-    *   **File**: `mcp-server/src/tools.ts` (all tool handler functions)
-    *   **Reasoning**: Each tool handler has its own `try...catch` block that returns a stringified error. Centralizing this logic, perhaps with a shared error utility or middleware, could ensure consistent logging of full stack traces for debugging and potentially transform errors into more standardized, less verbose messages for external consumers.
+2.  **Optimize `getCustomerByPhone` for N+1 Queries**: In `getCustomerByPhone`, when multiple clients match a phone number, the code performs a separate database query for each client to fetch their last 5 appointments (`clients.map(async (client) => { ... await db.select(...) })`). This leads to an N+1 query problem, where N is the number of matching clients. A more efficient approach would be to fetch all relevant appointments in a single query using a `WHERE IN` clause on `clientId` after retrieving the initial clients, and then group them by client in application code. This would significantly reduce database round trips and improve performance, especially for phone numbers that might match many clients.
+
+3.  **Refine Timezone Handling with a Library**: The custom `tzOffsetMs` function in `mcp-server/src/tools.ts` is a bespoke solution for timezone offset calculation. While it works, timezone logic can be notoriously complex due to daylight saving changes, historical data, and edge cases. Replacing this custom function with a well-tested, dedicated date-time library (like `date-fns-tz` or `luxon`) would likely provide more robust and accurate timezone calculations, reducing the risk of subtle bugs and improving maintainability.
+
+4.  **Centralize Error Handling**: The `try/catch` blocks in each tool handler (e.g., `getAppointmentsToday`, `getCustomerByPhone`) are largely repetitive, returning an object with an `error` property. A higher-order function or a centralized error handling utility could wrap the core logic of each handler, abstracting away the repetitive `try/catch` boilerplate and ensuring consistent error response formats across all tools.
 
 ## References
 
 *   `mcp-server/src/tools.ts`
 *   `mcp-server/src/phone.ts`
+*   `mcp-server/src/db.js`
