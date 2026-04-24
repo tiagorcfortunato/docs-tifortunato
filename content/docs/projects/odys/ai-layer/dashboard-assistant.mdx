@@ -1,41 +1,76 @@
 ---
-title: Dashboard AI Assistant
-description: In-dashboard AI chat
+title: "Dashboard AI Assistant"
+description: "In-dashboard AI chat"
 ---
 
 # Dashboard AI Assistant
 
-This page details the implementation of the in-dashboard AI chat assistant, covering its API endpoint, integration with the Groq SDK, and the data retrieval tools it utilizes.
+This page details the implementation of the in-dashboard AI chat assistant, covering its API endpoint, integration with the Groq SDK, and the data retrieval tools it uses to respond to user queries.
 
 ## API Endpoint
 
-The core logic for the AI assistant resides in the API route `src/app/api/ai/chat/route.ts`. This endpoint handles user queries, orchestrates calls to the Groq API, and executes data retrieval functions based on the AI's tool choices.
+The AI assistant's logic is implemented in `src/app/api/ai/chat/route.ts`, a Next.js App Router API route that handles POST requests. It orchestrates authentication, authorization, AI model interaction via Groq, and execution of data-fetching tools.
 
 ### Authentication and Authorization
 
-Access to the AI assistant is gated by user authentication and feature entitlement:
-*   User authentication is performed using `getUser()` and `getProfessional()` from `src/lib/api.ts`. These functions retrieve the current user and their associated professional profile.
-*   Feature access is checked via `canUseFeature()` from `src/lib/plan-guard.ts`, ensuring that only users with the appropriate subscription plan can utilize the assistant. Unauthorized or forbidden requests are handled by specific response utilities from `src/lib/api.ts`.
+Access control is enforced at the start of the `POST` handler:
+
+- `getUser()` from `src/lib/api` retrieves the authenticated user from the session.
+- `getProfessional()` fetches the associated professional profile using the user ID.
+- If either check fails, the route returns a `401 Unauthorized` via `unauthorized()`.
+- Feature access is validated using `canUseFeature()` from `src/lib/plan-guard`, which checks the professional's current plan and trial status. Users without the required plan receive a `403 Forbidden` response.
 
 ### AI Model and Prompting
 
-The assistant leverages the Groq SDK, initialized with `process.env.GROQ_API_KEY`. A `SYSTEM_PROMPT` defines the AI's persona as the Odys assistant, instructing it to respond in Portuguese, use tools for data retrieval, and format financial values in BRL. Specific formatting rules are provided for "no-show rate" and "monthly summary" responses.
+The assistant uses the Groq SDK (`groq-sdk`) initialized with `process.env.GROQ_API_KEY`. The model used is `llama-3.3-70b-versatile`.
 
-### AI Tools and Data Retrieval
+A `SYSTEM_PROMPT` string defines the assistant's behavior:
+- Respond in Portuguese.
+- Use tools for data retrieval; never invent numbers.
+- Format financial values in BRL.
+- Apply specific formatting rules for "no-show rate" and "monthly summary" responses.
 
-The AI is equipped with a set of `TOOLS` that allow it to interact with the application's database to fetch relevant information. Each tool corresponds to an asynchronous function within `src/app/api/ai/chat/route.ts` that performs Drizzle ORM queries against the `appointments` and `clients` tables defined in `src/lib/db/schema.ts`, using the `db` client from `src/lib/db/index.ts`. Date manipulations are handled by `date-fns`.
+The assistant is equipped with three tools defined in the `TOOLS` array, each corresponding to a data-fetching function.
 
-The available tools are:
+## AI Tools and Data Retrieval
 
-*   **`get_stats`**:
-    *   **Description**: Returns statistics for the last 6 months, including global summaries (total appointments, no-shows, rate, revenue) and a month-by-month breakdown.
-    *   **Implementation**: The `getStats()` function queries all appointments for the last six months, then processes them to calculate completed appointments, no-shows, cancellation rates, and estimated revenue based on a `sessionPrice`.
-*   **`get_upcoming`**:
-    *   **Description**: Returns appointments scheduled for the next 7 days, including client name, date, and time.
-    *   **Implementation**: The `getUpcoming()` function queries appointments that start within the next seven days, joining with the `clients` table to retrieve client names. Results are ordered by `startsAt`.
-*   **`get_no_show_clients`**:
-    *   **Description**: Ranks clients by the number of no-shows over the last 6 months, including total sessions and individual no-show rates.
-    *   **Implementation**: The `getNoShowClients()` function aggregates appointment data for each client over the last six months, counting total appointments and no-shows.
+The assistant can invoke three tools to retrieve real data from the database using Drizzle ORM. All queries are scoped to the authenticated professional's `professionalId`.
+
+### `get_stats`
+
+Retrieves appointment statistics over the last six months.
+
+- **Function**: `getStats(professionalId, sessionPrice)`
+- **Query**: Selects all appointments from the last six months where `professionalId` matches.
+- **Processing**:
+  - Calculates global totals: completed appointments, no-shows, no-show rate, and revenue (in BRL).
+  - Breaks down data month-by-month, computing the same metrics per month.
+  - Returns both global and per-month summaries.
+- **Use case**: Triggered for queries about no-show rates, monthly summaries, revenue, or trends.
+
+### `get_upcoming`
+
+Fetches upcoming appointments for the next 7 days.
+
+- **Function**: `getUpcoming(professionalId)`
+- **Query**: Joins `appointments` and `clients` tables to get client names.
+- **Filters**: Appointments starting from now up to 7 days ahead.
+- **Order**: By `startsAt` ascending.
+- **Limit**: 20 results.
+- **Output**: Client name, date, end time, and status.
+- **Use case**: "What do I have scheduled this week?"
+
+### `get_no_show_clients`
+
+Ranks clients by no-show frequency over the last 6 months.
+
+- **Function**: `getNoShowClients(professionalId)`
+- **Query**: Groups appointments by client, counting total appointments and no-shows using SQL `filter` clauses.
+- **Filters**: Appointments from the last 6 months.
+- **Order**: By no-show count descending.
+- **Limit**: 10 clients.
+- **Post-processing**: Filters out clients with zero no-shows and computes individual no-show rates.
+- **Use case**: "Which clients miss the most appointments?"
 
 ## Known Gaps
 
@@ -43,4 +78,4 @@ The current implementation of authentication for API routes, including `src/app/
 
 ## Why this shape
 
-The design of the Dashboard AI Assistant prioritizes a direct, tool-augmented approach to AI interaction. By defining specific tools that map directly to database queries, the system ensures that the AI's responses are factual and verifiable, preventing hallucination of data. The use of the Groq SDK was chosen for its performance characteristics in generating tool calls and responses. Integrating authentication and authorization at the API route level ensures that access control is applied consistently to all AI-driven data requests, aligning with the explicit security model used across the application's API layer.
+The design prioritizes factual accuracy by restricting the AI to a fixed set of tools that execute verified database queries. This prevents hallucination and ensures responses are grounded in real data. The use of Groq was selected for low-latency tool calling and response generation. By centralizing business logic in the API route and using Drizzle ORM for type-safe queries, the implementation maintains consistency with the rest of the App Router architecture. The absence of middleware keeps the control flow explicit and auditable, aligning with the project's pragmatic security model.

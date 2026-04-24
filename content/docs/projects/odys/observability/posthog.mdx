@@ -1,63 +1,40 @@
 ---
-title: PostHog Analytics
+title: "PostHog Analytics"
 description: "PostHog: cookie-gated init, manual pageview, identify in dashboard"
 ---
 
 # PostHog Analytics
 
-This page details the integration of PostHog for analytics, covering its cookie-gated initialization, the manual pageview tracking mechanism, and how user identification is handled within the authenticated dashboard.
+This page covers the implementation of PostHog analytics in the client, specifically focusing on cookie-consent gated initialization, manual pageview tracking, and user identification within the authenticated dashboard.
 
 ## Cookie-Gated Initialization
 
-PostHog is initialized only after a user has explicitly accepted cookie consent. This ensures compliance with privacy regulations.
-
-The `PostHogProvider` component in `src/components/posthog-provider.tsx` manages the initialization logic. It checks `localStorage` for an existing consent status using the key `odys_cookie_consent`. If consent was previously given, PostHog is initialized immediately.
+PostHog is initialized only after the user has accepted cookies, ensuring compliance with privacy requirements. The `PostHogProvider` component in `src/components/posthog-provider.tsx` controls this behavior by checking `localStorage` for a previously stored consent value under the key `odys_cookie_consent`.
 
 ```typescript
 // src/components/posthog-provider.tsx
-// ...
 const CONSENT_KEY = "odys_cookie_consent"
-let initialized = false
 
-function initPostHog(key: string) {
-  if (initialized) return
-  initialized = true
-  posthog.init(key, {
-    api_host: process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com",
-    capture_pageview: false,
-    capture_pageleave: true,
-    persistence: "localStorage+cookie",
-  })
+if (localStorage.getItem(CONSENT_KEY) === "accepted") {
+  initPostHog(key)
 }
-// ...
-export function PostHogProvider({ children }: { children: React.ReactNode }) {
-  const key = process.env.NEXT_PUBLIC_POSTHOG_KEY
-
-  useEffect(() => {
-    if (!key) return
-
-    // Init immediately if user already gave consent
-    if (localStorage.getItem(CONSENT_KEY) === "accepted") {
-      initPostHog(key)
-    }
-
-    // Init when user accepts cookies during this session
-    function onAccepted() { initPostHog(key!) }
-    window.addEventListener("odys:cookie-accepted", onAccepted)
-    return () => window.removeEventListener("odys:cookie-accepted", onAccepted)
-  }, [key])
-// ...
 ```
 
-If consent is given during the current session via the `CookieBanner` component (`src/components/cookie-banner.tsx`), a custom `odys:cookie-accepted` event is dispatched. The `PostHogProvider` listens for this event and calls `initPostHog()` once it's received. The `persistence` option is set to `"localStorage+cookie"`.
+If consent was given in a prior session, PostHog initializes immediately. For new consent, the provider listens for the `odys:cookie-accepted` event dispatched by the `CookieBanner` component (`src/components/cookie-banner.tsx`) when the user clicks "Aceitar" (Accept). Upon receiving this event, `initPostHog()` is called with the environment key from `NEXT_PUBLIC_POSTHOG_KEY`.
+
+The PostHog client is configured with:
+- `capture_pageview: false` — disables automatic pageview tracking
+- `capture_pageleave: true` — enables tracking when users leave the page
+- `persistence: "localStorage+cookie"` — stores user identity and session data
+
+Initialization is idempotent via the `initialized` flag to prevent multiple calls to `posthog.init()`.
 
 ## Manual Pageview Tracking
 
-Automatic pageview capturing is disabled in the PostHog initialization (`capture_pageview: false`). Instead, pageviews are manually triggered by the `PageViewTracker` component, nested within the `PostHogProvider` in `src/components/posthog-provider.tsx`.
+Pageviews are tracked manually using the `PageViewTracker` component, which is conditionally rendered inside `PostHogProvider`. Automatic pageview capture is disabled in the PostHog configuration.
 
 ```typescript
 // src/components/posthog-provider.tsx
-// ...
 function PageViewTracker() {
   const pathname = usePathname()
   const searchParams = useSearchParams()
@@ -69,22 +46,18 @@ function PageViewTracker() {
 
   return null
 }
-// ...
 ```
 
-This component uses `useEffect` to capture a `$pageview` event whenever the `pathname` or `searchParams` change. This approach addresses a known issue with Next.js App Router where automatic pageview tracking can result in double-firing events.
+This component uses `usePathname` and `useSearchParams` from `next/navigation` to detect route changes in the App Router. The `useEffect` hook triggers a `$pageview` event on every change to the pathname or query parameters, ensuring accurate tracking without duplication — a known issue with automatic tracking in Next.js App Router.
+
+Because `useSearchParams` requires `Suspense`, the tracker is wrapped in a `Suspense` boundary with `fallback={null}`.
 
 ## User Identification
 
-For authenticated users, PostHog identification is handled by the `PostHogIdentify` component in `src/components/posthog-identify.tsx`. This component is intended to be rendered within the authenticated dashboard layout.
+Authenticated users are identified in PostHog using the `PostHogIdentify` component (`src/components/posthog-identify.tsx`). This component should be rendered within the authenticated dashboard layout, where a `userId` is available.
 
 ```typescript
 // src/components/posthog-identify.tsx
-"use client"
-
-import { useEffect } from "react"
-import posthog from "posthog-js"
-
 export function PostHogIdentify({ userId }: { userId: string }) {
   useEffect(() => {
     posthog.identify(userId)
@@ -93,16 +66,15 @@ export function PostHogIdentify({ userId }: { userId: string }) {
 }
 ```
 
-It calls `posthog.identify(userId)` once, using the provided `userId`, ensuring that subsequent events are associated with the specific user. The `useEffect` hook with `userId` as a dependency ensures identification occurs when the component mounts or if the `userId` somehow changes.
+The `useEffect` hook calls `posthog.identify(userId)` when the component mounts or if the `userId` changes. This ensures all subsequent events are associated with the identified user in PostHog.
 
 ## Known Gaps
 
-*   **Feature Flags**: While the PostHog provider is wired to support feature flags, there are currently no active calls to `posthog.isFeatureEnabled(...)` within the codebase. This indicates that PostHog's feature flagging capabilities are not yet utilized.
+- **Unused feature flag integration**: The PostHog provider is initialized with feature flag support, but no `posthog.isFeatureEnabled(...)` calls exist in the codebase. Feature flags are currently not utilized.
 
 ## Why this shape
 
-The design choices for PostHog integration prioritize user privacy and data accuracy:
-
-*   **Cookie-gated initialization**: Ensures that analytics tracking only begins after explicit user consent, aligning with privacy best practices.
-*   **Manual pageview tracking**: Mitigates potential double-counting of pageviews that can occur with automatic tracking in the Next.js App Router environment, providing more accurate usage data.
-*   **Dedicated identification component**: Centralizes user identification logic, making it clear where and when authenticated users are identified in PostHog.
+The integration design emphasizes privacy compliance and tracking accuracy:
+- **Cookie gating** ensures tracking only begins after explicit consent.
+- **Manual pageview capture** avoids double-firing issues inherent in App Router’s automatic instrumentation.
+- **Separate identification component** isolates user identity logic, making it explicit and reusable within authenticated contexts.

@@ -32,7 +32,7 @@ The `/api/cron/reminders` endpoint is scheduled to run daily at 08:00 UTC, and t
 
 The primary cron job is implemented in `src/app/api/cron/reminders/route.ts`. This job is responsible for two main functions:
 
-1.  **Appointment Reminders**: It sends WhatsApp reminders for confirmed appointments. This includes 24-hour and 1-hour reminders, gated by the `canUseFeature` function to ensure the professional's plan supports reminders. Reminders are deferred if the client is actively engaged in an AI conversation, as determined by `isClientActive`.
+1.  **Appointment Reminders**: It sends WhatsApp reminders for confirmed appointments. This includes 24-hour and 1-hour reminders. Reminders are deferred if the client is actively engaged in an AI conversation, as determined by `isClientActive`.
 2.  **Trial Expiration Emails**: It sends email notifications to professionals whose trials are expiring, specifically 3 days and 1 day before the trial ends.
 
 ### Authorization

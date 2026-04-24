@@ -5,33 +5,63 @@ description: "Why Groq + Llama 3.3 70B, two-pass pattern"
 
 # Groq + Llama 3.3 AI
 
-This page details the rationale behind using Groq with the Llama 3.3 70B model for the AI layer and explains the two-pass pattern employed for AI interactions.
+This page explains the rationale for using Groq with the Llama 3.3 70B model in the AI layer and details the two-pass pattern used for reliable tool calling in both the WhatsApp intake agent and the AI assistant.
 
 ## Groq + Llama 3.3 70B Selection
 
-The AI layer leverages Groq's inference engine with the Llama 3.3 70B model for both the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`). This decision was driven by a combination of performance and cost considerations.
+The AI layer uses Groq's inference engine with the `llama-3.3-70b-versatile` model in two key components: the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`). This choice is driven by performance and cost efficiency.
 
-Groq offers significantly faster inference speeds—typically 10–20x faster than GPT-4 class models—and is substantially more cost-effective. This speed is crucial for scenarios involving back-to-back tool calls, where latency directly impacts user experience and operational efficiency.
+Groq delivers significantly faster inference—critical for back-to-back LLM calls—while being more cost-effective than GPT-4-class models. The model is invoked with the same `llama-3.3-70b-versatile` identifier in both files, confirming consistent usage across the AI surface.
 
-While Llama 3.3 70B may exhibit weaker instruction-following capabilities compared to larger, more expensive models, this trade-off is mitigated by the narrow and well-defined scope of the tools it interacts with. For instance, the tools for availability lookup, revenue roll-up, and no-show counting are specific enough that the model's instruction-following limitations are less impactful.
+Although Llama 3.3 70B may have weaker instruction-following capabilities compared to larger proprietary models, this is mitigated by the narrow scope of available tools. For example:
+- In `src/lib/ai-intake.ts`, tools like `get_available_slots` and `book_appointment` are tightly scoped to scheduling logic.
+- In `src/app/api/ai/chat/route.ts`, tools such as `get_stats` and `get_no_show_clients` serve specific analytical queries.
+
+The system prompt in each file enforces strict rules (e.g., "never invent numbers", "use tools to fetch data") to reduce hallucination risk, making the model’s limitations manageable within bounded domains.
 
 ## Two-Pass Tool Calling Pattern
 
-Both the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`) implement a two-pass pattern for interactions involving tool calls. This pattern enhances reliability and reduces the likelihood of hallucinations or incorrect tool usage.
+Both AI implementations follow a two-pass pattern to separate tool decision from response generation, improving reliability and reducing incorrect tool usage.
 
-The two passes are structured as follows:
+### First Pass: Tool Decision
 
-1.  **First Pass: Tool Decision**: The LLM receives the user's input and the available tool definitions (e.g., `get_available_slots`, `book_appointment` in `src/lib/ai-intake.ts`, or `get_stats`, `get_upcoming` in `src/app/api/ai/chat/route.ts`). Its primary task in this pass is to decide whether a tool needs to be called and, if so, to output the `function_call` object with the appropriate tool name and arguments. No natural language response is generated at this stage.
-2.  **Second Pass: Response Generation**: If a tool was called in the first pass, its results are executed and then fed back to the LLM along with the original user query and the tool's output. The LLM then generates a final, natural language response that incorporates the information obtained from the tool. If no tool was called in the first pass, the LLM directly generates a natural language response.
+The LLM receives the user message, system prompt, and tool definitions. Its sole task is to decide whether to invoke a tool and return a `function_call` object.
 
-This explicit separation ensures that tool invocation is handled deterministically before any user-facing text is composed, leading to more accurate and reliable AI interactions.
+In `src/lib/ai-intake.ts`, this occurs via:
+```ts
+const first = await getGroq().chat.completions.create({
+  model: "llama-3.3-70b-versatile",
+  messages: llmMessages,
+  tools: TOOLS,
+  tool_choice: "auto",
+})
+```
+
+If `choice.tool_calls` is present, the system proceeds to execution.
+
+### Second Pass: Response Generation
+
+Tool results are injected into a new message list with role `tool`, including `tool_call_id` and JSON-serialized result. A second LLM call generates the final natural language response.
+
+In `src/app/api/ai/chat/route.ts`, this is implemented as:
+```ts
+const second = await getGroq().chat.completions.create({
+  model: "llama-3.3-70b-versatile",
+  messages: toolMessages,
+})
+```
+
+This separation ensures:
+- Deterministic tool invocation before any user-facing text is generated.
+- Clear audit trail of inputs, decisions, and outputs.
+- Reduced risk of hallucinated or inconsistent responses based on unexecuted tool calls.
 
 ## Known Gaps
 
-*   **Instruction Following**: While Llama 3.3 70B is highly performant and cost-effective, it is generally weaker on complex, open-ended instruction following compared to larger, more expensive models like GPT-4. This is currently mitigated by the narrow scope of defined tools, but could become a limitation if the AI's responsibilities expand to more nuanced or abstract tasks.
+*   **Instruction Following**: Llama 3.3 70B is weaker than GPT-4-class models on complex, open-ended instruction following. This is mitigated by narrow tool scope and strict system prompts, but could limit future expansion into more nuanced AI behaviors without additional guardrails.
 
 ## Why This Shape
 
-The combination of Groq's inference speed with Llama 3.3 70B and the two-pass tool calling pattern is a deliberate design choice to optimize for performance, cost, and reliability in the AI layer.
+The combination of Groq and Llama 3.3 70B enables fast, low-cost inference, making the two-pass pattern economically viable. Each user interaction may trigger two LLM calls, which would be prohibitively expensive with slower, higher-cost providers.
 
-Groq's hardware acceleration makes it economically viable to perform multiple LLM calls per user interaction, which is essential for the two-pass pattern. This pattern, in turn, provides a robust mechanism for integrating external tools. By explicitly separating the tool-calling decision from the final response generation, the system gains precision and reduces the risk of the LLM misinterpreting tool outputs or hallucinating responses. This approach allows the use of a highly efficient model like Llama 3.3 70B, even with its instruction-following trade-offs, by structuring interactions in a way that plays to its strengths in rapid, focused processing.
+The two-pass pattern enhances reliability by decoupling decision from response. This design allows the system to use a high-performance but less instruction-precise model like Llama 3.3 70B safely, as tool execution is validated before final output generation. The pattern is consistently applied across both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`, ensuring uniform behavior in user-facing and professional-facing AI interactions.

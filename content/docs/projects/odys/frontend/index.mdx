@@ -4,19 +4,29 @@ description: "Frontend overview: Next.js 16 App Router, RSC patterns, Tailwind +
 ---
 
 # Frontend Overview
-This page covers the frontend of the Odys application, specifically the Next.js 16 App Router, RSC patterns, and the use of Tailwind and shadcn.
+This page covers the frontend architecture of the Odys application, focusing on the Next.js 16 App Router, React Server Component (RSC) usage, and the styling stack with Tailwind CSS and shadcn.
 
-## App Router Structure
-The App Router is used to handle client-side routing. The `src/app` directory contains the App Router configuration, with route groups for authentication and other features. Notably, there is **no `middleware.ts`** file, as every route that needs authentication calls `supabase.auth.getUser()` itself via `getUser()` and `getProfessional(userId)` in `src/lib/api.ts`.
+## Next.js 16 App Router
+The frontend uses Next.js `16.2.1`, as specified in `package.json`, with the App Router as the sole routing mechanism — there is no `pages/` directory. Authentication-related routes are grouped under the `(auth)` route group, which organizes pages under a shared URL space without adding `/auth` to the path.
 
-## RSC Patterns
-The application uses React Server Components (RSC) patterns to handle server-side rendering. The `src/app/layout.tsx` file defines the root layout component, which includes the `PostHogProvider` and `CookieBanner` components.
+Notably, the application does not use `middleware.ts`. Instead, authentication is enforced at the route level via direct calls to `supabase.auth.getUser()` using helper functions in server components. This pattern is used across protected routes, placing the responsibility of access control on individual route implementations.
 
-## Tailwind and shadcn
-The application uses Tailwind CSS for styling, with the `tailwind.config.js` file configuring the Tailwind setup. The `shadcn` library is also used for additional styling features. The `src/app/layout.tsx` file imports the `Plus_Jakarta_Sans` and `Montserrat` fonts from Google Fonts.
+## React Server Components (RSC) Patterns
+The root layout in `src/app/layout.tsx` is a server component that wraps the application with global providers: `PostHogProvider` for analytics and `CookieBanner` for consent management. It also applies fonts and global CSS.
+
+The layout includes a script in the `<head>` that reads the `odys-theme` from `localStorage` and applies the `dark` class synchronously to prevent theme flash. This logic runs before paint and is embedded directly in the server-rendered HTML.
+
+All top-level route components are server components by default, enabling server-side data fetching and reducing client-side JavaScript. The `children` prop is rendered as passed from individual route segments, maintaining the RSC boundary unless explicitly opted into client rendering.
+
+## Styling with Tailwind CSS and shadcn
+Styling is implemented using Tailwind CSS, listed as a dev dependency in `package.json`. The global stylesheet is defined in `src/app/globals.css` and includes Tailwind's base, components, and utilities.
+
+Fonts are loaded via `next/font`: `Plus_Jakarta_Sans` for general text and `Montserrat` for headings. These are applied globally through CSS variables `--font-sans` and `--font-montserrat`, set on the `html` element in `src/app/layout.tsx`.
+
+UI components are built using `shadcn`, a component library based on Radix UI and Tailwind. Components such as `Toaster` from `sonner` and `PostHogProvider` are imported and used directly in the layout, reflecting a composable, utility-first approach to UI development.
 
 ## Known Gaps
-One known gap in the current implementation is the lack of a centralized authentication middleware, which puts the burden on every new route author to handle authentication explicitly. This is flagged as a potential security concern.
+The absence of `middleware.ts` means authentication checks are not centralized. Each protected route must manually invoke `supabase.auth.getUser()` or a wrapper function. This increases the risk of oversight when adding new routes, as there is no global enforcement layer. This trade-off was flagged in a security audit and remains an active architectural consideration.
 
 ## Why this Shape
-The App Router structure and RSC patterns were chosen to provide a flexible and scalable frontend architecture. The use of Tailwind and shadcn provides a consistent and customizable styling solution. The design intent is to provide a fast and seamless user experience, with a focus on server-side rendering and authentication.
+The App Router enables full-stack server components with efficient data loading and reduced client hydration. Combined with RSC, it allows the application to render critical content server-first while selectively adding interactivity. Tailwind and shadcn provide a consistent, customizable design system that scales with utility-first styles and composable components. The lack of middleware simplifies the routing setup but shifts auth correctness to developer discipline — a calculated trade-off for early-stage velocity.

@@ -1,22 +1,22 @@
 ---
-title: "Next.js 16 App Router"
+title: "App Router Implementation"
 description: "How App Router is used: server components, route groups, no middleware"
 ---
 
-# Next.js 16 App Router
-This page covers how App Router is used in our application, focusing on server components, route groups, and the absence of middleware.
+# App Router Implementation
+This page details the implementation of the Next.js App Router in the application, focusing on server components, route groups, and the absence of `middleware.ts`.
 
 ## Server Components
-Our application utilizes server components to handle server-side rendering. For example, the public booking page (`/p/[slug]`) is an async Server Component that performs DB reads server-side before handing off to `BookingWidget` for interactivity. This approach allows for efficient rendering and improved user experience.
+The application uses server components for server-side rendering and data fetching. The public booking page at `src/app/p/[slug]/page.tsx` is an `async` Server Component that directly queries the database using Drizzle ORM (e.g., `db.select().from(professionals)`). It fetches professional details, reviews, related professionals, and client data (if the user is authenticated) before rendering. The `BookingWidget` component, which handles interactivity, is passed pre-fetched data as props and is rendered as a client component.
 
 ## Route Groups
-Route groups are used to organize related routes and share common layouts. In our application, the `(auth)` route group contains authentication-related pages, while the dashboard and client portal have their own separate layouts with server-side auth guards. This structure helps maintain a clean and scalable routing system.
+Route groups organize related routes and apply isolated layouts without affecting URL paths. The `(auth)` route group is used for authentication flows, though `src/app/(auth)/layout.tsx` is not present in the current codebase. The root layout in `src/app/layout.tsx` defines global structure, including fonts (`Plus_Jakarta_Sans`, `Montserrat`), metadata, and providers such as `PostHogProvider` and `Toaster`. It also includes a theme initialization script to prevent flash of unstyled content.
 
 ## No Middleware
-Notably, our application does not use a `middleware.ts` file. Instead, every route that requires authentication calls `supabase.auth.getUser()` directly via `getUser()` and `getProfessional(userId)` in `src/lib/api.ts`. This approach, although explicit, puts the burden on every new route author and has been flagged by our security audit.
+The application does not use a `middleware.ts` file. Instead, authentication checks are performed directly within individual route handlers. For example, `src/app/p/[slug]/page.tsx` calls `await createClient().auth.getUser()` to determine if the current visitor is authenticated and whether they are the owner of the professional page. This explicit pattern avoids centralized middleware but requires each protected route to implement its own auth logic.
 
 ## Known Gaps
-One known gap in our current implementation is the lack of a centralized authentication mechanism. The absence of a `middleware.ts` file means that each route must handle authentication individually, which can lead to inconsistencies and increased maintenance efforts.
+The lack of `middleware.ts` means there is no centralized enforcement point for authentication. This decentralized approach, while explicit, increases the risk of inconsistent auth checks across routes. The security audit has flagged this pattern due to the developer burden of manually implementing auth on every new protected route, which could lead to accidental exposure of sensitive pages.
 
 ## Why this Shape
-The decision to use server components, route groups, and no middleware was driven by the need for efficient server-side rendering and a scalable routing system. By leveraging Next.js 16's App Router features, we can maintain a clean and organized codebase while providing a seamless user experience. The trade-offs, such as the explicit authentication handling, are acknowledged and will be addressed in future iterations.
+The App Router implementation prioritizes server-side data fetching and layout organization through route groups. Server components enable efficient, direct database access without client-side hydration overhead. Route groups provide logical separation of concerns in the routing structure. The decision to omit `middleware.ts` was made to keep authentication logic co-located with route code, favoring transparency over abstraction. However, this trade-off sacrifices consistency and scalability in auth enforcement, a concern acknowledged for future refinement.

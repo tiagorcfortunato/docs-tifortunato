@@ -1,17 +1,17 @@
 ---
-title: "Evolution API Integration"
-description: "Details on the Evolution API integration, including its strategic rationale, local Docker setup, production deployment, and application interaction."
+title: "WhatsApp Evolution API"
+description: "Evolution API: why, Docker on Railway, v1.8.2 local vs v2 prod"
 ---
 
-# Evolution API Integration
+# WhatsApp Evolution API
 
 This page details the integration of the Evolution API for WhatsApp communication, covering the strategic decision to use it over Meta's official API, its local development setup via Docker, production deployment considerations, and how the application interacts with it for sending messages.
 
 ## Why Evolution API?
 
-The decision to integrate the self-hosted Evolution API over Meta's official WhatsApp Business API (WABA) is a core strategic differentiator for Odys, as outlined in the [README.md](#whatsapp-integration-evolution-api) and the architecture deep-dive.
+The decision to integrate the self-hosted Evolution API over Meta's official WhatsApp Business API (WABA) is a core strategic differentiator for Odys. As outlined in the `README.md` "Architecture Decisions" and "WhatsApp Integration (Evolution API)" sections, Meta's WABA imposes per-message costs, requires template pre-approval, and sends messages from a branded WABA number, which can appear impersonal or bot-like to clients.
 
-Meta's WABA imposes per-message costs, requires template pre-approval, and sends messages from a branded WABA number, which can appear impersonal or bot-like to clients. In contrast, Evolution API leverages WhatsApp Web to send messages from the professional's actual phone number. This approach ensures that automated reminders and confirmations appear as if typed by the professional, fostering a more personal client experience. This is critical for Odys's "WhatsApp-first" approach, where the same managed line handles both conversational AI intake and automated notifications.
+In contrast, Evolution API leverages WhatsApp Web to send messages from the professional's actual phone number. This approach ensures that automated reminders and confirmations appear as if typed by the professional, fostering a more personal client experience. This is critical for Odys's "WhatsApp-first" approach, where the same managed line handles both conversational AI intake and automated notifications.
 
 ## Local Development Setup
 
@@ -125,20 +125,20 @@ Key functionalities within `src/lib/whatsapp.ts` include:
 *   **Configuration**: Environment variables `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE` are loaded to configure the API client. The `isConfigured()` function provides a runtime check for these variables.
 *   **Phone Normalization**: The `normalizeBrazilianPhone()` function ensures that phone numbers are formatted correctly for the Evolution API, handling various input formats and country codes.
 *   **`sendWhatsApp` Function**: This asynchronous function is the primary interface for sending text messages. It constructs the API request, including the `apikey` header and a `delay` of `1200` milliseconds in the request body. It handles API response validation and error logging, returning `true` on success and `false` on failure without throwing exceptions.
-*   **Outbound Context**: The optional `context` parameter in `sendWhatsApp` allows for storing `professionalId` and `appointmentId` in Redis via `setOutboundContext`. This mechanism enables the webhook to correctly route client replies back to the relevant professional and appointment.
+*   **Outbound Context**: The optional `context` parameter in `sendWhatsApp` allows for storing `professionalId` and `appointmentId` in Redis via `setOutboundContext`. This mechanism enables the webhook to correctly route client replies back to the relevant professional and appointment, as described in `README.md` "WhatsApp Integration (Evolution API)".
 
 ## Message Templating
 
 `src/lib/whatsapp.ts` also centralizes all client-facing transactional messages. This ensures consistency in tone, branding, and structure across all automated WhatsApp communications.
 
-*   **Visual Templating**: Functions like `transactionalHeader()` and the `TRANSACTIONAL_FOOTER` constant are used to create visually distinct automated messages. These include rule lines (`━━━━━━━━━━━━━━━━━`) and clear labels to differentiate automated notifications from conversational AI replies within the same WhatsApp thread.
+*   **Visual Templating**: Functions like `transactionalHeader()` and the `TRANSACTIONAL_FOOTER` constant are used to create visually distinct automated messages. These include rule lines (`━━━━━━━━━━━━━━━━━`) and clear labels to differentiate automated notifications from conversational AI replies within the same WhatsApp thread, as noted in the comments within `src/lib/whatsapp.ts`.
 *   **Pre-formatted Messages**: Specific functions (e.g., `msgBookingConfirmed`, `msgReminder24h`, `msgBookingCancelled`) are exported, each responsible for generating a complete message string for a particular event. This pattern ensures that message content is never hardcoded directly within API routes or business logic.
 
 ## Known Gaps
 
 The Evolution API, while offering significant advantages over Meta's WABA, introduces a trade-off in reliability. As it operates by simulating WhatsApp Web, it is susceptible to disconnections if the linked phone runs out of storage, loses internet connectivity, or if WhatsApp itself undergoes updates that break the underlying integration. This can lead to message delivery failures.
 
-To mitigate this, a daily health check cron job (`/api/cron/whatsapp-watchdog`) is implemented. This watchdog monitors the Evolution API instance status and alerts if it becomes disconnected, allowing for proactive intervention.
+To mitigate this, a daily health check cron job (`/api/cron/whatsapp-watchdog`) is implemented, as mentioned in the `README.md` "WhatsApp Integration (Evolution API)" section. This watchdog monitors the Evolution API instance status and alerts if it becomes disconnected, allowing for proactive intervention.
 
 ## Why This Shape
 

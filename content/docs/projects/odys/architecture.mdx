@@ -1,11 +1,11 @@
 ---
-title: Architecture
-description: High-level view of how Odys's pieces connect — Next.js, Supabase, Stripe, Evolution API on Railway, MCP server, and supporting services.
+title: "System Architecture"
+description: "High-level system architecture, runtimes, supporting services, data residency"
 ---
 
-# Architecture
+# System Architecture
 
-At the top level, Odys is a **single Next.js 16 App Router application** deployed on Vercel, backed by a **Supabase Postgres** instance in `sa-east-1` (São Paulo), with three ancillary processes: **Stripe** (hosted checkout and subscription engine), **Evolution API** (self-hosted WhatsApp runtime on Railway), and a local **MCP server** that exposes the database to AI agents through four tools.
+This page describes the high-level architecture of Odys, including the primary runtime, supporting services, data storage layers, and data residency considerations. The system is built as a single Next.js 16 App Router application deployed on Vercel, with Supabase Postgres as the primary database, and integrates with several managed and self-hosted services.
 
 ## System diagram
 
@@ -46,61 +46,69 @@ At the top level, Odys is a **single Next.js 16 App Router application** deploye
 
 ## Where the data lives
 
-Three tiers, important to keep separate:
+Data is distributed across multiple systems:
 
-- **Browser (client)** — almost no state. Supabase issues an HttpOnly session cookie; React Server Components do the initial hydration; a handful of `"use client"` components (booking widget, notification bell, assistant chat, cookie banner) add interactivity.
-- **Vercel edge + Node runtime** — terminates TLS, runs the Next.js router, executes Server Components and API routes. Sentry beacons are rewritten through `/monitoring` to bypass ad-blockers.
-- **Persisted storage**:
-  - Supabase Postgres (`sa-east-1`) — the 10-table application schema
-  - Supabase Storage — uploaded avatars
-  - Upstash Redis — rate limits + WhatsApp reply routing (`last_outbound:{phone}`)
-  - Railway Postgres (separate Supabase project) — Evolution API's own database
-  - Stripe — subscription state, payment history
+*   **Browser (client)**: Minimal state. Supabase issues an HttpOnly session cookie. React Server Components handle initial hydration, with a few `"use client"` components adding interactivity.
+*   **Vercel edge + Node runtime**: Terminates TLS, runs the Next.js router, and executes Server Components and API routes. Sentry beacons are rewritten through the `/monitoring` route, configured in `next.config.ts`, to bypass ad-blockers.
+*   **Persisted storage**:
+    *   Supabase Postgres: The application's 10-table schema, defined in `src/lib/db/schema.ts`.
+    *   Supabase Storage: Stores uploaded avatars.
+    *   Upstash Redis: Used for rate limiting via `@upstash/ratelimit` and WhatsApp reply routing (`last_outbound:{phone}`).
+    *   Railway Postgres: A separate database instance for the Evolution API.
+    *   Stripe: Manages subscription state and payment history.
 
 ## Runtimes in use
 
-Odys runs across **three runtimes**:
+Odys operates across three distinct runtimes:
 
-- **Node (Vercel)** — most API routes, Server Components, the main application
-- **Edge (Vercel)** — Sentry's edge bootstrap only; no routes currently use edge runtime
-- **Local stdio (developer laptop)** — the MCP server, not deployed
+*   **Node (Vercel)**: The primary runtime for most API routes and Server Components, forming the core application.
+*   **Edge (Vercel)**: Currently used only for Sentry's edge bootstrap, as configured in `next.config.ts`. No application routes explicitly use the edge runtime.
+*   **Local stdio (developer laptop)**: The MCP server runs as a local process, not deployed to production.
 
-No Node workers, no background job queue, no separate microservices. Periodic work runs through **Vercel Cron** — two schedules, both daily UTC: `/api/cron/reminders` at 08:00 and `/api/cron/whatsapp-watchdog` at 09:00.
+There are no Node workers, background job queues, or separate microservices. Periodic tasks are handled by **Vercel Cron**, as defined in `vercel.json`. Two daily schedules are configured: `/api/cron/reminders` at 08:00 UTC and `/api/cron/whatsapp-watchdog` at 09:00 UTC.
 
 ## Supporting services
 
-| Service | Purpose | Tier |
-|---|---|---|
-| Supabase | Postgres + Auth + Storage (`sa-east-1`) | Managed |
-| Stripe | Subscription billing | Managed |
-| Evolution API | WhatsApp Web runtime on Railway | Self-hosted Docker |
-| Groq | LLM inference (Llama 3.3 70B, two-pass tool-calling) | Managed API |
-| Upstash Redis | Rate limits + WhatsApp reply context | Managed |
-| Sentry | Error tracking (server, edge, browser) | Managed |
-| PostHog | Product analytics + session replay | Managed |
-| Resend | Transactional email | Managed |
+The application integrates with several managed and self-hosted services:
+
+| Service         | Purpose                                       | Tier              | `package.json` dependency |
+| :-------------- | :-------------------------------------------- | :---------------- | :------------------------ |
+| Supabase        | Postgres, Auth, Storage                       | Managed           | `@supabase/supabase-js`, `@supabase/ssr` |
+| Stripe          | Subscription billing                          | Managed           | `stripe`, `@stripe/stripe-js` |
+| Evolution API   | WhatsApp Web runtime                          | Self-hosted Docker | (External service)        |
+| Groq            | LLM inference (Llama 3.3 70B)                 | Managed API       | `groq-sdk`                |
+| Upstash Redis   | Rate limits, WhatsApp reply context           | Managed           | `@upstash/redis`, `@upstash/ratelimit` |
+| Sentry          | Error tracking (server, edge, browser)        | Managed           | `@sentry/nextjs`          |
+| PostHog         | Product analytics, session replay             | Managed           | `posthog-js`              |
+| Resend          | Transactional email                           | Managed           | `resend`                  |
 
 ## MCP server — a note on architecture scope
 
-The MCP server is a **separate process, not a separate service**. It shares the same `DATABASE_URL` and the same Drizzle schema (imported via relative path from `../../src/lib/db/schema`) and communicates with Claude Code via JSON-RPC over stdio. It runs on the developer's laptop — no HTTP endpoint, no auth layer, because there is no remote caller. It lets any AI agent answer *"how many appointments does Dr. Ana have today?"* without opening Drizzle Studio.
+The MCP server is a **separate process, not a separate service**. It shares the same `DATABASE_URL` and the same Drizzle schema, imported via a relative path from `src/lib/db/schema.ts`. Communication with AI agents occurs via JSON-RPC over stdio. It runs exclusively on the developer's laptop, without an HTTP endpoint or authentication layer, as there is no remote caller. This setup enables AI agents to query the database directly (e.g., "how many appointments does Dr. Ana have today?") without requiring direct Drizzle Studio access.
 
-Deployment path for the MCP server when an in-product AI assistant needs it: either expose it as an authenticated HTTP service, or collapse it into direct Groq tool-calls that hit the existing API routes.
+The future deployment path for an in-product AI assistant would involve either exposing the MCP server as an authenticated HTTP service or collapsing its functionality into direct Groq tool-calls that interact with existing API routes.
 
 ## Data residency
 
-- **Supabase (database, auth, storage)** — `sa-east-1` São Paulo. **Brazilian user data stays in Brazil at rest.**
-- **Sentry** — `*.ingest.us.sentry.io` (US). Only error traces, no business data.
-- **PostHog** — `https://us.i.posthog.com` (US). Product analytics events.
-- **Vercel** — default region `iad1` (US East) for the edge layer.
+*   **Supabase (database, auth, storage)**: Configured for `sa-east-1` (São Paulo). This ensures that primary Brazilian user data remains at rest within Brazil.
+*   **Sentry**: Ingests data via `*.ingest.us.sentry.io` (US). This layer captures error traces only, not business-critical data.
+*   **PostHog**: Collects product analytics events via `https://us.i.posthog.com` (US).
+*   **Vercel**: The edge layer defaults to `iad1` (US East).
 
-For an LGPD-strict buyer, the primary data store is already in Brazil. The remaining US-hosted layers (error tracking, analytics, HTTP edge) can be migrated to EU or São Paulo alternatives via configuration — not a rewrite.
+For buyers with strict LGPD requirements, the primary data store is already in Brazil. The remaining US-hosted layers (error tracking, analytics, HTTP edge) can be migrated to EU or São Paulo alternatives through configuration changes, without requiring a rewrite of the application logic.
 
-## What this isn't
+## Known gaps
 
-- **Not a microservice architecture.** One Next.js app, one DB, ancillary managed services.
-- **Not using Kubernetes.** Vercel's serverless runtime + Railway's container runtime for Evolution.
-- **No separate backend.** API routes + Server Components are the backend.
-- **No GraphQL, no gRPC.** Plain REST with Zod validation.
-- **No multi-region replication.** Single-region Postgres.
+The current configuration for Sentry, PostHog, and Vercel's edge layer defaults to US regions. While the primary Supabase database is in `sa-east-1` (Brazil), the presence of these US-hosted services means that some operational data (error traces, analytics events, and HTTP request metadata) is processed and stored outside of Brazil. For an LGPD-strict buyer, this would require reconfiguring these services to EU or Brazilian regions.
 
-That's intentional. The goal was a production-grade SaaS shippable by one founder — not a CV of infrastructure complexity.
+## Why this shape
+
+This architecture prioritizes rapid development and maintainability for a single founder, rather than infrastructure complexity. It is intentionally:
+
+*   **Not a microservice architecture**: A single Next.js application, one primary database, and ancillary managed services.
+*   **Not using Kubernetes**: Leverages Vercel's serverless runtime and Railway's container runtime for Evolution API.
+*   **No separate backend**: API routes and Server Components within Next.js serve as the backend.
+*   **No GraphQL or gRPC**: Relies on plain RESTful APIs with `zod` validation.
+*   **No multi-region replication**: Utilizes a single-region Postgres instance.
+
+This approach focuses on delivering a production-grade SaaS product efficiently.

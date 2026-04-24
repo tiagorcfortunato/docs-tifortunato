@@ -1,22 +1,50 @@
 ---
-title: "Drizzle ORM"
+title: "Drizzle ORM & Postgres-js"
 description: "Why Drizzle, how it's configured, postgres-js client"
 ---
 
-# Drizzle ORM
-This page covers the use of Drizzle ORM in the database layer, including its configuration and the postgres-js client.
+# Drizzle ORM & Postgres-js
+This page details the integration of Drizzle ORM with the `postgres-js` client, covering the rationale for its selection, its configuration, and the client setup.
 
 ## Why Drizzle
-Drizzle is used on top of `postgres-js` to provide a simple and efficient way to interact with the database. The decision to use Drizzle was made due to its ease of use and flexibility.
+Drizzle ORM is utilized atop `postgres-js` to provide a type-safe and efficient interface for database interactions. The choice was driven by its developer experience and flexibility, aligning with the need for a pragmatic database layer.
 
 ## Configuration
-The Drizzle configuration is defined in `drizzle.config.ts`, which specifies the schema, output directory, dialect, and database credentials. The `dbCredentials` are set to the `DATABASE_URL` environment variable.
+The primary configuration for Drizzle is defined in `drizzle.config.ts`. This file specifies the database schema location (`./src/lib/db/schema.ts`), the output directory for migrations (`./drizzle`), and the `postgresql` dialect. Database connection details are sourced from the `DATABASE_URL` environment variable via `dbCredentials.url`.
+
+```typescript
+import type { Config } from "drizzle-kit"
+import { config } from "dotenv"
+
+config({ path: ".env.local" })
+
+export default {
+  schema: "./src/lib/db/schema.ts",
+  out: "./drizzle",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL!,
+  },
+} satisfies Config
+```
 
 ## Postgres-js Client
-The postgres-js client is used in `src/lib/db/index.ts` to create a single client instance with `prepare: false`. This is necessary because Supabase's transaction pooler cannot prepare statements.
+The `postgres-js` client is instantiated in `src/lib/db/index.ts` to establish the connection to the PostgreSQL database. A single client instance is created, passing `process.env.DATABASE_URL!` for connection.
+
+Crucially, the client is configured with `prepare: false`. This setting is necessary because Supabase's transaction pooler does not support prepared statements, which would otherwise lead to connection errors. The `drizzle` function then wraps this `postgres-js` client, integrating the database schema defined in `src/lib/db/schema.ts`.
+
+```typescript
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+import * as schema from "./schema"
+
+const client = postgres(process.env.DATABASE_URL!, { prepare: false })
+export const db = drizzle(client, { schema })
+```
 
 ## Known Gaps
-One known gap in the current implementation is the lack of RLS policies, which means that authorization is entirely app-level. This may need to be revisited in the future to improve security.
+*   **Migration Strategy**: Currently, database schema changes are managed declaratively using `drizzle-kit push`, resulting in a single migration file in the `drizzle/` directory. While pragmatic for a solo developer, this approach will need to transition to file-based, versioned migrations before a team joins to ensure better change management and auditability.
+*   **Row-Level Security (RLS)**: The database currently operates without Row-Level Security policies. All authorization logic is implemented at the application level. This simplifies initial development but places the full burden of access control on the application code, which may warrant a review for enhanced security at the database layer in the future.
 
 ## Why this Shape
-The decision to use Drizzle on top of postgres-js was made to provide a simple and efficient way to interact with the database. The configuration and client setup were designed to be easy to use and flexible, while also meeting the needs of the application. The lack of RLS policies is a trade-off that was made to simplify the implementation, but may need to be revisited in the future.
+The combination of Drizzle ORM with `postgres-js` was chosen for its balance of type safety, performance, and developer ergonomics. The `prepare: false` setting on the `postgres-js` client is a direct adaptation to the constraints of the Supabase transaction pooler, ensuring compatibility and stable connections. The current migration strategy and lack of RLS reflect a pragmatic approach for rapid development, with clear understanding of future scaling and security considerations.

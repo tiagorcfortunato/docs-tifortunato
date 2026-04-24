@@ -11,10 +11,10 @@ The CI pipeline is defined in `.github/workflows/ci.yml` and is triggered on eve
 
 ## Typecheck & Lint Job
 
-The `check` job is responsible for validating the codebase's type integrity and adherence to linting rules. It runs on `ubuntu-latest` and performs the following steps:
+The `check` job is responsible for validating the codebase's type integrity and adherence to linting rules. It runs on `ubuntu-latest` and performs the following steps, as defined in `.github/workflows/ci.yml`:
 
 1.  **Checkout Code**: Uses `actions/checkout@v4` to retrieve the repository content.
-2.  **Setup Node.js**: Configures Node.js version 20 and caches `npm` dependencies using `actions/setup-node@v4`.
+2.  **Setup Node.js**: Configures Node.js version `20` and caches `npm` dependencies using `actions/setup-node@v4`.
 3.  **Install Dependencies**: Executes `npm ci` to install project dependencies.
 4.  **Typecheck**: Runs `npx tsc --noEmit` to perform a TypeScript type check without emitting any JavaScript files.
 5.  **Lint**: Executes `npm run lint` to enforce code style and quality standards.
@@ -25,12 +25,10 @@ This job ensures that all proposed changes meet the project's baseline quality a
 
 The `build` job executes the full application build process. It depends on the successful completion of the `check` job (`needs: check`) and also runs on `ubuntu-latest`.
 
-This job requires a comprehensive set of environment variables, which are securely injected from GitHub Secrets. These include credentials for Supabase, Stripe, Evolution API, Resend, Upstash Redis, and Sentry, as well as the `CRON_SECRET`.
-
-The steps involved are:
+This job requires a comprehensive set of environment variables, which are securely injected from GitHub Secrets. The steps involved are:
 
 1.  **Checkout Code**: Uses `actions/checkout@v4`.
-2.  **Setup Node.js**: Configures Node.js version 20 and caches `npm` dependencies.
+2.  **Setup Node.js**: Configures Node.js version `20` and caches `npm` dependencies.
 3.  **Install Dependencies**: Executes `npm ci`.
 4.  **Build Application**: Runs `npm run build` to compile the Next.js application for production.
 
@@ -58,7 +56,7 @@ env:
 
 ## Known Gaps
 
-The current CI pipeline, as defined in `.github/workflows/ci.yml`, does not include any automated testing for the main application. While the MCP server has its own Vitest tests, these are not integrated into this workflow and are assumed to run only locally by developers. This means that functional or integration regressions in the main application would not be caught by CI.
+The current CI pipeline, as defined in `.github/workflows/ci.yml`, does not include any automated testing for the main application. There are no tests in `src/` that are wired into this workflow. While the MCP server has its own Vitest tests, these are not integrated into this workflow and are assumed to run only locally by developers. This means that functional or integration regressions in the main application would not be caught by CI.
 
 ## Why this shape
 

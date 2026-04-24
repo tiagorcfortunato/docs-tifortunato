@@ -1,21 +1,26 @@
 ---
-title: WhatsApp Message Templates
+title: "WhatsApp Message Templates"
 description: "The ~20 msg* template functions, formatting strategy"
 ---
 
 # WhatsApp Message Templates
 
-This page details the implementation of WhatsApp message sending and the standardized message templates used across the application. All WhatsApp-related logic, including message formatting and dispatch, is encapsulated within `src/lib/whatsapp.ts`.
+This page details the implementation of WhatsApp message templates and the formatting strategy used across the application. All message definitions and the sending logic are centralized in `src/lib/whatsapp.ts`.
 
 ## Overview
 
-The `src/lib/whatsapp.ts` module serves as the client for the Evolution API, handling all outbound WhatsApp messages. It centralizes message definitions, ensuring consistency and preventing direct string concatenation in API routes or other parts of the application. Environment variables `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE` are required for the API to be configured and operational.
+The `src/lib/whatsapp.ts` module acts as the client for the Evolution API, managing all outbound WhatsApp messages. It exports approximately 20 `msg*` functions that generate pre-formatted messages, ensuring consistency and preventing ad-hoc string concatenation in other parts of the codebase. The module relies on environment variables `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE` for API configuration.
 
 ## Message Formatting Strategy
 
-Client-facing transactional messages, such as appointment reminders, confirmations, and cancellations, adhere to a specific visual templating strategy. This is implemented by the `transactionalHeader` and `TRANSACTIONAL_FOOTER` functions, which wrap the message content with rule lines (`HEADER_RULE`) and include the professional's name and an Odys branding footer.
+Client-facing transactional messages use a standardized visual template to distinguish automated notifications from conversational AI replies, especially when both share the same WhatsApp thread.
 
-This visual distinction is critical for differentiating automated notifications from conversational AI replies within the same WhatsApp thread, especially when the same Odys number manages both channels.
+The formatting is implemented via:
+- `HEADER_RULE`: A Unicode rule line (`"━━━━━━━━━━━━━━━━━"`) used as a visual divider.
+- `transactionalHeader(emoji, label, professionalName)`: Generates a header block with emoji, bold label, professional name, and rule lines.
+- `TRANSACTIONAL_FOOTER`: A consistent footer appended to client messages: `_Odys · agenda inteligente · odys.com.br_`.
+
+This structure ensures brand consistency and clarity in automated communications.
 
 ```typescript
 const HEADER_RULE = "━━━━━━━━━━━━━━━━━"
@@ -29,37 +34,66 @@ const TRANSACTIONAL_FOOTER = `\n\n_Odys · agenda inteligente · odys.com.br_`
 
 ## Sending Messages
 
-The core function for dispatching messages is `sendWhatsApp({ phone, text, context })` in `src/lib/whatsapp.ts`. This asynchronous function handles the API call to the Evolution API.
+The core function `sendWhatsApp({ phone, text, context })` handles message dispatch to the Evolution API. It normalizes phone numbers using `normalizeBrazilianPhone`, which:
+- Removes non-digit characters.
+- Preserves international numbers with non-55 country codes.
+- Prefixes Brazilian numbers without a country code with `55`.
 
-Before sending, phone numbers are normalized using `normalizeBrazilianPhone` to ensure they conform to an international format without the `+` prefix. This function intelligently handles Brazilian numbers (adding `55` if missing) and preserves other international formats.
+The optional `context` parameter, when provided, records `{ professionalId, appointmentId }` in Redis via `setOutboundContext(number, context)` upon successful send. This enables reply routing within a 2-hour window and is intended only for client-facing transactional messages.
 
-A key feature of `sendWhatsApp` is the optional `context` parameter. When provided and the message is successfully sent, it records `{ professionalId, appointmentId }` in Redis via `setOutboundContext` (from `src/lib/conversation`). This mechanism allows subsequent client replies within a 2-hour window to be automatically routed by the webhook to the correct professional and appointment, facilitating conversational continuity. This context is intended for transactional messages sent to clients; messages to professionals or AI agent replies should omit this field.
-
-The `sendWhatsApp` function is designed to return `true` on success and `false` on failure, rather than throwing an exception. This design choice means that WhatsApp delivery is never load-bearing for the API response, and call sites are expected to handle potential failures gracefully, typically via `console.warn`.
+`sendWhatsApp` returns `true` on success and `false` on failure, never throwing an exception. This design ensures WhatsApp delivery issues do not block API responses.
 
 ## Pre-formatted Message Templates
 
-`src/lib/whatsapp.ts` defines a suite of approximately 20 `msg*` functions, each responsible for generating a specific message type. These functions encapsulate the full message text, including the transactional header and footer where applicable, and accept an `opts` object for dynamic content.
+The module exports 20+ `msg*` functions, each generating a specific message type with consistent formatting. These are grouped by use case:
 
-Examples include:
--   `msgBookingRequest`: Notifies a professional of a new booking request.
--   `msgBookingConfirmed`: Informs a client that their booking has been confirmed.
--   `msgBookingRejected`: Notifies a client that their booking could not be confirmed.
--   `msgBookingCancelled`: Confirms a booking cancellation to a client.
--   `msgReminder24h`: Sends a 24-hour appointment reminder to a client.
--   `msgReminder1h`: Sends a 1-hour appointment reminder to a client.
+### Booking Lifecycle
+| Function | Recipient | Purpose |
+|--------|-----------|-------|
+| `msgBookingRequest` | Professional | New booking request notification |
+| `msgBookingConfirmed` | Client | Confirmation with header/footer |
+| `msgBookingRejected` | Client | Rejection with rescheduling prompt |
+| `msgBookingCancelled` | Client | Cancellation confirmation |
+| `msgCancelledByClientToPro` | Professional | Client-initiated cancellation |
+| `msgCancelledByProToClient` | Client | Professional-initiated cancellation |
 
-This approach ensures consistent messaging, simplifies message generation across the application, and centralizes all WhatsApp message content for easier management and localization.
+### Reminders
+| Function | Recipient | Timing |
+|--------|-----------|-------|
+| `msgReminder24h` | Client | 24-hour reminder |
+| `msgReminder1h` | Client | 1-hour reminder |
+
+### Status Updates
+| Function | Recipient | Trigger |
+|--------|-----------|-------|
+| `msgPaymentConfirmedToClient` | Client | Payment marked as received |
+| `msgPaymentConfirmedToPro` | Professional | Receipt for payment confirmation |
+| `msgAppointmentCompletedToClient` | Client | Post-appointment rating request |
+| `msgAppointmentCompletedToPro` | Professional | Completion receipt |
+| `msgNoShowToClient` | Client | No-show notification with rescheduling link |
+| `msgNoShowToPro` | Professional | No-show status confirmation |
+
+### Messaging Notifications
+| Function | Recipient | Content |
+|--------|-----------|-------|
+| `msgNewMessageToClient` | Client | Notification of new message from professional |
+| `msgNewMessageToPro` | Professional | Notification of new message from client |
+
+### Receipts & Invitations
+| Function | Recipient | Use Case |
+|--------|-----------|-------|
+| `msgBookingConfirmedReceipt` | Professional | Confirmation receipt |
+| `msgBookingRejectedReceipt` | Professional | Rejection receipt |
+| `msgRegistrationInvite` | Client | Account creation invite (appended to other messages) |
 
 ## Known Gaps
 
-The `sendWhatsApp` function in `src/lib/whatsapp.ts` returns `false` on failure rather than throwing an exception. While this prevents WhatsApp delivery issues from blocking API responses, it places the burden on every call site to explicitly check the return value and handle potential delivery failures (e.g., via `console.warn`). This design choice prioritizes system resilience over strict error propagation for non-critical notifications.
+The `sendWhatsApp` function in `src/lib/whatsapp.ts` returns `false` on failure rather than throwing an exception. While this prevents transient WhatsApp API issues from blocking core application flows, it places the burden on every call site to explicitly check the return value and handle failures (e.g., via `console.warn`). This design treats message delivery as best-effort, which is appropriate for non-critical notifications but may lead to silent failures if call sites neglect error handling.
 
 ## Why this shape
 
-The decision to centralize all WhatsApp message templates and sending logic in `src/lib/whatsapp.ts` serves several purposes:
-
-1.  **Consistency**: Ensures all outbound messages adhere to a consistent tone, branding, and formatting, especially the distinction between transactional and conversational messages.
-2.  **Maintainability**: Simplifies updates to message content or the underlying WhatsApp API integration. All changes are localized to a single module.
-3.  **Reliability**: The non-throwing `sendWhatsApp` function ensures that the core application flow is not interrupted by transient WhatsApp API issues, treating message delivery as a best-effort notification rather than a critical path operation.
-4.  **Contextual Routing**: The `context` mechanism in `sendWhatsApp` is crucial for enabling intelligent routing of client replies back to the relevant professional and appointment, supporting a more seamless conversational experience.
+Centralizing all WhatsApp message templates and sending logic in `src/lib/whatsapp.ts` ensures:
+1. **Consistency**: Uniform formatting, tone, and branding across all messages.
+2. **Maintainability**: All message content and structure changes are localized to one file.
+3. **Reliability**: Non-throwing `sendWhatsApp` decouples core business logic from external API stability.
+4. **Contextual Routing**: The `context` parameter enables intelligent reply routing by storing outbound message context in Redis, critical for maintaining conversational state across asynchronous interactions.

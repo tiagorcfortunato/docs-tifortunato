@@ -13,13 +13,13 @@ The Odys MCP server communicates using JSON-RPC over standard input/output (stdi
 
 The core server logic is implemented in `mcp-server/src/server.ts`. It leverages the `@modelcontextprotocol/sdk` to establish the server and handle requests:
 
--   A `Server` instance is initialized with the server's name and version.
+-   A `Server` instance from `@modelcontextprotocol/sdk/server/index.js` is initialized with the server's name and version.
 -   `StdioServerTransport` from `@modelcontextprotocol/sdk/server/stdio.js` is used to manage the stdio communication.
--   The server registers handlers for two primary request types:
+-   The server registers handlers for two primary request types, defined by `ListToolsRequestSchema` and `CallToolRequestSchema` from `@modelcontextprotocol/sdk/types.js`:
     -   `ListToolsRequestSchema`: Returns the `TOOL_DEFINITIONS` available to the client.
     -   `CallToolRequestSchema`: Dispatches incoming tool calls to the appropriate internal function (e.g., `getAppointmentsToday`, `updateAppointmentStatus`) based on the `name` field in the request.
 
-Errors during tool execution are caught, logged to `console.error`, and returned to the client as a JSON object with an `error` field and `isError: true`. This ensures that stdout remains reserved for valid JSON-RPC responses.
+Errors during tool execution are caught, logged to `console.error`, and returned to the client as a JSON object with an `error` field and `isError: true`. This ensures that `stdout` remains reserved for valid JSON-RPC responses.
 
 ```typescript
 // mcp-server/src/server.ts
@@ -110,7 +110,7 @@ The server is registered for Claude Code sessions via the `.mcp.json` file at th
 
 ## Bundling with tsup
 
-The MCP server is a self-contained sub-project within the repository, managed by its own `package.json` and `tsconfig.json`. It is bundled into a single ESM file, `dist/server.js`, using `tsup`. The `mcp-server/tsup.config.ts` configuration ensures a production-ready output:
+The MCP server is a self-contained sub-project within the repository. It is bundled into a single ESM file, `dist/server.js`, using `tsup`. The `mcp-server/tsup.config.ts` configuration ensures a production-ready output:
 
 -   `entry: ["src/server.ts"]`: Specifies the main entry point.
 -   `format: ["esm"]`: Outputs an ECMAScript Module.
@@ -142,7 +142,7 @@ export default defineConfig({
 
 A specific configuration in `mcp-server/tsup.config.ts` is the `noExternal` option, which forces `esbuild` (used internally by `tsup`) to inline certain dependencies rather than treating them as external runtime imports.
 
-Specifically, `zod` and `@modelcontextprotocol/sdk` are listed in `noExternal: ["zod", "@modelcontextprotocol/sdk"]`. This was necessary to resolve a dual-package hazard where the MCP SDK ships both CommonJS (CJS) and ECMAScript Module (ESM) entry points. Bundling with `noExternal` ensures that `esbuild` correctly resolves and inlines the ESM version of the SDK, preventing startup crashes related to module resolution. `dotenv` remains external as it does not exhibit this dual-package issue.
+Specifically, `zod` and `@modelcontextprotocol/sdk` are listed in `noExternal: ["zod", "@modelcontextprotocol/sdk"]`. This was necessary to resolve a dual-package hazard where the MCP SDK ships both CommonJS (CJS) and ECMAScript Module (ESM) entry points. Bundling with `noExternal` ensures that `esbuild` correctly resolves and inlines the ESM version of the SDK, preventing startup crashes related to module resolution.
 
 ## Why this shape
 

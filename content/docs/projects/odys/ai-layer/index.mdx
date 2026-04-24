@@ -5,11 +5,11 @@ description: "AI layer overview: Groq, tool-calling, two agents"
 
 # AI Layer Overview
 
-This page provides an overview of the AI layer's architecture, detailing its integration with Groq, the common tool-calling pattern, and the two primary AI agents responsible for client intake and professional insights.
+This page provides an overview of the AI layer's architecture, detailing its integration with Groq, the common two-pass tool-calling pattern, and the two primary AI agents responsible for client intake and professional insights.
 
 ## Groq Integration
 
-The AI layer leverages Groq for its large language model (LLM) capabilities, primarily for fast inference and robust tool-calling. Both AI agents instantiate the Groq SDK using a dedicated `getGroq()` function, which retrieves the API key from `process.env.GROQ_API_KEY`.
+The AI layer leverages Groq for its large language model (LLM) capabilities, primarily for fast inference and robust tool-calling. Both AI agents instantiate the Groq SDK using a dedicated `getGroq()` function, which retrieves the API key from `process.env.GROQ_API_KEY`. This function is present in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`.
 
 ## Tool-Calling Pattern
 
@@ -28,8 +28,8 @@ The AI layer comprises two distinct agents, each tailored for specific use cases
 The WhatsApp Intake Agent, implemented in `src/lib/ai-intake.ts`, is designed to handle inbound WhatsApp messages from clients. Its primary function is to automate tasks such as checking professional availability and creating new bookings.
 
 This agent defines and utilizes the following tools:
--   `get_available_slots`: Returns available appointment slots for a given date. This tool is always used before suggesting times to a client.
--   `book_appointment`: Creates a new appointment in the database. This tool is only invoked after confirming the date, time, client name, and phone number.
+-   `get_available_slots`: Returns available appointment slots for a specific date. This tool is always used before suggesting times to a client.
+-   `book_appointment`: Creates a new appointment. This tool is only invoked after confirming the date, time, client name, and phone number.
 -   `get_professional_info`: Retrieves general information about the professional, including name, profession, session duration, price, and operating hours.
 
 The agent includes specific timezone helpers (`saoPauloDate`, `formatSaoPauloTime`, `formatSaoPauloDate`) to correctly manage São Paulo time (UTC-3), reflecting Brazil's abolition of DST.

@@ -5,22 +5,66 @@ description: "Booking widget internals: 3-step state machine, react-hook-form, s
 
 # Booking Widget Internals
 
-This page covers the internals of the booking widget, including its 3-step state machine, usage of `react-hook-form`, and slot computation.
+This page details the internal workings of the booking widget, focusing on its 3-step state machine, form management with `react-hook-form`, and the client-side computation of available time slots.
 
 ## State Machine
-The booking widget uses a 3-step state machine, with states `pick`, `form`, and `success`. The state is managed using the `useState` hook in `src/app/p/[slug]/booking-widget.tsx`. The state transitions are triggered by user interactions, such as selecting a date or submitting the form.
+
+The booking widget operates using a 3-step state machine, managed by the `step` state variable in `src/app/p/[slug]/booking-widget.tsx`. The possible states are:
+
+*   `pick`: The initial state where the user selects a date and an available time slot.
+*   `form`: After a slot is selected, the user is prompted to fill out their contact information.
+*   `success`: Displayed after a booking request has been successfully submitted to the backend.
+
+State transitions are primarily driven by user interaction. Selecting a date and slot moves the user towards the form step, and successful form submission transitions to the `success` state.
 
 ## React Hook Form
-The booking widget uses `react-hook-form` to manage the form state and validation. The form schema is defined using `zod` in `src/app/p/[slug]/booking-widget.tsx`. The form is validated on submit, and errors are displayed to the user.
+
+The booking widget leverages `react-hook-form` for efficient and robust form management and validation. The client's contact information form is defined by the `clientSchema` using `zod` in `src/app/p/[slug]/booking-widget.tsx`.
+
+The `useForm` hook is initialized with this schema via `zodResolver`, ensuring client-side validation before submission. Default values for `name`, `phone`, and `email` can be pre-filled from the logged-in client's data, which is passed down from `src/app/p/[slug]/page.tsx` as `defaultName`, `defaultPhone`, and `defaultEmail` props.
+
+```tsx
+const clientSchema = z.object({
+  name: z.string().min(2, "Nome muito curto"),
+  phone: z.string().min(10, "Telefone inválido"),
+  email: z.string().email("Email inválido").optional().or(z.literal("")),
+})
+
+// ...
+
+const { register, handleSubmit, formState: { errors } } = useForm<ClientForm>({
+  resolver: zodResolver(clientSchema),
+  defaultValues: {
+    name: defaultName ?? "",
+    phone: defaultPhone ?? "",
+    email: defaultEmail ?? "",
+  },
+})
+```
 
 ## Slot Computation
-The available slots are computed using the `generateSlots` function in `src/lib/slots.ts`. This function takes the selected date, availability rules, existing appointments, and session duration as input, and returns an array of available slots. The slots are then displayed to the user, and they can select one to book.
 
-## Implementation Details
-The booking widget is implemented in `src/app/p/[slug]/booking-widget.tsx`. It uses the `useState` and `useEffect` hooks to manage the state and side effects. The `useForm` hook from `react-hook-form` is used to manage the form state and validation.
+Available booking slots are computed client-side to provide a responsive user experience. This process involves:
+
+1.  **Fetching Data**: When a `selectedDate` is chosen in `src/app/p/[slug]/booking-widget.tsx`, a `useEffect` hook triggers a fetch request to `/api/booking?slug=${slug}&date=${dateStr}`. This endpoint returns the professional's availability rules and any existing appointments for the selected day.
+2.  **Generating Slots**: The `generateSlots` function from `src/lib/slots.ts` is then called with the `selectedDate`, fetched `rules`, `existingAppointments`, and the `sessionDuration`. This pure function iterates through the day's available window, stepping by `sessionDuration`, and filters out slots that are in the past or conflict with existing appointments.
+3.  **Grouping for Display**: The `groupSlots` helper function in `src/app/p/[slug]/booking-widget.tsx` categorizes the generated slots into "morning," "afternoon," and "evening" for a more user-friendly presentation.
+
+While slots are generated client-side, the ultimate double-booking prevention occurs on the server during the booking submission, where a conflict check is performed before an appointment is inserted.
+
+## Booking Flow
+
+The booking process is initiated when the user submits the form, triggering the `onSubmit` function in `src/app/p/[slug]/booking-widget.tsx`.
+
+1.  **`startsAt` Construction**: A `Date` object representing the `startsAt` time is constructed using the `selectedDate` and `selectedSlot`. The `setHours` method is used to set the hour and minute based on the selected slot.
+2.  **API Request**: A `POST` request is sent to the `/api/booking` endpoint, containing the professional's `slug`, the `startsAt` timestamp (converted to ISO string), and the client's contact details.
+3.  **Success Handling**: If the API request is successful, `posthog.capture` is used to log the `booking_created` event for analytics. The widget then transitions to the `success` state, displaying a confirmation message.
+4.  **Payment and Registration**: In the `success` state, if `paymentType` is not `"after"` and a `pixKey` is available, a `PixQR` component is rendered for immediate payment. Additionally, a registration link (`/register`) is generated with the submitted client data pre-filled, encouraging new users to create an account.
 
 ## Known Gaps
-One known gap in the current implementation is the lack of timezone handling consistency across the codebase. The booking widget uses browser-local time, while the API stores timestamps in UTC. This may lead to inconsistencies in the displayed availability and booked slots.
+
+The booking widget constructs `Date` objects using browser-local time (e.g., `startsAt.setHours(hour, minute, 0, 0)` in `src/app/p/[slug]/booking-widget.tsx`). However, the API expects and stores timestamps in UTC. This discrepancy can lead to subtle issues with displayed availability or booked slot interpretation if the client's timezone differs from the assumed server timezone (currently São Paulo). There is no "timezone of record" column on the professional row to explicitly manage this.
 
 ## Why this Shape
-The booking widget is designed as a 3-step state machine to provide a clear and simple user experience. The use of `react-hook-form` simplifies form management and validation, while the `generateSlots` function provides a flexible way to compute available slots based on the selected date and availability rules. The implementation is designed to be modular and reusable, with a clear separation of concerns between the state machine, form management, and slot computation.
+
+The booking widget is designed as a 3-step state machine to provide a clear, guided user experience, breaking down the booking process into manageable stages. The use of `react-hook-form` simplifies form state management and validation, ensuring data integrity and a consistent user interface. Client-side slot computation, powered by `src/lib/slots.ts`, offers immediate feedback on availability, enhancing responsiveness. This modular approach separates concerns, making the component easier to understand, test, and maintain, while leveraging established libraries for common UI patterns.

@@ -4,16 +4,38 @@ description: "The complete API route tree and shared helpers (getUser, responses
 ---
 
 # API Routes Overview
-This page covers the complete API route tree and shared helpers, including `getUser` and response helpers, used throughout the Odys API.
+This page documents the complete API route tree structure under `src/app/api/` and the shared helper functions in `src/lib/api.ts`, including authentication utilities like `getUser` and standardized response functions.
 
 ## API Route Tree
-The API tree under `src/app/api/` has one folder per resource, including `account`, `ai/chat`, `appointments/[id]`, `auth/register`, `booking`, `client-profile`, `clients/notes`, `cron/reminders`, `cron/whatsapp-watchdog`, `follows`, `messages`, `notifications`, `onboarding`, `recurring`, `reviews`, `settings`, `stripe/checkout`, `stripe/webhook`, `trial`, `upload/avatar`, and `whatsapp` (inbound webhook).
+The API routes are organized in `src/app/api/` with one folder per resource, following a clear, resource-based hierarchy. The current endpoints include: `account`, `ai/chat`, `appointments/[id]`, `auth/register`, `booking`, `client-profile`, `clients/notes`, `cron/reminders`, `cron/whatsapp-watchdog`, `follows`, `messages`, `notifications`, `onboarding`, `recurring`, `reviews`, `settings`, `stripe/checkout`, `stripe/webhook`, `trial`, `upload/avatar`, and `whatsapp`.
+
+This structure enables predictable routing and separation of concerns across functional domains.
 
 ## Shared Helpers
-The `src/lib/api.ts` file contains shared helpers for API routes, including response helpers, auth helpers, and utility helpers. The response helpers provide standard JSON responses with correct status codes, such as `ok`, `unauthorized`, `forbidden`, `notFound`, `badRequest`, `conflict`, and `tooManyRequests`. The auth helpers, like `getUser` and `getProfessional`, retrieve the authenticated Supabase user and professional row for a given user ID. The utility helpers, such as `getIp`, extract the client IP from the request headers for rate limiting.
+The `src/lib/api.ts` file exports reusable utilities for API routes, categorized into response formatting, authentication, and request utilities.
 
-## Known Gaps
-There are no known gaps in the current implementation of the API route tree and shared helpers.
+### Response Helpers
+These functions standardize JSON responses with appropriate HTTP status codes and prevent leakage of internal error details.
+
+- `ok(data: object)`: Returns `200 OK` with the provided data.
+- `unauthorized()`: Returns `401 Unauthorized` with error message "Não autorizado".
+- `forbidden(msg = "Sem permissão")`: Returns `403 Forbidden` with optional custom message.
+- `notFound(msg = "Não encontrado")`: Returns `404 Not Found` with optional custom message.
+- `badRequest(msg: string)`: Returns `400 Bad Request` with the specified error message.
+- `conflict(msg: string)`: Returns `409 Conflict` with the specified error message.
+- `tooManyRequests()`: Returns `429 Too Many Requests` with message "Muitas tentativas. Aguarde um momento.".
+- `serverError(context: string, err: unknown)`: Logs the error server-side using `console.error` with the provided context and returns a generic `500 Internal Server Error` with message "Erro interno".
+
+### Auth Helpers
+These functions retrieve authenticated user and professional data from Supabase and the application database.
+
+- `getUser()`: Asynchronously fetches the authenticated Supabase user via `supabase.auth.getUser()`, returning `null` if unauthenticated.
+- `getProfessional(userId: string)`: Queries the `professionals` table using `drizzle-orm` to find a professional by `userId`, returning `null` if no match is found (`src/lib/db/schema.ts`).
+
+### Utility Helpers
+- `getIp(req: NextRequest)`: Extracts the client IP address from the `x-forwarded-for` header by taking the first comma-separated value and trimming whitespace. Returns `"anonymous"` if the header is missing or empty.
 
 ## Why this Shape
-The API route tree is organized by resource to provide a clear and consistent structure for API endpoints. The shared helpers in `src/lib/api.ts` provide a standardized way of handling responses, authentication, and utility functions, making it easier to develop and maintain API routes. This design intent allows for a scalable and maintainable API architecture.
+The API route tree uses a flat, resource-centric folder structure under `src/app/api/` to ensure discoverability and maintainability. Each folder maps directly to an endpoint, aligning with common REST conventions and simplifying routing logic in Next.js App Router.
+
+The `src/lib/api.ts` file centralizes cross-cutting concerns—response formatting, authentication access, and IP extraction—reducing duplication and enforcing consistency. By abstracting `NextResponse.json` calls behind semantic helpers, it minimizes the risk of incorrect status codes or exposed internal errors. This design supports scalable, auditable, and secure API development across the codebase.

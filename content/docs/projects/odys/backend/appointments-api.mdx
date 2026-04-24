@@ -1,13 +1,13 @@
 ---
-title: "Appointment Action Endpoint"
+title: "Appointments API"
 description: "Appointment action endpoint: confirm/reject/cancel/paid/complete/no_show"
 ---
 
-# Appointment Action Endpoint
-This page covers the appointment action endpoint, which allows clients and professionals to perform actions such as confirming, rejecting, canceling, marking as paid, completing, or marking as no-show on appointments.
+# Appointments API
+This page details the appointment action endpoint, which allows clients and professionals to perform state-changing actions on appointments via a `PATCH` request. Supported actions include `confirm`, `reject`, `cancel`, `paid`, `complete`, and `no_show`.
 
-## Actions
-The endpoint supports the following actions:
+## Overview of Actions
+The endpoint processes actions defined in the `ALLOWED_ACTIONS` set in `src/app/api/appointments/[id]/route.ts:10`. These are:
 - `confirm`
 - `reject`
 - `cancel`
@@ -15,24 +15,66 @@ The endpoint supports the following actions:
 - `complete`
 - `no_show`
 
-These actions are defined in the `ALLOWED_ACTIONS` set in `src/app/api/appointments/[id]/route.ts`.
+Requests with an action not in this set return `400 Bad Request` if the user is associated with the appointment, or `403 Forbidden` otherwise. The check occurs after ownership resolution to avoid leaking existence via error codes.
 
 ## Cancel Action
-The `cancel` action can be performed by both clients and professionals. When a client cancels an appointment, a notification is sent to the professional. When a professional cancels an appointment, a notification is sent to the client. The appointment status is updated to `cancelled`.
+The `cancel` action can be initiated by either the client or the professional. It updates the appointment's `status` to `cancelled` in the `appointments` table.
 
-## Professional-only Actions
-The following actions can only be performed by professionals:
-- `paid`: updates the appointment payment status to `captured` and sends a notification to the client.
-- `complete`: updates the appointment status to `completed` and sends a notification to the client.
-- `no_show`: marks the appointment as no-show.
+### Precondition Check
+Cancellation is only allowed if the current `status` is `pending_confirmation` or `confirmed` (`src/app/api/appointments/[id]/route.ts:70`). Attempts to cancel in other states (e.g., `completed`, `cancelled`) result in a `400 Bad Request`.
 
-These actions are implemented in `src/app/api/appointments/[id]/route.ts`.
+### Notifications
+- **Client cancellation**: A notification is inserted into the `notifications` table for the professional, and WhatsApp messages are sent to both parties.
+- **Professional cancellation**: A WhatsApp message is sent to the client (`msgCancelledByProToClient`) and to the professional (`msgBookingCancelled`).
 
-## Implementation
-The endpoint is implemented as a PATCH request handler in `src/app/api/appointments/[id]/route.ts`. It fetches the appointment and related data, checks the user's ownership and permissions, and performs the requested action.
+Implementation: `src/app/api/appointments/[id]/route.ts:72–88`.
+
+## Professional-Only Actions
+The following actions are restricted to the professional (`professional.userId === user.id`). Unauthorized attempts return `403 Forbidden`.
+
+### Paid
+- Updates `paymentStatus` to `captured`.
+- Sends WhatsApp messages to both client (`msgPaymentConfirmedToClient`) and professional (`msgPaymentConfirmedToPro`).
+- No precondition check on current `paymentStatus` or `status`.
+
+### Complete
+- Updates `status` to `completed`.
+- Sends WhatsApp messages to both parties (`msgAppointmentCompletedToClient`, `msgAppointmentCompletedToPro`).
+- No precondition check on current `status`.
+
+### No Show
+- Updates `status` to `no_show`.
+- Sends WhatsApp messages to both parties (`msgNoShowToClient`, `msgNoShowToPro`).
+- No precondition check on current `status`.
+
+All three actions are handled in sequence after the `isProfessional` check (`src/app/api/appointments/[id]/route.ts:90–115`).
+
+## Confirm and Reject Actions
+These actions are restricted to the professional and modify both `status` and `paymentStatus`:
+- `confirm` → `status: confirmed`, `paymentStatus: authorized`
+- `reject` → `status: rejected`, `paymentStatus: refunded`
+
+### Notifications
+- A database notification is inserted for the client if `client.userId` exists.
+- WhatsApp messages are sent to both parties.
+- For confirmed appointments, an email is sent to the client if `client.email` is present.
+
+Messages used: `msgBookingConfirmed`, `msgBookingConfirmedReceipt`, `msgBookingRejected`, `msgBookingRejectedReceipt`. Email functions: `sendBookingConfirmedEmailToClient`, `sendBookingRejectedEmailToClient`.
+
+Implementation: `src/app/api/appointments/[id]/route.ts:117–150`.
+
+## Implementation Details
+The endpoint is a `PATCH` handler in `src/app/api/appointments/[id]/route.ts`. Key steps:
+1. **Authentication**: `getUser()` verifies session.
+2. **Data Fetching**: Retrieves appointment, professional, and client using Drizzle ORM.
+3. **Ownership Check**: Determines if user is client or professional via `userId` match.
+4. **Action Validation**: Ensures `action` is in `ALLOWED_ACTIONS`.
+5. **Action Execution**: Branches by action, updates database, and dispatches notifications.
+
+All WhatsApp messages are sent asynchronously using `sendWhatsApp`, with context metadata for tracking.
 
 ## Known Gaps
-One known gap in the current implementation is that it does not handle cases where the appointment status is not in a valid state for the requested action. For example, attempting to cancel an appointment that is already completed will result in a `badRequest` error.
+The `paid`, `complete`, and `no_show` actions lack precondition checks on the appointment's current `status` or `paymentStatus`. This allows illogical transitions, such as marking a `cancelled` appointment as `completed` or setting `paymentStatus` to `captured` on an already `refunded` record. In contrast, the `cancel` action explicitly validates prior state (`src/app/api/appointments/[id]/route.ts:70`), indicating a deliberate check was possible but not applied uniformly.
 
 ## Why this Shape
-The endpoint is designed to provide a simple and straightforward way for clients and professionals to perform actions on appointments. The use of a single endpoint for all actions simplifies the API and reduces the number of requests that need to be made. The implementation is focused on handling the business logic for each action, with notifications and updates to the appointment status handled accordingly.
+The endpoint consolidates all appointment state transitions into a single `PATCH` interface to minimize API surface area. This reduces client complexity and centralizes business logic for auditability. The sequential branching structure ensures mutual exclusivity of actions, while early ownership and validation checks prevent unauthorized or malformed requests from progressing. The pattern of updating state followed by side effects (notifications) is consistent across actions, improving maintainability.

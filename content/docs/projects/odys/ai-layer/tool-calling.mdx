@@ -1,62 +1,50 @@
 ---
-title: AI Tool Calling Pattern
+title: "AI Tool Calling Pattern"
 description: "Tool-calling pattern: schema definition, dispatch, error handling"
 ---
 
 # AI Tool Calling Pattern
 
-This page details the tool-calling pattern implemented within the AI layer, specifically focusing on how tool schemas are defined for the LLM, how tool calls are dispatched, and the approach to error handling during tool execution. This pattern is applied in both the WhatsApp intake agent (`src/lib/ai-intake.ts`) and the dashboard AI chat (`src/app/api/ai/chat/route.ts`).
+This page details the tool-calling pattern in the AI layer, focusing on how tool schemas are defined for the LLM, how tool calls are dispatched, and how errors are handled during execution. The implementation is consistent across both the WhatsApp intake agent (`src/lib/ai-intake.ts`) and the dashboard AI chat (`src/app/api/ai/chat/route.ts`).
 
 ## Schema Definition
 
-The `TOOLS` array in `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts` defines the available functions for the Groq LLM. Each tool specifies its `name`, a `description` (crucial for the LLM to understand when to use the tool), and `parameters` using a JSON Schema object.
+Tool schemas are defined in the `TOOLS` array in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`. Each tool conforms to `Groq.Chat.Completions.ChatCompletionTool` and includes a `name`, `description`, and `parameters` specified via JSON Schema.
 
-For example, the `get_available_slots` tool definition from `src/lib/ai-intake.ts` includes a clear description and required `date` parameter:
+The `description` field is critical for guiding the LLM’s decision-making and often includes explicit usage instructions. For example, in `src/lib/ai-intake.ts`, the `get_available_slots` tool includes the directive: "Use SEMPRE antes de sugerir horários."
 
 ```typescript
-const TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_available_slots",
-      description: "Retorna horários disponíveis para agendamento em uma data específica. Use SEMPRE antes de sugerir horários.",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
-        },
-        required: ["date"],
+{
+  type: "function",
+  function: {
+    name: "get_available_slots",
+    description: "Retorna horários disponíveis para agendamento em uma data específica. Use SEMPRE antes de sugerir horários.",
+    parameters: {
+      type: "object",
+      properties: {
+        date: { type: "string", description: "Data no formato YYYY-MM-DD" },
       },
+      required: ["date"],
     },
   },
-  // ... other tools
-]
+}
 ```
 
-The `description` field is critical for guiding the LLM's decision-making, often including explicit instructions on when to use the tool (e.g., "Use SEMPRE antes de sugerir horários.").
+Similarly, in `src/app/api/ai/chat/route.ts`, the `get_stats` tool specifies: "Use para: resumo do mês, taxa de no-show, receita, comparação entre meses, evolução ao longo do tempo."
 
 ## Tool Implementations
 
-Each tool defined in the `TOOLS` array has a corresponding asynchronous function that implements its logic. These functions interact with the database and other services.
+Each tool in the `TOOLS` array has a corresponding async function that executes the business logic. These functions perform database queries and return structured data.
 
-For instance, the `getAvailableSlots` function in `src/lib/ai-intake.ts` retrieves a professional's availability and existing appointments to calculate open slots:
+In `src/lib/ai-intake.ts`, the `getAvailableSlots` function:
+- Validates the input date format
+- Queries `professionals` and `availability` tables
+- Computes open time slots based on session duration and existing appointments
+- Returns a structured object with `available`, `slots`, `date`, and optional `message`
 
 ```typescript
 async function getAvailableSlots(professionalId: string, dateStr: string) {
-  const [professional] = await db.select()
-    .from(professionals)
-    .where(eq(professionals.id, professionalId))
-    .limit(1)
-
-  if (!professional) return { error: "Profissional não encontrado" }
-
-  // Validate date format
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    return { error: "Data inválida. Use o formato YYYY-MM-DD." }
-  }
-
-  // ... database queries and slot generation logic
-
+  // ... validation and DB queries
   return {
     available: slots.length > 0,
     slots,
@@ -66,34 +54,49 @@ async function getAvailableSlots(professionalId: string, dateStr: string) {
 }
 ```
 
-Similarly, `src/app/api/ai/chat/route.ts` contains implementations like `getStats`, `getUpcoming`, and `getNoShowClients` for dashboard-specific queries.
+In `src/app/api/ai/chat/route.ts`, `getStats` aggregates appointment data over the last six months and returns both global and per-month summaries, including revenue and no-show rates.
 
 ## Tool Dispatch
 
-The AI layer employs a two-pass pattern for tool calling:
+The tool dispatch follows a two-pass pattern:
 
-1.  **First Pass**: The LLM receives the user's message and the list of available `TOOLS`. It decides whether to call a tool and, if so, which one and with what arguments.
-2.  **Second Pass**: If a tool call is suggested by the LLM, the application dispatches the call to the corresponding implementation function. The results of the tool execution are then fed back to the LLM, which generates the final, human-readable response.
+1. **First LLM call**: The LLM receives the user message and the `TOOLS` array. If it decides to use a tool, it returns a `tool_call` with the function name and arguments.
+2. **Tool execution**: The application parses the `tool_call`, invokes the corresponding function, and captures the result.
+3. **Second LLM call**: The result is sent back as a `tool` role message, and the LLM generates a final natural language response.
 
-While the specific dispatch logic (e.g., a `switch` statement or a map of function names to implementations) is not fully shown in the provided `route.ts` snippet, the `ai-intake.ts` file's structure implies a direct mapping between the tool `name` and the function call.
+The dispatch logic is implemented via a `for` loop over `choice.tool_calls` in both files. Each `tool_call` is matched using an `if-else` chain that checks `call.function.name` and invokes the correct implementation.
+
+In `src/lib/ai-intake.ts`, the dispatch includes side effects:
+- On successful `book_appointment`, `conversation.context.appointmentCreated` is set to `true`
+- If `client_name` is provided, it updates `conversation.clientName`
 
 ## Error Handling
 
-Tool implementations are designed to return structured error objects rather than throwing exceptions for expected validation or business logic failures. This allows the LLM to receive a clear, descriptive error message and potentially guide the user to correct their input or understand why an action failed.
+Tool implementations return structured error objects instead of throwing exceptions for expected failures. This allows the LLM to interpret and respond to errors naturally.
 
-For example, in `src/lib/ai-intake.ts`, the `getAvailableSlots` function handles invalid dates or missing professionals by returning an `error` field within its result object:
-
+In `src/lib/ai-intake.ts`, `getAvailableSlots` returns:
 ```typescript
-  // Validate date format
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
-    return { error: "Data inválida. Use o formato YYYY-MM-DD." }
-  }
-  // ...
-  if (!professional) return { error: "Profissional não encontrado" }
+{ error: "Data inválida. Use o formato YYYY-MM-DD." }
+```
+for malformed dates, and:
+```typescript
+{ error: "Profissional não encontrado" }
+```
+if the professional does not exist.
+
+Similarly, `bookAppointment` returns:
+```typescript
+{ success: false, reason: "Este horário acabou de ser preenchido. Tente outro." }
+```
+on conflict, rather than throwing.
+
+The dispatch layer handles unknown tools by returning:
+```typescript
+{ error: "Ferramenta desconhecida" }
 ```
 
-This pattern ensures that the LLM can interpret the tool's outcome, whether it's a successful result or a specific error condition, and formulate an appropriate response to the user. This approach aligns with the broader system design where database access failures in tools return an `error` field instead of crashing the server.
+This pattern ensures that all outcomes — success or failure — are surfaced to the LLM in a consistent format, enabling coherent user responses without interrupting the flow.
 
 ## Why this shape
 
-The two-pass tool-calling pattern provides a robust mechanism for integrating external logic and data retrieval into LLM interactions. By explicitly defining tool schemas and implementing corresponding functions, the system ensures that the LLM can accurately understand its capabilities and generate precise arguments for tool execution. Returning structured error objects from tool implementations allows the LLM to gracefully handle failures and provide informative feedback to the user, enhancing the overall user experience and reliability of the AI agent. This direct, explicit mapping of tool definitions to implementations is pragmatic for managing a focused set of tools.
+The two-pass tool-calling pattern decouples intent recognition from data retrieval and action execution. By defining tools with precise JSON Schema and descriptive prompts, the LLM can reliably select and parameterize functions. The direct mapping from `tool_call.name` to implementation via `if-else` is simple and auditable, suitable for a small, fixed set of tools. Returning structured errors instead of throwing keeps the LLM in control of the conversation flow, turning validation and business logic failures into dialogue opportunities rather than crashes. This design prioritizes resilience and user experience in a production AI agent.

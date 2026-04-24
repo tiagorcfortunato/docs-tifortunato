@@ -1,21 +1,21 @@
 ---
-title: "MCP Server: Four Tools"
+title: "Four Tools"
 description: "The 4 tools in detail with handler code"
 ---
 
-# MCP Server: Four Tools
+# Four Tools
 
-This page details the four tools exposed by the Model Context Protocol (MCP) server, including their input schemas and the implementation of their handler logic where available in the provided code. These tools allow AI agents to interact with the Odys system for common queries and mutations.
+This page details the four tools exposed by the Model Context Protocol (MCP) server, including their input schemas and the implementation of their handler logic as defined in the provided code. Each tool enables AI agents to perform specific queries or mutations within the Odys system.
 
-The tool definitions, including their names, descriptions, and JSON schema for inputs, are declared in `mcp-server/src/tools.ts` within the `TOOL_DEFINITIONS` array.
+The tool definitions are declared in `mcp-server/src/tools.ts` within the `TOOL_DEFINITIONS` array. All handlers are implemented in the same file and use Zod for input validation, Drizzle ORM for database access, and structured error handling.
 
 ## `get_appointments_today`
 
-This tool retrieves a professional's appointments for the current civil day, resolving "today" based on a specified IANA timezone.
+Retrieves a professional's appointments for the current civil day, resolved in a specified IANA timezone.
 
 ### Input Schema
 
-The input for `get_appointments_today` is defined by `GetAppointmentsTodayInput` in `mcp-server/src/tools.ts`:
+Defined by `GetAppointmentsTodayInput` in `mcp-server/src/tools.ts`:
 
 ```typescript
 export const GetAppointmentsTodayInput = z.object({
@@ -24,27 +24,25 @@ export const GetAppointmentsTodayInput = z.object({
 })
 ```
 
-The `professionalId` is a UUID identifying the professional, and `timezone` is an optional IANA timezone string, defaulting to `America/Sao_Paulo`.
-
 ### Handler Logic
 
-The `getAppointmentsToday` function in `mcp-server/src/tools.ts` implements the handler. It performs the following steps:
-
-1.  Parses and validates the input using `GetAppointmentsTodayInput.parse()`.
-2.  Determines the civil date for "today" in the specified `timezone` using `Intl.DateTimeFormat("en-CA", { timeZone })`.
-3.  Calculates the UTC start and end timestamps for this civil day by applying the `tzOffsetMs` helper (also in `mcp-server/src/tools.ts`). This helper uses `Intl.DateTimeFormat` to correctly account for historical DST rules.
-4.  Executes a Drizzle query to select appointments within this UTC window, joining `appointments`, `clients`, and `professionals` tables.
-5.  Filters results by `professionalId` and the calculated `startsAt` range.
-6.  Maps the database rows to a standardized output format, including `appointment_id`, `time`, `customer_name`, `status`, and `service_name`.
-7.  Includes `try/catch` error handling for database operations, returning an `error` field on failure.
+The `getAppointmentsToday` function:
+1. Parses input using `GetAppointmentsTodayInput.parse()`.
+2. Uses `Intl.DateTimeFormat("en-CA", { timeZone })` to determine the civil date string for "today" in the given timezone.
+3. Constructs naive UTC start and end times (`00:00:00Z` and `23:59:59.999Z`) from that date string.
+4. Adjusts these times to true UTC using the `tzOffsetMs` helper, which computes the offset via `Intl.DateTimeFormat` to respect historical DST rules.
+5. Queries the database using Drizzle ORM, joining `appointments`, `clients`, and `professionals` tables.
+6. Filters by `professionalId` and the UTC `startsAt` range using `and`, `eq`, `gte`, and `lte`.
+7. Orders results by `startsAt` and maps them to a standardized output format.
+8. Wraps the query in `try/catch`, returning an `error` field on failure.
 
 ## `get_customer_by_phone`
 
-This tool looks up customer records based on a phone number, handling various Brazilian phone number formats.
+Looks up customer records by phone number, normalizing Brazilian formats and returning recent appointment history.
 
 ### Input Schema
 
-The input for `get_customer_by_phone` is defined by `GetCustomerByPhoneInput` in `mcp-server/src/tools.ts`:
+Defined by `GetCustomerByPhoneInput` in `mcp-server/src/tools.ts`:
 
 ```typescript
 export const GetCustomerByPhoneInput = z.object({
@@ -52,21 +50,24 @@ export const GetCustomerByPhoneInput = z.object({
 })
 ```
 
-The `phone` field expects a string of at least 4 characters.
-
 ### Handler Logic
 
-While the full handler code is not provided, the `TOOL_DEFINITIONS` in `mcp-server/src/tools.ts` indicates that this tool "Look[s] up customer records matching a phone number (any format — will be normalized to Brazilian E.164 digits). Returns customer details plus their last 5 appointments."
-
-The `mcp-server/src/phone.ts` file contains the `normalizeBrazilianPhone` and `getPhoneVariants` functions, which are used to process the input phone number. `normalizeBrazilianPhone` converts various formats into a consistent Brazilian E.164 or 11-digit format. `getPhoneVariants` generates both E.164 and 11-digit variants to query the `clients.phone` column using `inArray`.
+The `getCustomerByPhone` function:
+1. Parses input using `GetCustomerByPhoneInput.parse()`.
+2. Normalizes the input phone using `normalizeBrazilianPhone` from `mcp-server/src/phone.ts`, which strips non-digits and ensures a `55` country code prefix.
+3. Generates query variants using `getPhoneVariants`, which returns both E.164 (`55...`) and 11-digit (`11...`) forms.
+4. Queries `clients` table using `inArray(clients.phone, variants)`.
+5. For each matching client, retrieves their last 5 appointments ordered by `startsAt`.
+6. Maps results into a structured format including client details and appointment history.
+7. Handles errors via `try/catch`, returning an `error` field if the database operation fails.
 
 ## `get_revenue_summary`
 
-This tool provides a summary of revenue for a professional over rolling periods (week, month, or year).
+Provides a rolling revenue summary for a professional over the last week, month, or year.
 
 ### Input Schema
 
-The input for `get_revenue_summary` is defined by `GetRevenueSummaryInput` in `mcp-server/src/tools.ts`:
+Defined by `GetRevenueSummaryInput` in `mcp-server/src/tools.ts`:
 
 ```typescript
 export const GetRevenueSummaryInput = z.object({
@@ -75,19 +76,26 @@ export const GetRevenueSummaryInput = z.object({
 })
 ```
 
-It requires a `professionalId` and a `period` which can be `week` (last 7 days), `month` (last 30 days), or `year` (last 365 days).
-
 ### Handler Logic
 
-The full handler code is not provided. However, the `TOOL_DEFINITIONS` in `mcp-server/src/tools.ts` states that this tool "Summarize[s] revenue for a professional over a rolling period... Counts only appointments with `paymentStatus='captured'`. Returns `totalRevenueCents`, `appointmentCount`, `averageTicketCents`." The deep-dive further clarifies that revenue is calculated as `count * professional.sessionPrice`.
+The `getRevenueSummary` function:
+1. Parses input using `GetRevenueSummaryInput.parse()`.
+2. Maps `period` to a number of days: 7, 30, or 365.
+3. Calculates the `start` timestamp as `now - days * 24 * 60 * 60 * 1000`.
+4. Queries the `professionals` table to retrieve `sessionPrice` by `professionalId`.
+5. If no professional is found, returns zero values and an `"Professional not found"` error.
+6. Otherwise, aggregates appointment count where `paymentStatus = 'captured'` and `startsAt` is within the window.
+7. Computes `totalRevenueCents` as `appointmentCount * sessionPrice` and `averageTicketCents` as the rounded average.
+8. Returns structured summary with `currency: "BRL"`.
+9. Wraps logic in `try/catch`, returning database errors appropriately.
 
 ## `update_appointment_status`
 
-This tool allows updating the status of an appointment.
+Updates an appointment's status with ownership verification and idempotency.
 
 ### Input Schema
 
-The input for `update_appointment_status` is defined by `UpdateAppointmentStatusInput` in `mcp-server/src/tools.ts`:
+Defined by `UpdateAppointmentStatusInput` in `mcp-server/src/tools.ts`:
 
 ```typescript
 export const APPOINTMENT_STATUSES = [
@@ -107,16 +115,22 @@ export const UpdateAppointmentStatusInput = z.object({
 })
 ```
 
-It requires an `appointmentId`, `professionalId` for ownership verification, and a `status` from the `APPOINTMENT_STATUSES` enum. An optional `reason` string can be provided to update the appointment's notes.
-
 ### Handler Logic
 
-The full handler code is not provided. The `TOOL_DEFINITIONS` in `mcp-server/src/tools.ts` describes the handler's behavior: "Updates appointment status. Caller must provide `professionalId` to verify ownership — the appointment's `professionalId` must match, otherwise the update is rejected. Idempotent: if the appointment already has the target status, no write is performed. If `reason` is provided, it overwrites the appointment's `notes` column."
+The `updateAppointmentStatus` function:
+1. Parses input using `UpdateAppointmentStatusInput.parse()`.
+2. Loads the existing appointment by `appointmentId`.
+3. Returns `{ success: false, error: "Appointment not found" }` if missing.
+4. Checks that `existing.professionalId === professionalId`, returning an unauthorized error if not.
+5. If the current `status` matches the target `status`, returns `{ success: true, noChange: true }` (idempotent).
+6. Otherwise, performs an `UPDATE` on `appointments`, setting `status` and optionally `notes` if `reason` is provided.
+7. Uses `.returning()` to get the updated row and maps it via `serializeAppointment`.
+8. Handles errors via `try/catch`, returning a database error message on failure.
 
 ## Known Gaps
 
-The `get_customer_by_phone` tool currently relies on `normalizeBrazilianPhone` and `getPhoneVariants` in `mcp-server/src/phone.ts` to query for both E.164 and 11-digit phone number formats. This is a pragmatic workaround for the fact that the application's database stores 11-digit phones while the MCP and intake agents prefer E.164. The long-term solution, involving a shared `src/lib/phone.ts` utility and a database migration to standardize phone number storage, is tracked separately.
+The `get_customer_by_phone` tool queries both E.164 and 11-digit phone number formats using `getPhoneVariants` in `mcp-server/src/phone.ts`. This is a workaround for inconsistent phone number storage (11-digit) versus preferred format (E.164). The long-term fix requires a database migration and shared phone utility, but this is not implemented in the current code.
 
 ## Why this shape
 
-The MCP server and its tools are designed to provide a clean, JSON-RPC over stdio interface for AI agents. This abstraction allows agents, such as Claude Code sessions or the in-product assistant, to query and mutate Odys data without needing direct database access or understanding the underlying Drizzle ORM schema. By encapsulating business logic and ownership checks within the tool handlers, the system ensures that agents operate within defined boundaries and do not require sensitive credentials like `DATABASE_URL`.
+The four tools are designed to expose safe, well-scoped operations to AI agents via MCP's JSON-RPC over stdio interface. Each tool encapsulates input validation, business logic, ownership checks (e.g., `professionalId` matching), and error handling, ensuring agents operate within defined boundaries without direct database access. The use of Zod schemas, Drizzle ORM, and structured responses enables reliable integration while isolating complexity within the MCP server.

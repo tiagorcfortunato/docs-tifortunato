@@ -4,19 +4,39 @@ description: "Backend overview: API route tree, shared helpers, auth pattern"
 ---
 # Backend Overview
 
-This page covers the backend overview, including the API route tree, shared helpers, and auth pattern.
+This page provides an overview of the backend architecture, focusing on the API route tree, shared helper functions, and the authentication pattern.
 
 ## API Route Tree
-The API route tree is structured around the App Router, with no `pages/` directory. Auth pages live in the `(auth)` route group, which shares the same URL space but has its own layout and no `/auth` prefix. The dashboard and client portal each have their own layouts with server-side auth guards. The public booking page (`/p/[slug]`) is an async Server Component that performs DB reads server-side before handing off to `BookingWidget` for interactivity.
+
+The API route tree is structured exclusively around the App Router, with no `pages/` directory. Authentication-related pages reside within the `(auth)` route group, which shares the same URL space but utilizes its own layout and does not introduce a `/auth` prefix in the URL. Both the dashboard and client portal feature their own layouts, each protected by server-side authentication guards. The public booking page (`/p/[slug]`) is implemented as an async Server Component that performs its database reads server-side before rendering and handing off interactivity to the `BookingWidget` client component.
+
+There is no centralized `middleware.ts` for authentication. Instead, every route that requires authentication explicitly calls `supabase.auth.getUser()` itself via the `getUser()` and `getProfessional(userId)` helpers in `src/lib/api.ts`.
 
 ## Shared Helpers
-Shared helpers for API routes are defined in `src/lib/api.ts`. These helpers include response helpers (e.g., `ok`, `unauthorized`, `forbidden`), auth helpers (e.g., `getUser`, `getProfessional`), and utility helpers (e.g., `getIp` for rate limiting). Every route uses these building blocks to standardize JSON responses, authenticate users, and extract client IPs.
+
+Shared helpers for API routes are defined in `src/lib/api.ts`. These helpers standardize JSON responses, authenticate users, and extract client IPs.
+
+The `src/lib/api.ts` module provides:
+
+*   **Response helpers**: Functions such as `ok`, `unauthorized`, `forbidden`, `notFound`, `badRequest`, `conflict`, `tooManyRequests`, and `serverError` return standardized JSON responses with appropriate HTTP status codes. The `serverError` helper logs the error server-side and returns a generic 500, preventing internal details from being exposed to the client.
+*   **Auth helpers**:
+    *   `getUser()` retrieves the authenticated Supabase user by calling `supabase.auth.getUser()` via `createClient()` from `src/lib/supabase/server`.
+    *   `getProfessional(userId)` fetches the corresponding professional record from the `professionals` table in `src/lib/db/schema` using `db` from `src/lib/db`.
+*   **Utility helpers**: `getIp(req)` extracts the client IP from the `x-forwarded-for` request header, primarily for rate limiting purposes.
 
 ## Auth Pattern
-The auth pattern relies on Supabase for end-to-end authentication. `src/lib/supabase/server.ts` wraps the Supabase server client with a Next-cookie adapter, while `src/lib/supabase/client.ts` handles browser-side sign-out and signup. The register route uses the anon client in production to send verification emails. Smart-linking is gated inside `/auth/callback` to ensure it only runs after verifying the user's inbox.
+
+The authentication pattern relies on Supabase for end-to-end authentication.
+
+*   `src/lib/supabase/server.ts` wraps the Supabase server client using `createServerClient` and a Next.js cookie adapter (leveraging `cookies()` from `next/headers`). The `try/catch` block around `setAll` handles the known "RSC cannot write cookies" error as per the Supabase SSR pattern.
+*   A browser-side equivalent client is used for operations like sign-out and signup.
+*   The register route utilizes the anonymous Supabase client in production to trigger verification emails.
+*   Smart-linking (backfilling `clients.userId` by email) is gated within `/auth/callback` to ensure it executes only after `exchangeCodeForSession` has successfully verified the user's inbox.
 
 ## Known Gaps
-One known gap in the current implementation is the lack of a centralized middleware for authentication. Instead, every route that requires authentication must call `supabase.auth.getUser()` itself via `getUser()` and `getProfessional(userId)` in `src/lib/api.ts`. This approach is explicit but puts the burden on every new route author, and the security audit flags this as a potential issue.
+
+A notable design choice is the absence of a centralized middleware for authentication. Instead, every route that requires authentication must explicitly call `supabase.auth.getUser()` itself via the `getUser()` and `getProfessional(userId)` helpers in `src/lib/api.ts`. While this approach is explicit, it places the burden of authentication on each new route author and has been flagged by a security audit as a potential area for improvement.
 
 ## Why This Shape
-The backend is structured around the App Router to take advantage of its server-side rendering and authentication capabilities. The shared helpers in `src/lib/api.ts` provide a standardized way of handling responses, authentication, and utility functions across all routes. The auth pattern relies on Supabase to handle end-to-end authentication, with a focus on verifying user inboxes and smart-linking. This shape allows for a flexible and scalable backend architecture that can adapt to changing requirements.
+
+The backend is structured around the App Router to leverage its server-side rendering and authentication capabilities effectively. The shared helpers in `src/lib/api.ts` provide a standardized and consistent way of handling API responses, authentication, and common utility functions across all routes. The authentication pattern relies on Supabase to manage end-to-end authentication, with a strong focus on verifying user inboxes and enabling smart-linking. This architectural shape aims for a flexible and scalable backend that can adapt to evolving requirements.

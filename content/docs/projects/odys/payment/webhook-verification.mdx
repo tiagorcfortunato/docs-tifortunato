@@ -45,7 +45,7 @@ Upon successful verification, the webhook handler proceeds to dispatch the event
 
 This event signifies the successful completion of a Stripe Checkout Session, typically indicating a new subscription activation. The handler extracts `professionalId` and `plan` from the `session.metadata` attached during the checkout session creation. These metadata fields are crucial for directly linking the Stripe event to an existing professional in the Odys database without requiring an additional lookup by Stripe customer ID.
 
-The `professionals` table in `src/lib/db/schema.ts` is then updated to reflect the new `plan`, `stripeCustomerId`, and `stripeSubscriptionId` for the corresponding professional.
+The `professionals` table, defined in `src/lib/db/schema.ts`, is then updated to reflect the new `plan`, `stripeCustomerId`, and `stripeSubscriptionId` for the corresponding professional.
 
 ```typescript
 // ... inside POST(req)
@@ -66,7 +66,7 @@ if (event.type === "checkout.session.completed") {
 
 ### `customer.subscription.updated`
 
-This event is triggered when a customer's subscription changes, for example, an upgrade or downgrade initiated via the Stripe customer portal. The handler checks if the subscription `status` is `"active"`. It then identifies the new `plan` by matching the `price.id` from the subscription items against the `PLANS` defined in `src/lib/stripe.ts`.
+This event is triggered when a customer's subscription changes, for example, an upgrade or downgrade initiated via the Stripe customer portal. The handler checks if the subscription `status` is `"active"`. It then identifies the new `plan` by matching the `price.id` from the subscription items against the `PLANS` object imported from `src/lib/stripe.ts`.
 
 If a matching plan is found, the `professionals` table is updated to reflect the new `plan` for the professional associated with the `stripeSubscriptionId`.
 

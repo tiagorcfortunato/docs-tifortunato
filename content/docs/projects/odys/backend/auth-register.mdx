@@ -1,25 +1,44 @@
 ---
-title: "Auth + Register Endpoints, Smart-Linking, C1 Fix"
+title: "Auth & Register Endpoints"
 description: "Auth + register endpoints, smart-linking, C1 fix"
 ---
 
-# Auth + Register Endpoints, Smart-Linking, C1 Fix
-This page covers the authentication and registration endpoints, including smart-linking and the C1 fix. It explains how the `POST /auth/register` and `GET /auth/callback` endpoints work, including the rate limiting and user creation logic.
+# Auth & Register Endpoints
+
+This page covers the implementation and behavior of the authentication and registration endpoints, specifically `POST /auth/register` and `GET /auth/callback`. It details rate limiting, user creation strategies across environments, session handling, user metadata updates, and the smart-linking mechanism that connects verified users to pre-existing client records.
 
 ## Register Endpoint
-The `POST /auth/register` endpoint is defined in `src/app/api/auth/register/route.ts`. It handles user registration, including rate limiting and user creation. The endpoint expects the `email`, `password`, `name`, and `type` fields in the request body. If the request is successful, it returns a JSON response with the `success` and `type` fields.
 
-The rate limiting is implemented using the `getRegisterLimiter` function from `src/lib/ratelimit.ts`, which limits the number of registration attempts from a single IP address. If the rate limit is exceeded, the endpoint returns a `429` error response.
+The `POST /auth/register` endpoint, defined in `src/app/api/auth/register/route.ts`, handles new user registrations. It expects `email`, `password`, `name`, and `type` in the request body.
+
+Rate limiting is enforced using `getRegisterLimiter()` from `src/lib/ratelimit.ts`. The client's IP is extracted via `getIp(req)` and checked against the rate limit. If exceeded, a `429` status is returned with the message `"Muitas tentativas de registro. Aguarde um momento."`.
+
+User creation differs by environment:
+- In `production`, `supabase.auth.signUp()` is used with the anon key. This triggers Supabase’s email verification flow. The response’s `data.session` determines whether `requiresEmailConfirmation` is set to `true` (if no session is returned).
+- In `development`, the service role `adminClient.auth.admin.createUser()` is used with `email_confirm: true`. This creates a confirmed user directly, bypassing email verification for faster iteration.
+
+The endpoint returns `{ success: true, type, requiresEmailConfirmation }` on success. Errors during registration return a `400` status with the Supabase error message.
 
 ## Callback Endpoint
-The `GET /auth/callback` endpoint is defined in `src/app/auth/callback/route.ts`. It handles the callback from the authentication provider, including exchanging the authorization code for a session and updating the user metadata. The endpoint expects the `code` and `type` query parameters.
 
-If the `type` parameter is set to `"recovery"`, the endpoint redirects the user to the password reset page. If the `type` parameter is set to `"professional"` or `"client"`, the endpoint updates the user metadata with the corresponding type.
+The `GET /auth/callback` endpoint, located in `src/app/auth/callback/route.ts`, handles post-authentication redirects from Supabase, such as after email verification or password recovery.
 
-The endpoint also implements smart-linking, which links the user to existing clients with the same email address. This is done by updating the `userId` field in the `clients` table using the `db.update` function from `src/lib/db/schema.ts`.
+The `origin` is constructed using `x-forwarded-host` and `x-forwarded-proto` headers to support correct redirection in proxy environments like Vercel.
+
+Key behaviors:
+- **Session Exchange**: The `code` query parameter is exchanged for a session via `supabase.auth.exchangeCodeForSession(code)`.
+- **Password Recovery**: If `type=recovery`, the user is redirected to `/reset-password`.
+- **User Metadata Update**: If `type` is `"professional"` or `"client"`, `supabase.auth.updateUser({ data: { type } })` sets the user type in metadata.
+- **Smart-linking**: After successful session exchange and only if `type="client"`, the endpoint performs a database update. It links the authenticated `user.id` to any `clients` records with a matching `email` and `null` `userId`, using `db.update(clients).set({ userId: user.id })` with a condition on `isNull(clients.userId)` and `eq(clients.email, user.email)`.
+
+On success, the user is redirected to `/auth/redirect`. If the session exchange fails, they are redirected to `/login?error=auth`.
 
 ## Known Gaps
-One known gap in the current implementation is that the `admin.createUser` method is used in development mode to create users with email confirmation, but this method does not send a confirmation email. This means that users created in development mode will not receive a confirmation email, which could lead to issues if the user tries to log in before confirming their email address.
+
+In `src/app/api/auth/register/route.ts`, the use of `adminClient.auth.admin.createUser()` in development with `email_confirm: true` bypasses email verification for faster testing. However, this method does not trigger actual email delivery even when `email_confirm` is `false`. As a result, the development environment does not replicate the production email verification flow, including email sending and user interaction with confirmation links.
 
 ## Why This Shape
-The authentication and registration endpoints are designed to work together to provide a seamless user experience. The `POST /auth/register` endpoint handles user registration, while the `GET /auth/callback` endpoint handles the callback from the authentication provider. The smart-linking feature is implemented in the `GET /auth/callback` endpoint to link users to existing clients with the same email address. This design allows for a flexible and scalable authentication system that can be easily extended to support additional authentication providers and features.
+
+The separation of registration and callback logic allows focused handling of user creation versus post-authentication actions. The register endpoint is optimized for input validation and environment-specific user provisioning, while the callback endpoint acts as a centralized handler for authentication completion.
+
+Smart-linking is placed in `GET /auth/callback` because it depends on email verification being completed by Supabase. This ensures that the `user.email` is trusted before linking to existing `clients` records, maintaining data integrity. The design supports both immediate user linking and deferred identity resolution, enabling a smooth onboarding flow for users who interact with the system before creating an account.

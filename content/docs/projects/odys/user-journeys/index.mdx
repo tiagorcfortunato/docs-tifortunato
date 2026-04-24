@@ -1,38 +1,52 @@
 ---
-title: User Journeys
-description: The three flows that define Odys — sign-up & onboarding, customer booking, payments.
+title: "User Journeys"
+description: "The three flows that define Odys — sign-up, booking, payment."
 ---
 
 # User Journeys
 
-Three flows, from different sides of the product, together define the full Odys experience. Each page in this section walks one flow end-to-end — not marketing flavor, but the actual route names, database writes, and edge cases as they're coded.
+This page outlines the three core user journeys in Odys: professional sign-up & onboarding, customer booking, and payment processing. Each journey spans multiple systems and validation layers, and is implemented with idempotency, rate limiting, and non-blocking side effects.
 
 ## The three flows
 
 ### 1. [Professional Sign-Up & Onboarding](./sign-up-onboarding)
 
-From `odys.com.br/register` to having a live `/p/[slug]` booking page. Two phases: lightweight account creation with email verification, then a multi-step wizard that captures profession, availability, session duration, and price. Zod-validated body, reserved-slug blocklist, idempotent handler.
+Begins at `odys.com.br/register` and ends with a live public booking page at `/p/[slug]`. The flow is split into two phases:  
+- **Account creation**: email-based registration with verification link  
+- **Onboarding wizard**: collects profession, availability, session duration, and pricing  
+
+The endpoint handles slug reservation with a blocklist, uses Zod for request validation, and ensures idempotency on retries. Auth state is managed via Supabase.
 
 ### 2. [Customer Booking Flow](./booking-flow)
 
-From landing on a professional's public page to a confirmed appointment. Client-side slot computation for UX speed, server-side overlap check for correctness, Zod validation on submission, plan-limit enforcement, non-blocking WhatsApp + email notifications. Includes honest flags on the non-transactional overlap window and cross-timezone assumptions.
+Starts when a client visits a professional’s `/p/[slug]` page and ends with a confirmed appointment. Key characteristics:  
+- **Client-side slot rendering** for fast UX  
+- **Server-side overlap check** to prevent double-booking  
+- **Zod validation** on all submission data  
+- **Plan-based limits** enforced (e.g. max monthly bookings)  
+- **Non-blocking notifications** via WhatsApp and email  
+
+The flow assumes timezone handling is client-responsible and does not use atomic locking during slot reservation, leaving a small window for race conditions [verify].
 
 ### 3. [Payment Flow](./payment-flow)
 
-Two separate payment paths: **PIX** for client-to-professional session payments (off-Stripe, Brazilian-native, zero fees), and **Stripe Checkout** for professional-to-Odys subscription billing (hosted, out of PCI scope). The split is intentional — both regulatory (avoids BACEN payment-facilitator status) and economic (PIX is free, Stripe fees on R$80-200 service payments would eat ~4-5%).
+Two distinct payment paths:  
+- **PIX** for client-to-professional session payments: uses static EMV BR Code linked to the professional’s PIX key. Settlement is peer-to-peer, zero-fee, and confirmed manually by the professional post-deposit.  
+- **Stripe Checkout** for professional-to-Odys subscription billing: hosted session, out of PCI scope.  
 
-PIX uses a direct static QR code (EMV BR Code pointing to the professional's own PIX key) — zero fees and peer-to-peer settlement, with manual confirmation by the professional after the deposit clears in their bank account.
+This split avoids BACEN payment-facilitator classification and keeps transaction costs near zero for session payments.
 
 ## Why these three
 
-Every SaaS has signup, core action, and payment. In Odys, the **core action** is a booking — which touches three actors (professional, client, Odys platform) — and **payment splits** into session money (client → professional, via PIX) and platform money (professional → Odys, via Stripe). Understanding these three flows is enough to read ~80% of the codebase.
+These flows represent the critical path of Odys: acquiring professionals (sign-up), enabling core functionality (booking), and sustaining the business (payment). Together, they touch the majority of the codebase and involve all key actors — professional, client, and platform.
 
 ## What they have in common
 
-- **Zod validation at the boundary** — every POST body is validated before any business logic runs
-- **Rate limiting by IP** — via Upstash Ratelimit sliding windows on all mutation endpoints
-- **Supabase auth gating** — every authenticated action checks `supabase.auth.getUser()`
-- **Non-blocking side effects** — WhatsApp and email are always fire-and-forget, never load-bearing for the response
-- **Idempotent handlers** — double-submit produces no duplicate state
+All three flows share these implementation patterns:  
+- **Zod validation at the boundary** — every POST request body is validated before processing  
+- **Rate limiting by IP** — enforced via Upstash Ratelimit sliding windows on mutation endpoints  
+- **Supabase auth checks** — `supabase.auth.getUser()` is called for authenticated actions  
+- **Non-blocking side effects** — notifications are fire-and-forget, never blocking HTTP response  
+- **Idempotent handlers** — safe to retry without duplicating state  
 
-These cross-cutting concerns are documented in [Backend](../backend) rather than repeated in each flow.
+These cross-cutting concerns are detailed in the [Backend](../backend) section and not duplicated per flow.

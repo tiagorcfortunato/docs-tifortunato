@@ -1,51 +1,51 @@
 ---
-title: Major Tech Decisions Overview
-description: Overview of major tech decisions
+title: "Major Tech Decisions"
+description: "Overview of major tech decisions"
 ---
 
-# Major Tech Decisions Overview
+# Major Tech Decisions
 
-This page provides an overview of the core technology choices made for the Odys platform, detailing the rationale and key trade-offs for each.
+This page outlines the foundational technology choices in the Odys platform, based on explicit dependencies and tooling in the codebase. Each decision is grounded in developer experience, cost efficiency, and alignment with product requirements.
 
 ## Next.js App Router
 
-The platform leverages Next.js 16's App Router for its integrated approach to server-side pages and API routes, eliminating the need for a separate backend project. This architecture, visible through the `next` dependency in `package.json`, enables trivial server-rendering of complex pages, such as the booking interface, by allowing direct `await db.select()` calls within React Server Components. This approach is preferred over the Pages Router or alternative frameworks like Remix due to its first-class Vercel support and robust ecosystem integrations like Sentry.
+The platform uses Next.js 16.2.1, as specified in `package.json`, leveraging the App Router for unified server-side rendering and API routes. This enables direct database access within React Server Components, reducing the need for a separate backend. The version `next: "16.2.1"` indicates a recent release, suggesting a preference for cutting-edge features despite potential ecosystem immaturity.
 
 ## Drizzle ORM
 
-Drizzle is chosen over Prisma for database interactions, as evidenced by `drizzle-kit` and `drizzle-orm` in `package.json`. Its primary advantage is fully typed queries in TypeScript, which immediately surfaces type errors upon schema changes. Drizzle's SQL-adjacent nature simplifies debugging, and its lean runtime avoids the build steps and cache-invalidation complexities associated with Prisma's generated client, particularly in a serverless environment. The `package.json` scripts `db:generate`, `db:migrate`, and `db:studio` highlight Drizzle's role in schema management.
+Database interactions are managed via Drizzle ORM (`drizzle-orm`) and Drizzle Kit (`drizzle-kit`), both listed in `package.json`. The presence of `db:generate`, `db:migrate`, and `db:studio` scripts confirms Drizzle's role in schema generation, migration, and local development. Drizzle is favored for its fully typed queries in TypeScript and lightweight runtime, avoiding the build-step complexity of alternatives like Prisma.
 
 ## Supabase
 
-Supabase provides a managed Postgres database alongside integrated authentication and storage solutions, using `@supabase/ssr` and `@supabase/supabase-js` from `package.json`. This choice offers significant value through features like HttpOnly cookies, email verification, password reset flows, and OAuth, all managed out-of-the-box. This integrated approach is preferred over self-hosting Postgres or using database-only services like Neon, which lack built-in auth.
+Supabase is integrated through `@supabase/supabase-js` and `@supabase/ssr`, enabling managed Postgres, authentication, and server-side session handling. This choice provides out-of-the-box support for HttpOnly cookies, email verification, and OAuth, reducing operational overhead compared to self-hosted or database-only solutions.
 
 ## Stripe
 
-Stripe is the chosen payment processor, indicated by `@stripe/stripe-js` and `stripe` in `package.json`. Its strong developer experience, high-conversion hosted checkout flows, and robust webhook/metadata patterns are key factors. Stripe is used for platform subscriptions, despite local processors in Brazil offering native PIX and boleto with lower fees.
+Payment processing relies on Stripe, with both `stripe` and `@stripe/stripe-js` in `package.json`. This supports platform subscriptions using Stripe’s hosted checkout and webhook patterns. Notably, Stripe does not support recurring PIX payments natively, which impacts how client-to-professional transactions are handled.
 
 ## Sentry + PostHog
 
-For observability and product analytics, Sentry and PostHog are integrated, as seen with `@sentry/nextjs` and `posthog-js` in `package.json`. Sentry provides best-in-class error tracking, while PostHog offers comprehensive product analytics, session replay, and feature flagging capabilities. Both services offer generous free tiers, making them suitable for a pre-launch application, and represent a common choice within the Next.js community.
+Observability and product analytics are implemented via `@sentry/nextjs` for error tracking and `posthog-js` for session replay, feature flags, and user behavior analysis. Both tools offer strong developer experience and generous free tiers, making them suitable for a pre-launch application.
 
 ## Tailwind v4 + shadcn/ui
 
-The UI stack combines Tailwind CSS v4 with shadcn/ui. Tailwind v4, referenced by `tailwindcss` and `@tailwindcss/postcss` in `package.json`, is optimized for React Server Components by avoiding runtime CSS-in-JS. shadcn/ui, indicated by `shadcn` and related dependencies like `class-variance-authority` and `tailwind-merge`, provides a component library where components are copied directly into `src/components/ui/`, granting full ownership and customization without dependency lock-in.
+The UI stack uses Tailwind CSS v4 (`tailwindcss`, `@tailwindcss/postcss`) optimized for React Server Components, avoiding runtime CSS-in-JS overhead. Components are built using `shadcn`, with utilities like `class-variance-authority` and `tailwind-merge`, indicating that UI elements are copied into the codebase (e.g., `src/components/ui/`) for full control and customization.
 
 ## Evolution API (Self-hosted WhatsApp)
 
-The platform utilizes a self-hosted Evolution API for WhatsApp communication, a core differentiator for Odys. This approach allows messages to be sent from the professional's actual phone number, bypassing Meta's official WhatsApp Business API (WABA) costs per message, template approval processes, and branded bot appearance. The `/api/cron/whatsapp-watchdog` endpoint is implemented to monitor the health of this connection.
+The platform uses a self-hosted WhatsApp solution via an external Evolution API, allowing messages to originate from a professional’s personal phone number. This avoids Meta’s WhatsApp Business API (WABA) costs and template restrictions but introduces reliability risks tied to device state (e.g., storage, app updates).
 
 ## Groq (Llama 3.3)
 
-Groq, with its `groq-sdk` dependency in `package.json`, powers the AI assistant and WhatsApp intake agent using the Llama 3.3 model. This choice is driven by its significantly lower cost (10–20x cheaper than GPT-4-class models) and substantially faster inference speeds, which are critical for sequential tool calls.
+AI capabilities, including the assistant and WhatsApp intake agent, are powered by Groq via the `groq-sdk` dependency. The Llama 3.3 model is selected for its low cost (10–20x cheaper than GPT-4-class models) and fast inference speed, critical for sequential tool execution. Trade-offs include weaker instruction-following, mitigated by constrained tool scope.
 
 ## Known Gaps
 
-*   **Next.js 16**: The adoption of Next.js 16, a relatively recent release, carries a bleeding-edge risk compared to more mature versions.
-*   **Stripe**: While offering a superior developer experience, Stripe does not natively support recurring PIX payments, necessitating a hybrid approach for client-to-professional transactions.
-*   **Evolution API**: The self-hosted WhatsApp solution, while providing unique value, has reliability challenges. Disconnections can occur if the linked phone runs out of storage or WhatsApp updates, requiring active monitoring via the `/api/cron/whatsapp-watchdog` cron job.
-*   **Groq (Llama 3.3)**: The chosen Llama 3.3 model, while cost-effective and fast, is generally weaker on instruction-following compared to higher-tier models. This is mitigated by the narrow scope of the AI's tools (e.g., availability lookup, revenue roll-up).
+- **Next.js 16.2.1**: The use of a recent Next.js version (`next: "16.2.1"`) introduces potential instability due to limited ecosystem maturity and possible breaking changes in early releases.
+- **Stripe**: Lack of native recurring PIX support in Stripe necessitates a hybrid payment flow, increasing complexity for client-to-professional transactions.
+- **Evolution API**: Self-hosted WhatsApp integration is prone to disconnections if the linked device runs out of storage or undergoes app updates, requiring active monitoring (e.g., via a watchdog mechanism).
+- **Groq (Llama 3.3)**: While cost-effective and fast, the Llama 3.3 model exhibits weaker instruction-following compared to higher-tier models, requiring tight scoping of AI tool usage.
 
 ## Why this shape
 
-The technology stack prioritizes developer experience, cost-efficiency for a pre-launch product, and leveraging server-side rendering capabilities. Choices like Next.js App Router, Drizzle, and Supabase aim to minimize operational overhead and maximize development velocity. Specialized components like Evolution API and Groq are integrated to deliver core product differentiators, accepting specific trade-offs for unique functionality.
+The stack emphasizes developer velocity, cost control, and product differentiation. Next.js App Router and Drizzle reduce boilerplate and operational load. Supabase and Stripe provide battle-tested infrastructure for auth and payments. Specialized tools like Evolution API and Groq enable unique features—personalized WhatsApp messaging and low-latency AI—at acceptable reliability and quality trade-offs.
