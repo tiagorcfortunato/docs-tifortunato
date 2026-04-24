@@ -1,40 +1,71 @@
 ---
-title: "WhatsApp Message Templates"
-description: "Overview of the 19 message template functions and their formatting strategy in Odys"
+title: WhatsApp Message Templates
+description: The ~19 msg* template functions, formatting strategy
 ---
 
 # WhatsApp Message Templates
 
-Odys leverages WhatsApp as a core communication channel between professionals and clients, automating transactional notifications while preserving conversational context. This system ensures timely, consistent messaging for bookings, reminders, payments, and follow-ups — all while maintaining brand identity and routing context through a shared WhatsApp number.
+The `src/lib/whatsapp.ts` file serves as the central hub for all WhatsApp communication originating from the Odys application. It encapsulates the integration with the Evolution API, handles phone number normalization, and, crucially, defines a comprehensive set of pre-formatted message templates. This centralization ensures consistency in messaging, simplifies maintenance, and provides a single source of truth for how Odys communicates with its users via WhatsApp.
 
 ## Overview
 
-The messaging layer is built around **19 template functions** defined in `src/lib/whatsapp.ts`, each generating a structured WhatsApp message for a specific event in the appointment lifecycle. These templates serve both clients and professionals, with distinct formatting strategies: client-facing messages use a branded header and footer for visual consistency, while internal notifications to professionals are concise and action-oriented. All messages are sent via the Evolution API, abstracted behind a unified `sendWhatsApp` function that handles normalization, delivery, and Redis-based context tracking for inbound replies.
+At its core, `src/lib/whatsapp.ts` manages the interaction with the Evolution API, a third-party service responsible for sending WhatsApp messages. The file is structured to provide both the underlying sending mechanism and a rich library of application-specific message content.
 
-## Template Structure and Formatting Strategy
+The module exports a total of `19` distinct message template functions, each designed for a specific transactional or notification purpose within the Odys ecosystem. These templates cover a wide range of interactions, including:
 
-Client messages follow a strict visual hierarchy using divider lines (`━━━━━━━━━━━━━━━━━`), emoji prefixes, and bold labels to distinguish automated notifications from free-form chat. This is critical because Odys uses the same WhatsApp number for both AI conversations and system alerts. The `transactionalHeader` utility ensures every client notification begins with a professional-specific banner, followed by personalized content and ends with the `TRANSACTIONAL_FOOTER` linking back to Odys.
+*   **Booking Management**: `msgBookingRequest`, `msgBookingConfirmed`, `msgBookingRejected`, `msgBookingCancelled`
+*   **Reminders**: `msgReminder24h`, `msgReminder1h`
+*   **Cancellation Notifications**: `msgCancelledByClientToPro`, `msgCancelledByProToClient`
+*   **Receipts for Professionals**: `msgBookingConfirmedReceipt`, `msgBookingRejectedReceipt`, `msgPaymentConfirmedToPro`, `msgAppointmentCompletedToPro`, `msgNoShowToPro`, `msgNewMessageToPro`
+*   **Client-facing Notifications**: `msgPaymentConfirmedToClient`, `msgAppointmentCompletedToClient`, `msgNoShowToClient`, `msgNewMessageToClient`
+*   **Registration Invitation**: `msgRegistrationInvite`
 
-In contrast, messages to professionals (e.g., `msgBookingConfirmedReceipt`, `msgNewMessageToPro`) are plain and direct, optimized for quick scanning in a dashboard-like flow. They omit decorative elements but retain key details like client name, date, and time using bold formatting for scannability.
+Beyond the templates, the file also provides essential utility functions like `normalizeBrazilianPhone` for standardizing phone numbers and `sendWhatsApp` which orchestrates the actual API call, including a mechanism for routing subsequent client replies back to the correct professional or appointment context.
 
-All templates accept typed parameters (e.g., `professionalName`, `clientName`, `date`, `time`) and avoid hardcoded strings, enabling safe reuse across workflows. URLs are constructed using `APP_URL` and dynamic slugs (like `opts.slug` in `msgCancelledByProToClient`), ensuring correct deep linking.
+## WhatsApp API Integration
 
-## Design decisions
+The `sendWhatsApp` function is the primary interface for dispatching messages. It relies on environment variables (`EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE`) to configure its connection to the Evolution API. Before attempting any send operation, an `isConfigured` check ensures that these critical environment variables are present, preventing messages from being sent if the API is not properly set up.
 
-The separation between client and professional messaging reflects a deliberate UX split: clients receive polished, reassuring notifications that reinforce trust, while professionals get lean, actionable updates. The use of Redis context via `setOutboundContext` ties outbound messages to specific appointments, enabling reply routing without requiring a dedicated number per professional — a cost and complexity saver.
+A key preprocessing step before sending any message is the normalization of the recipient's phone number. The `normalizeBrazilianPhone` function takes a phone number in various formats and converts it into a standardized international format without the leading `+`. For Brazilian numbers, it prepends `55` if the country code is missing. This ensures that the Evolution API receives numbers in a consistent and expected format, regardless of how they were initially captured in the application.
 
-Template functions are pure and synchronous, making them easy to test and compose. For example, `msgRegistrationInvite` can be appended to other messages conditionally, allowing onboarding nudges to be injected into confirmation flows dynamically.
+The `sendWhatsApp` function also includes a crucial `context` parameter. When provided, this context—containing `professionalId` and optionally `appointmentId`—is stored using `setOutboundContext` upon successful message delivery. This mechanism is vital for Odys's conversational routing: if a client replies to a transactional message within a certain timeframe, the incoming webhook can use this stored context to automatically route the reply to the relevant professional or appointment, ensuring continuity in the conversation. This is particularly important for client-facing transactional messages like reminders and confirmations.
 
-## Potential improvements
+Error handling within `sendWhatsApp` is designed for resilience. Instead of throwing exceptions, it logs errors to the console and returns a `boolean` indicating success or failure. This allows calling code to react gracefully to API failures without crashing the application flow.
 
-1. **Centralize footer/header logic** — The `transactionalHeader` and `TRANSACTIONAL_FOOTER` are used across multiple templates in `src/lib/whatsapp.ts`. These could be extracted into a dedicated formatting module to avoid duplication and enable consistent updates.
+## Visual Templating Strategy
 
-2. **Add i18n support** — All message strings in `src/lib/whatsapp.ts` (e.g., `Olá`, `Data`, `Horário`) are hardcoded in Portuguese. Introducing a minimal translation layer would allow future multilingual support without rewriting templates.
+A notable design choice within `src/lib/whatsapp.ts` is the implementation of a visual templating strategy for client-facing transactional messages. This is achieved through the `transactionalHeader` function and the `TRANSACTIONAL_FOOTER` constant.
 
-3. **Validate template inputs** — Functions like `msgReminder24h` assume `date` and `time` are pre-formatted strings. Adding runtime validation or using structured `Date` objects with formatting inside the template would reduce the risk of inconsistent or malformed output.
+The `HEADER_RULE` constant, a repeating string of "━━━━━━━━━━━━━━━━━", is used to create a distinct visual separator. The `transactionalHeader` function combines an emoji, a label (e.g., "Consulta confirmada"), and the professional's name, all framed by these rule lines. Similarly, the `TRANSACTIONAL_FOOTER` adds a consistent branding message, "_Odys · agenda inteligente · odys.com.br_", also often preceded by rule lines.
+
+This visual framing serves a critical purpose: it clearly distinguishes automated, system-generated notifications from more conversational, AI-driven replies within the same WhatsApp chat thread. By giving automated messages a consistent, structured appearance, users can quickly discern the nature of the communication, which is essential for maintaining clarity and trust when a single Odys WhatsApp number handles multiple communication channels.
+
+## Message Templates
+
+The `19` `msg*` functions are responsible for generating the actual message strings. Each function takes an `opts` object with specific parameters relevant to the message's content, such as `professionalName`, `clientName`, `date`, and `time`. These functions then interpolate these options into predefined string literals, often incorporating the `transactionalHeader` and `TRANSACTIONAL_FOOTER` for client-facing messages.
+
+For example, `msgBookingConfirmed` constructs a message that includes a confirmation emoji, the professional's name in the header, and details about the appointment, concluding with the standard Odys footer. In contrast, `msgBookingRequest` is a simpler message directed to the professional, outlining a new booking request without the full transactional header/footer.
+
+The `msgRegistrationInvite` function is a unique template designed to be appended to other messages. It dynamically generates a registration link, pre-filling parameters like `email`, `phone`, and `name` to streamline the user onboarding process.
+
+## Design Decisions
+
+The architecture of `src/lib/whatsapp.ts` reflects several deliberate design choices aimed at maintainability, user experience, and operational robustness:
+
+*   **Centralized Message Definitions**: By consolidating all `19` message templates within a single file, the codebase achieves a "single source of truth" for WhatsApp communications. This prevents message variations across different parts of the application, simplifies updates to messaging content, and makes it easier for developers to understand the full scope of outbound WhatsApp interactions.
+*   **Function-based Templates**: Rather than using simple string constants, each message is encapsulated in a dedicated function. This allows for dynamic content generation, where specific details (like client names, dates, and times) can be injected as parameters. This approach leverages TypeScript's type safety, ensuring that all required data for a message is explicitly passed, reducing the likelihood of incomplete or malformed messages.
+*   **Distinct Visual Cues**: The use of `HEADER_RULE`, `transactionalHeader`, and `TRANSACTIONAL_FOOTER` is a conscious decision to enhance the user experience. In environments where a single WhatsApp number might handle both automated notifications and interactive AI conversations, clear visual demarcation helps users quickly categorize messages, reducing confusion and improving the perceived professionalism of the communication.
+*   **Resilient `sendWhatsApp`**: The choice for `sendWhatsApp` to return a `boolean` and log errors internally, rather than throwing exceptions, prioritizes graceful degradation. This design allows the application to continue operating even if the WhatsApp API is temporarily unavailable, preventing critical user flows from being interrupted by external service issues.
+*   **Contextual Reply Routing**: The `context` parameter in `sendWhatsApp` and its integration with `setOutboundContext` is a forward-thinking design. It addresses the challenge of routing asynchronous replies in a stateless communication channel like WhatsApp, ensuring that user responses can be intelligently directed back to the relevant professional or appointment without requiring complex, real-time session management.
+
+## Potential Improvements
+
+While the current implementation is effective, several areas could be enhanced to improve flexibility, maintainability, and user experience:
+
+1.  **Internationalization (i18n) Support**: All `19` message templates currently hardcode strings in Portuguese. For an application with potential global aspirations, integrating an i18n framework would be crucial. This would involve extracting all message strings into locale-specific resource files and updating the template functions to retrieve messages based on the user's preferred language. This change would primarily affect the string literals within functions like `msgBookingConfirmed` and `msgReminder24h`.
+2.  **Template Abstraction and Composition**: Many client-facing templates share a common structure (header, main content, footer). The current approach involves repeating the `transactionalHeader(...)` and `TRANSACTIONAL_FOOTER` calls in each function. A higher-order function or a base template builder could abstract this common structure, allowing individual message functions to focus solely on their unique content. For example, a `createTransactionalMessage` helper could take the emoji, label, professional name, and the main body text, then automatically apply the header and footer. This would reduce boilerplate and improve consistency across templates.
+3.  **Robust Error Logging and Monitoring**: The `sendWhatsApp` function currently uses `console.warn` and `console.error` for logging. While functional, integrating with a dedicated logging service (e.g., Sentry, DataDog) would provide better visibility into message delivery failures, allow for structured logging, and enable alerts for critical issues. This would involve replacing the `console.error` calls within the `try...catch` block of `sendWhatsApp` with calls to a more sophisticated logging utility.
 
 ## References
 
-- `src/lib/whatsapp.ts`: Main implementation of all 19 message templates and `sendWhatsApp`
-- `src/lib/conversation.ts`: Contains `setOutboundContext` used for reply routing
-- `src/lib/constants.ts`: Exports `APP_URL` used in link generation
+*   `src/lib/whatsapp.ts`
