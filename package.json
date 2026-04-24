@@ -15,7 +15,8 @@
     "docs:sync": "tsx scripts/docs-sync.ts",
     "docs:verify": "tsx scripts/verify-all.ts",
     "docs:refine": "tsx scripts/refine-page.ts",
-    "facts:extract": "tsx scripts/extract-facts.ts"
+    "facts:extract": "tsx scripts/extract-facts.ts",
+    "docs:rich": "tsx scripts/generate-rich.ts"
   },
   "dependencies": {
     "fumadocs-core": "16.8.2",
