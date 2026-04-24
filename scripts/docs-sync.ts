@@ -158,7 +158,27 @@ async function main() {
   console.log(`\n[sync] ── Summary ──`)
   console.log(`[sync] Source HEAD: ${currentSha.slice(0, 8)}`)
   console.log(`[sync] CLEAN: ${clean}  DRIFT: ${drift}  failed: ${failed}  skipped: ${skipped}`)
-  if (failed > 0) process.exit(2)
+
+  // Write a machine-readable summary the CI can surface in the PR body
+  const failedList = results.filter(r => r.status.startsWith("failed")).map(r => r.page)
+  const driftList = results.filter(r => r.status.startsWith("⚠")).map(r => r.page)
+  writeFile(".sync-summary.md", [
+    `## Docs sync — ${projectKey}`,
+    ``,
+    `Source HEAD: \`${currentSha.slice(0, 8)}\``,
+    ``,
+    `| Status | Count |`,
+    `|---|---:|`,
+    `| ✓ CLEAN   | ${clean} |`,
+    `| ⚠ DRIFT   | ${drift} |`,
+    `| ✗ failed  | ${failed} |`,
+    `| ⊘ skipped | ${skipped} |`,
+    ...(failedList.length ? [``, `### Failed pages (retry later — usually provider rate limits)`, ...failedList.map(p => `- \`${p}\``)] : []),
+    ...(driftList.length ? [``, `### Drift flagged (audit found issues that the refine loop didn't fully close)`, ...driftList.map(p => `- \`${p}\``)] : []),
+  ].join("\n") + "\n")
+
+  // Exit 0 even on partial failure — let the successful pages land.
+  // Only true hard errors should fail the workflow.
 }
 
 main().catch(err => {

@@ -96,7 +96,25 @@ jobs:
           OPENAI_API_KEY:   ${{ secrets.OPENAI_API_KEY }}
         run: pnpm docs:sync ${{ inputs.project }}
 
+      - name: Read sync summary
+        id: summary
+        if: always()
+        run: |
+          if [ -f .sync-summary.md ]; then
+            {
+              echo 'body<<SYNCEOF'
+              cat .sync-summary.md
+              echo ''
+              echo '---'
+              echo 'Triggered by: ${{ github.event.head_commit.message || inputs.project }}'
+              echo 'SYNCEOF'
+            } >> $GITHUB_OUTPUT
+          else
+            echo "body=Automated docs sync for ${{ inputs.project }}." >> $GITHUB_OUTPUT
+          fi
+
       - name: Open PR if docs changed
+        if: always()
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
@@ -104,12 +122,7 @@ jobs:
           branch: auto-sync/${{ inputs.project }}
           delete-branch: true
           title: "docs(${{ inputs.project }}): auto-sync"
-          body: |
-            Automated docs sync triggered by changes in `${{ inputs.project }}` source.
-
-            Pages were regenerated through the audit-gated pipeline.
-            Review the diff before merging — any page still labeled DRIFT
-            may need a manual pass.
+          body: ${{ steps.summary.outputs.body }}
           add-paths: |
             content/docs/projects/${{ inputs.project }}/**
             facts/${{ inputs.project }}-facts.json
