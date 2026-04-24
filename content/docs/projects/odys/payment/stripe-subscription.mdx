@@ -1,67 +1,98 @@
 ---
-title: "Stripe Subscription Flow"
-description: "Stripe subscription flow internals"
+title: "Stripe Subscription Flow Internals"
+description: "A deep dive into how Odys manages professional subscriptions using Stripe, covering plan definitions, checkout session creation, and webhook interactions."
 ---
 
-# Stripe Subscription Flow
+# Stripe Subscription Flow Internals
 
-This page details the internal mechanisms for managing professional subscriptions to Odys via Stripe. It covers how subscription plans are defined, the process for initiating a Stripe checkout session, and the high-level approach to handling Stripe webhooks for subscription lifecycle events.
+In Odys, the ability for professionals to subscribe to various plans is a core monetization strategy, unlocking advanced features and removing usage limits. This document aims to provide Tiago with a comprehensive understanding of the internal workings of this Stripe-powered subscription system, from how plans are defined to the creation of checkout sessions and the critical role of webhooks.
 
-## Subscription Model
+## Overview
 
-The Stripe integration is used exclusively for professionals to subscribe to Odys's Basic, Pro, or Premium plans. It is not involved in client-to-professional payments, which are handled off-Stripe via PIX and tracked in the `appointments.paymentStatus` column. This design keeps Odys out of PCI scope for client transactions.
+The subscription mechanism in Odys is built around Stripe, a robust payment processing platform. At its heart, the system allows professionals to upgrade their accounts from a `free` tier to paid `basic`, `pro`, or `premium` plans, each offering a distinct set of features and capabilities. This entire flow is orchestrated through a combination of client-side interactions that initiate a Stripe checkout, server-side API routes that communicate with Stripe, and webhook endpoints that listen for asynchronous updates from Stripe.
 
-## Plan Definitions
+The `professionals` table, with its 24 columns, serves as the central repository for professional data, including crucial Stripe-related identifiers such as `stripeCustomerId` and `stripeSubscriptionId`. These columns are essential for linking an Odys professional account to their corresponding Stripe customer and subscription records. Additionally, the `trialEndsAt` column in the `professionals` table plays a role in managing trial periods, particularly for the `pro` plan.
 
-Subscription plans are defined in `src/lib/stripe/plans.ts`. This file exports:
+Odys exposes two primary API routes for managing this flow: `/api/stripe/checkout` for initiating new subscriptions or plan upgrades, and `/api/stripe/webhook` for processing events sent by Stripe. The system is configured to listen for specific Stripe webhook events, including `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`, which are vital for keeping Odys's internal state synchronized with Stripe.
 
-- `PLAN_FEATURES`: An ordered list of all available features, used for rendering plan comparison tables. Each feature has a `label` and an optional `comingSoon` flag.
-- `PLANS`: An object mapping plan keys (`free`, `basic`, `pro`, `premium`) to their configurations. Each plan includes:
-  - `label`: Display name.
-  - `price`: Monthly price in Brazilian Reals.
-  - `priceId`: The Stripe Price ID from environment variables (`STRIPE_BASIC_PRICE_ID`, etc.). The `free` plan has `null`.
-  - `note`: Descriptive note, used for the `free` plan's limits.
-  - `limits`: Resource limits (e.g., `clients`, `appointmentsPerMonth`). Paid plans use `Infinity`.
-  - `features`: List of included features, referencing `PLAN_FEATURES` labels.
+## Plan Definitions and Structure
 
-The `src/lib/stripe/index.ts` file initializes the Stripe client using `process.env.STRIPE_SECRET_KEY` and re-exports `PLAN_FEATURES`, `PLANS`, and `PlanKey` for server-side usage.
+The various subscription plans available in Odys are meticulously defined within `src/lib/stripe/plans.ts`. This file serves as the single source of truth for all plan-related data, ensuring consistency across the application's UI and backend logic.
 
-## Checkout Session Creation
+You'll find two main exports here:
 
-The `src/app/api/stripe/checkout/route.ts` endpoint handles POST requests to create Stripe checkout sessions. The flow is:
+*   `PLAN_FEATURES`: This is an array of objects, each representing a distinct feature offered by Odys. Its primary purpose is to provide a master list that can be used to render comparison tables or feature lists in the user interface. Each feature has a `label` and an optional `comingSoon` flag. This separation from the `PLANS` object allows for flexible UI rendering without coupling it directly to the plan's backend configuration.
+*   `PLANS`: This object is a dictionary where each key (`free`, `basic`, `pro`, `premium`) corresponds to a specific subscription plan. Each plan object contains:
+    *   `label`: A human-readable name for the plan.
+    *   `price`: The monthly cost of the plan in local currency.
+    *   `priceId`: This is the critical link to Stripe. It holds the Stripe Price ID, which is retrieved from environment variables like `STRIPE_BASIC_PRICE_ID`. Using environment variables for these IDs (`STRIPE_BASIC_PRICE_ID`, `STRIPE_PRO_PRICE_ID`, `STRIPE_PREMIUM_PRICE_ID`) allows for easy configuration across different environments (development, staging, production) and ensures that sensitive Stripe IDs are not hardcoded into the codebase. The `free` plan, naturally, has a `null` `priceId` as it doesn't involve a Stripe subscription.
+    *   `note`: A brief description or disclaimer, particularly for the `free` plan's limitations.
+    *   `limits`: An object defining usage caps for the plan, such as `clients` and `appointmentsPerMonth`. For paid plans, these are set to `Infinity`, indicating no practical limits.
+    *   `features`: An array of strings, listing the specific features included in that plan. These strings directly correspond to the `label` values in `PLAN_FEATURES`.
 
-1. **Authentication**: Uses Supabase to verify the user session. Returns `401` if no user is found.
-2. **Plan Validation**: Receives `plan` from the request body. Rejects invalid or `free` plans with `400`.
-3. **Professional Lookup**: Queries the `professionals` table using `user.id`. Returns `404` if not found.
-4. **Trial Handling**: If the plan is `pro` and `trialDaysLeft(professional.trialEndsAt)` returns a value, `trial_end` is set in the session to delay payment.
-5. **Session Creation**: Calls `stripe.checkout.sessions.create` with:
-   - `mode: "subscription"`
-   - `payment_method_types: ["card"]`
-   - `line_items` containing the plan’s `priceId` and `quantity: 1`
-   - `success_url` and `cancel_url` pointing to `/dashboard/plans`
-   - `metadata` with `professionalId` and `plan` for webhook context
-   - `customer_email` from the authenticated user
-   - `locale: "pt-BR"`
-   - `subscription_data.trial_end` if applicable
-   - `payment_method_collection: "if_required"` during trial, `"always"` otherwise
-6. **Response**: Returns `{ url: session.url }`, which the client uses to redirect to Stripe.
+The `PlanKey` type is also exported, providing type safety for referencing plans by their keys.
 
-## Webhook Event Handling
+## Stripe Integration Setup
 
-The webhook handler is not included in the current code, but the intended behavior is:
+The core Stripe client is initialized in `src/lib/stripe/index.ts`. This file is straightforward:
 
-1. **Signature Verification**: Uses `req.text()` to get the raw body and `constructEvent(body, sig, STRIPE_WEBHOOK_SECRET)` to verify authenticity. Invalid signatures return `400`.
-2. **Event Dispatching**: On valid events:
-   - `checkout.session.completed`: Activates the paid plan using metadata (`professionalId`, `plan`).
-   - `customer.subscription.updated`: Handles plan changes (e.g., upgrades/downgrades).
-   - `customer.subscription.deleted`: Reverts the professional’s plan to `free`.
+*   It imports the `Stripe` library.
+*   It creates and exports a `stripe` instance, configured with `process.env.STRIPE_SECRET_KEY!`. This ensures that all interactions with the Stripe API are authenticated and secure. The use of an environment variable for the secret key is a standard security practice.
+*   It re-exports `PLAN_FEATURES` and `PLANS` from `src/lib/stripe/plans.ts`. This centralizes the Stripe-related exports, making it convenient for other parts of the application to import both the Stripe client and the plan definitions from a single location.
 
-Database updates are structured as `UPDATE ... SET plan = ? WHERE ...`, which is idempotent at the statement level.
+## Initiating a Subscription Checkout
 
-## Known Gaps
+The `/api/stripe/checkout` API route, defined in `src/app/api/stripe/checkout/route.ts`, is responsible for creating a Stripe Checkout Session when a professional decides to subscribe or upgrade their plan. This is a `POST` endpoint that handles the server-side logic for initiating the payment process.
 
-Idempotency for webhook events relies on the structural idempotency of `UPDATE ... SET plan = ? WHERE ...` statements rather than an explicit `idempotency_keys` table. While sufficient for plan updates, this approach does not prevent duplicate processing of non-idempotent side effects if introduced later.
+Here's a breakdown of its operation:
 
-## Why this shape
+1.  **Authentication and Authorization**: The route first authenticates the user using `supabase.auth.getUser()`. If no user is found, it returns a `401` Unauthorized response, ensuring that only logged-in professionals can initiate a checkout.
+2.  **Plan Validation**: It expects a `plan` key (e.g., `"basic"`, `"pro"`) in the request body. It validates this `plan` against the `PLANS` object and rejects requests for invalid plans or the `free` plan, as the `free` plan doesn't require a Stripe checkout.
+3.  **Professional Data Retrieval**: The system fetches the professional's record from the `professionals` table using their `userId`. This is crucial for accessing existing Stripe customer IDs or trial information.
+4.  **Trial Management**: A key piece of logic here is the handling of trial periods. If the selected `plan` is `"pro"` and the professional still has `trialDaysLeft` (determined by the `trialEndsAt` column), the checkout session is configured to include a trial period. The `trialEnd` timestamp is calculated and passed to Stripe. This also influences `payment_method_collection`, which is set to `"if_required"` during a trial, meaning Stripe will only collect payment details if necessary, rather than immediately.
+5.  **Stripe Checkout Session Creation**: The `stripe.checkout.sessions.create` method is called to generate a new checkout session.
+    *   `mode: "subscription"`: Specifies that this session is for creating a subscription.
+    *   `payment_method_types: ["card"]`: Indicates that only card payments are accepted.
+    *   `line_items`: Uses the `priceId` from the selected plan (e.g., `PLANS[plan].priceId!`) to specify the product being purchased.
+    *   `success_url` and `cancel_url`: These URLs (`/dashboard/plans?success=true` and `/dashboard/plans?cancelled=true`) are where Stripe redirects the user after completing or canceling the checkout process, allowing Odys to provide appropriate feedback.
+    *   `metadata`: This object is vital for passing custom data to Stripe, which will be included in subsequent webhook events. Here, `professionalId` and the chosen `plan` are stored, enabling the webhook handler to easily identify the professional and plan associated with the session.
+    *   `customer_email`: The user's email is passed to Stripe, pre-filling the checkout form and potentially linking to an existing Stripe customer.
+    *   `locale: "pt-BR"`: Sets the language of the Stripe checkout page.
+    *   `subscription_data`: This is where the `trial_end` is passed if a trial is active.
+6.  **Response**: The route returns a JSON object containing the `url` of the Stripe Checkout Session. The client-side application then redirects the user to this URL to complete the payment.
 
-Using Stripe-hosted checkout keeps Odys out of PCI scope, simplifying compliance. Including `professionalId` and `plan` in `metadata` ensures webhook handlers can act on events without needing to resolve Stripe customer IDs, which may not exist at checkout time for new subscribers. The trial logic is embedded in the session creation flow, enabling deferred payment collection without additional state management.
+## Stripe Webhook Handling
+
+The `/api/stripe/webhook` route is a critical component for maintaining data consistency between Odys and Stripe. While the implementation details of this route are not provided in the current code context, the `FACTS` indicate that Odys is configured to listen for specific Stripe webhook events:
+
+*   `checkout.session.completed`: This event fires when a customer successfully completes a checkout session. For Odys, this would typically trigger updates to the `professionals` table, storing the new `stripeCustomerId` and `stripeSubscriptionId`, and updating the `plan` column.
+*   `customer.subscription.updated`: This event is crucial for handling changes to an existing subscription, such as plan upgrades, downgrades, or changes in billing status. The webhook handler would update the `plan` and potentially `trialEndsAt` columns in the `professionals` table accordingly.
+*   `customer.subscription.deleted`: When a subscription is canceled or expires, this event is sent. The webhook handler would update the professional's `plan` to `free` and clear `stripeSubscriptionId` in the `professionals` table, effectively revoking access to paid features.
+
+These webhooks ensure that Odys's internal representation of a professional's subscription status is always up-to-date, even for events that happen asynchronously or outside of a direct user interaction with the Odys application.
+
+## Design decisions
+
+The current design of the Stripe subscription flow reflects several deliberate choices aimed at clarity, maintainability, and leveraging Stripe's capabilities:
+
+*   **Separation of Plan Features and Plan Data (`PLAN_FEATURES` vs. `PLANS`)**: By defining `PLAN_FEATURES` as a distinct list, you've created a flexible way to manage and display features independently of their inclusion in specific plans. This allows for easier UI development, such as feature comparison tables, without tightly coupling the display logic to the backend plan structure. The `PLANS` object then focuses purely on the operational aspects of each plan, like `price`, `priceId`, and `limits`.
+*   **Environment Variables for Stripe Price IDs**: Using `process.env.STRIPE_BASIC_PRICE_ID` and similar variables for `priceId`s in `src/lib/stripe/plans.ts` is a standard and robust practice. It allows for different Stripe product configurations across development, staging, and production environments without code changes. It also keeps sensitive Stripe IDs out of the codebase, improving security.
+*   **Storing Stripe IDs in `professionals` Table**: The `professionals` table includes `stripeCustomerId` and `stripeSubscriptionId` columns. This direct linkage within the core `professionals` entity simplifies data retrieval and ensures that a professional's Stripe identity and subscription status are readily available alongside their other profile information. This avoids complex joins or external lookups when checking a professional's plan.
+*   **Leveraging Stripe Checkout for Trials**: The logic in `/api/stripe/checkout` that sets `subscription_data: { trial_end: trialEnd }` and `payment_method_collection: "if_required"` for the `pro` plan during a trial period is a smart use of Stripe's native trial features. This offloads the complexity of trial management to Stripe, reducing the amount of custom logic needed in Odys and ensuring that trial periods are handled consistently and correctly by the payment gateway itself.
+*   **Metadata in Checkout Sessions**: Including `professionalId` and `plan` in the `metadata` of the Stripe Checkout Session is a crucial design choice. This metadata will be passed along to subsequent Stripe webhook events, allowing the `/api/stripe/webhook` handler to easily identify which professional and plan a particular event relates to, without needing to query the database based on less direct identifiers.
+
+## Potential improvements
+
+1.  **Implement the `/api/stripe/webhook` handler**: The `FACTS` clearly state that Odys listens to `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` events. However, the implementation of the `/api/stripe/webhook` route is not provided in the current code. A robust webhook handler is essential for a complete subscription system to:
+    *   Update `professionals.stripeCustomerId` and `professionals.stripeSubscriptionId` upon `checkout.session.completed`.
+    *   Adjust `professionals.plan` and potentially `professionals.trialEndsAt` for `customer.subscription.updated` events (e.g., upgrades, downgrades, trial expirations).
+    *   Set `professionals.plan` to `free` and clear Stripe IDs for `customer.subscription.deleted` events.
+    Without this, the Odys database will quickly fall out of sync with Stripe, leading to incorrect plan statuses and feature access for professionals.
+2.  **Enforce Plan Limits**: The `PLANS` object in `src/lib/stripe/plans.ts` defines `limits` for `clients` and `appointmentsPerMonth` for the `free` plan. While these limits are defined, the provided code does not show where these limits are actually enforced within the application. For example, when a professional tries to add a new client or schedule an appointment, the system should check their current `plan` (from `professionals.plan`) and compare it against the `PLANS[currentPlan].limits.clients` or `PLANS[currentPlan].limits.appointmentsPerMonth`. Implementing this enforcement logic is critical to ensure that the subscription tiers provide the intended value and restrictions.
+3.  **Robust `priceId` Validation in Checkout**: In `src/app/api/stripe/checkout/route.ts`, the code uses `PLANS[plan].priceId!`. The non-null assertion operator `!` assumes that `priceId` will always be present for a paid plan. While `PLANS` is defined with `process.env.STRIPE_BASIC_PRICE_ID ?? null`, if an environment variable like `STRIPE_BASIC_PRICE_ID` is missing, `priceId` would be `null`. This would cause a runtime error when `stripe.checkout.sessions.create` is called. A more explicit check, such as `if (!PLANS[plan].priceId) { return NextResponse.json({ error: "Stripe Price ID not configured for this plan" }, { status: 500 }); }`, would make the system more resilient to configuration issues.
+
+## References
+
+*   `src/lib/stripe/index.ts`
+*   `src/lib/stripe/plans.ts`
+*   `src/app/api/stripe/checkout/route.ts`
