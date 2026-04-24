@@ -19,7 +19,7 @@ async function main() {
 
   const codeSections = page.code_files.map(f => {
     const content = readFile(resolveCodePath(project, f))
-    return `## ${f}\n\n\`\`\`\n${content.slice(0, 8000)}\n\`\`\``
+    return `## ${f}\n\n\`\`\`\n${content.slice(0, 16000)}\n\`\`\``
   }).join("\n\n")
 
   const styleGuide = readSystemPrompt()
@@ -49,6 +49,11 @@ For each finding, report:
 - claim: the exact sentence or phrase from the doc
 - reality: what the current code actually shows (cite file)
 - fix: suggested replacement text (can be null for suspect findings you can't resolve)
+
+IMPORTANT: Only include findings where there is an actual problem.
+- If you verify a claim is ACCURATE (fix: null), DO NOT include it in findings — simply omit.
+- Findings with fix: null are invalid. Every finding must describe a concrete drift/missing/suspect issue with an actionable fix.
+- If a page has no issues, return { "status": "CLEAN", "findings": [] }.
 
 Return JSON:
 {
