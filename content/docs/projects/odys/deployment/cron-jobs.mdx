@@ -1,52 +1,80 @@
 ---
-title: Vercel Cron Jobs
-description: "Vercel Cron: 2 schedules, shared-secret auth"
+title: "Vercel Cron Jobs"
+description: "Odys leverages Vercel Cron for scheduled tasks, including appointment reminders and system watchdogs, secured by a shared secret."
 ---
 
 # Vercel Cron Jobs
 
-This page details the configuration and implementation of cron jobs within the application, leveraging Vercel Cron for scheduled tasks. It covers the defined schedules and the shared-secret authorization mechanism used to secure these endpoints.
+In Odys, automation is key to providing a seamless experience for both professionals and their clients. Scheduled tasks, often referred to as cron jobs, are the backbone of this automation, handling critical operations like sending timely reminders and maintaining system health. This document delves into how Odys utilizes Vercel's built-in cron functionality to manage these essential background processes, ensuring that operations run smoothly and securely.
 
-## Schedules
+## Overview
 
-The application uses Vercel Cron for scheduled tasks, with two distinct schedules defined in `vercel.json`. These schedules trigger specific API routes at predetermined times.
+Odys relies on Vercel's integrated cron job feature to execute specific API routes on a predefined schedule. This approach simplifies deployment and management of recurring tasks, as the cron schedules are defined directly within the `vercel.json` configuration file. Currently, Odys configures two distinct cron jobs, each serving a vital purpose in the application's ecosystem.
 
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron/reminders",
-      "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/whatsapp-watchdog",
-      "schedule": "0 9 * * *"
-    }
-  ]
-}
-```
+The first cron job targets the `/api/cron/reminders` route, scheduled to run daily at `0 8 * * *` (8 AM UTC). Its primary responsibility is to dispatch automated reminders for upcoming appointments and notify professionals about their trial period nearing its end.
 
-The `/api/cron/reminders` endpoint is scheduled to run daily at 08:00 UTC, and the `/api/cron/whatsapp-watchdog` endpoint is scheduled for 09:00 UTC.
+The second cron job is configured for the `/api/cron/whatsapp-watchdog` route, set to execute daily at `0 9 * * *` (9 AM UTC). While the specific implementation details of this watchdog are not available in the provided code, its name suggests a role in monitoring or maintaining the health and functionality of the WhatsApp integration, perhaps by checking for stalled messages or connection issues.
 
-## Reminder Cron Job
+Both cron jobs are secured using a shared-secret authentication mechanism. This means that any incoming request to these cron endpoints must present a valid `x-cron-secret` header or an `Authorization` header with a `Bearer` token matching the `CRON_SECRET` environment variable. This ensures that only authorized services, like Vercel's cron scheduler or a trusted manual trigger, can invoke these critical operations.
 
-The primary cron job is implemented in `src/app/api/cron/reminders/route.ts`. This job is responsible for two main functions:
+## Reminders Cron Job (`/api/cron/reminders`)
 
-1.  **Appointment Reminders**: It sends WhatsApp reminders for confirmed appointments. This includes 24-hour and 1-hour reminders. Reminders are deferred if the client is actively engaged in an AI conversation, as determined by `isClientActive`.
-2.  **Trial Expiration Emails**: It sends email notifications to professionals whose trials are expiring, specifically 3 days and 1 day before the trial ends.
+The `/api/cron/reminders` endpoint is a central hub for automated communications within Odys. When this route is triggered, it performs several crucial checks and dispatches messages based on the current state of appointments and professional subscriptions.
 
-### Authorization
+The core logic begins by fetching appointments from the `appointments` table. It joins with the `clients` table to retrieve client contact information (specifically `clients.phone` and `clients.name`) and with the `professionals` table to get details about the professional (`professionals.name`, `professionals.plan`, and `professionals.trialEndsAt`). This comprehensive query allows the cron job to gather all necessary data for sending personalized reminders.
 
-Access to the `/api/cron/reminders` endpoint is secured using a shared secret. The `isAuthorized` function in `src/app/api/cron/reminders/route.ts` checks for the presence of `process.env.CRON_SECRET` and validates it against either the `x-cron-secret` header or an `Authorization: Bearer <CRON_SECRET>` header in the incoming request. If the secret does not match, the request is rejected with a `401 Unauthorized` status.
+The cron job focuses on two distinct reminder windows:
 
-## WhatsApp Watchdog Cron Job
+1.  **24-hour reminders**: It identifies `confirmed` appointments that are scheduled to start approximately 24 hours from the current time and for which a 24-hour reminder (`appointments.reminderSent24h`) has not yet been sent. For each such appointment, it checks if the professional's current `plan` or `trialEndsAt` date allows them to use the "reminders" feature via the `canUseFeature` utility. It also employs the `isClientActive` function to ensure that a reminder isn't sent if the client is currently engaged in an active AI conversation, deferring the message to avoid interruption. If all conditions are met, a WhatsApp message is sent using the `msgReminder24h` template, formatted with the professional's name, client's name, and the appointment's date and time, using the `formatDate` and `formatTime` helpers. Once sent, the `appointments.reminderSent24h` flag is updated to `true` to prevent duplicate messages.
 
-The `vercel.json` configuration also defines a cron job for `/api/cron/whatsapp-watchdog`, scheduled to run daily at 09:00 UTC. The implementation details for this endpoint are not available in the provided code.
+2.  **1-hour reminders**: Similarly, it looks for `confirmed` appointments that are about an hour away and where the 1-hour reminder (`appointments.reminderSent1h`) has not been dispatched. The same `canUseFeature` and `isClientActive` checks are applied. If eligible, a WhatsApp message is sent using the `msgReminder1h` template, focusing on the appointment time. The `appointments.reminderSent1h` flag is then updated.
 
-## Known Gaps
+Beyond appointment reminders, this cron job also handles **trial expiration notifications**. It queries the `professionals` table for all professionals who have a `trialEndsAt` date set. For each professional with an email address, it calculates the remaining trial days using `trialDaysLeft`. If the trial is ending in 3 days or 1 day, an email is sent via `sendTrialExpiringEmail` to remind the professional to upgrade their plan.
 
-The authorization check in `src/app/api/cron/reminders/route.ts` uses a plain `===` comparison for the `CRON_SECRET`. This is not a timing-safe comparison, which could theoretically be vulnerable to timing attacks. An audit flagged this as M1, and it remains an open item.
+The route concludes by returning a JSON response detailing the number of 24-hour reminders sent, deferred, 1-hour reminders sent, deferred, and trial expiration emails dispatched, providing a clear summary of its execution.
 
-## Why this shape
+## WhatsApp Watchdog Cron Job (`/api/cron/whatsapp-watchdog`)
 
-Vercel Cron was chosen for its seamless integration with the Vercel deployment pipeline, simplifying the setup and management of scheduled tasks without requiring external services. The shared-secret authentication provides a straightforward and effective method for securing these internal cron endpoints, suitable for the current stage of development.
+The `/api/cron/whatsapp-watchdog` cron job is configured to run daily. While the specific code for this route was not available for analysis, its name strongly suggests a role in maintaining the reliability and health of Odys's WhatsApp messaging capabilities. It likely performs checks such as:
+
+*   Monitoring the status of outgoing WhatsApp messages to ensure delivery.
+*   Identifying and re-processing any messages that might have failed or stalled.
+*   Checking the connection status with the WhatsApp API.
+*   Potentially cleaning up old message logs or temporary data related to WhatsApp interactions.
+
+This type of watchdog is crucial for any system heavily reliant on external communication channels, ensuring that potential issues are detected and addressed proactively, minimizing disruption to client and professional communications.
+
+## Design decisions
+
+Several thoughtful design decisions underpin the implementation of Odys's cron jobs:
+
+*   **Vercel Cron Integration**: Choosing Vercel's native cron feature (`vercel.json`) simplifies deployment and infrastructure management. It integrates seamlessly with the existing Next.js API routes, avoiding the need for separate scheduling services or complex server configurations. This reduces operational overhead and keeps the deployment model consistent.
+*   **Shared Secret Authentication**: The `isAuthorized` function in `src/app/api/cron/reminders/route.ts` implements a shared secret mechanism. This design allows for both Vercel's automated triggers (using a `Bearer` token) and potential manual or external triggers (using `x-cron-secret`) to securely invoke the cron jobs. It's a straightforward and effective way to protect these endpoints from unauthorized access without introducing complex OAuth flows for internal services.
+*   **Idempotent Reminder Logic**: The `appointments` table includes `reminderSent24h` and `reminderSent1h` boolean flags. This is a critical design choice for idempotency. By updating these flags to `true` after a reminder is sent, the system ensures that even if a cron job runs multiple times or encounters transient errors, clients will not receive duplicate reminders for the same appointment.
+*   **Feature Gating for Reminders**: The `canUseFeature` utility, which checks `professionalPlan` and `trialEndsAt` from the `professionals` table, is integrated into the reminder logic. This ensures that automated reminders are only sent for professionals who are on a plan that includes this feature or are within their active trial period. This directly ties the cron job's functionality to Odys's subscription model.
+*   **Conversation-Aware Reminders**: The `isClientActive` check prevents reminders from being sent if a client is currently interacting with the AI. This is a user experience-focused decision, aiming to avoid interrupting an ongoing conversation with an automated message, which could be jarring or confusing for the client.
+*   **Database Efficiency**: The use of Drizzle ORM with `innerJoin` and `where` clauses allows for efficient querying of relevant appointments and associated client/professional data. This minimizes the number of database round trips and ensures that the cron job can process a potentially large number of appointments quickly.
+
+## Potential improvements
+
+While the current cron job setup is functional and well-designed, here are some concrete opportunities for improvement:
+
+1.  **Centralize Cron Authorization Logic**: The `isAuthorized` function is currently defined directly within `src/app/api/cron/reminders/route.ts`. If the `whatsapp-watchdog` route (or any future cron job) requires the same authorization, this function would likely be duplicated. Consider extracting `isAuthorized` into a shared utility file, perhaps in `src/lib/auth.ts` or `src/lib/utils.ts`, to promote code reuse and maintainability. This would make it easier to update the authorization logic across all cron jobs in one place.
+
+2.  **Enhanced Error Handling and Logging**: The current `GET` function in `src/app/api/cron/reminders/route.ts` returns a simple `ok: true` and counts of sent/deferred reminders. While useful, it doesn't provide detailed insights into *why* a WhatsApp message might have failed to send (e.g., `sendWhatsApp` returning `false`) or if a database update failed. Implementing more robust error logging (e.g., using a dedicated logging library or sending alerts) for failed `sendWhatsApp` calls or `db.update` operations would greatly improve observability and debugging capabilities. This could involve logging the `apt.id` of failed sends or the specific error message.
+
+3.  **Configurable Reminder Schedules**: Currently, the reminder intervals (24h and 1h) are hardcoded using `REMINDER_24H_MIN_MS`, `REMINDER_24H_MAX_MS`, etc., from `src/lib/constants`. While effective, this approach lacks flexibility. An improvement could involve allowing professionals to configure their preferred reminder intervals (e.g., 48h, 12h, 30min) through their settings, storing these preferences in the `professionals` table. The cron job would then dynamically query for appointments based on these individual professional settings, offering a more tailored experience.
+
+4.  **Document WhatsApp Watchdog Functionality**: Given that the content of `src/app/api/cron/whatsapp-watchdog` was not available, it's crucial to document its actual purpose and implementation details once the code is accessible. This would involve detailing what specific checks it performs, what tables or external services it interacts with, and what actions it takes (e.g., retrying messages, sending alerts). This ensures that the full scope of Odys's automated processes is understood.
+
+## References
+
+*   `vercel.json`
+*   `src/app/api/cron/reminders/route.ts`
+*   `src/app/api/cron/whatsapp-watchdog`
+*   `src/lib/db/schema.ts` (for `appointments`, `clients`, `professionals` tables)
+*   `src/lib/whatsapp.ts` (for `sendWhatsApp`, `msgReminder24h`, `msgReminder1h`)
+*   `src/lib/email.ts` (for `sendTrialExpiringEmail`)
+*   `src/lib/plan-guard.ts` (for `trialDaysLeft`, `canUseFeature`)
+*   `src/lib/conversation.ts` (for `isClientActive`)
+*   `src/lib/constants.ts` (for `REMINDER_24H_MIN_MS`, `REMINDER_24H_MAX_MS`, `REMINDER_1H_MIN_MS`, `REMINDER_1H_MAX_MS`)
