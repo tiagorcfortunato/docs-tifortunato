@@ -65,7 +65,6 @@ jobs:
           path: .source/${{ inputs.project }}
           ref: ${{ inputs.source_ref }}
           fetch-depth: 30
-          token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Point config at checked-out source
         run: |
