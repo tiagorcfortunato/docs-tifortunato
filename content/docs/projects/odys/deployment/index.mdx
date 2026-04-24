@@ -1,70 +1,75 @@
 ---
-title: "Deployment Overview"
-description: "Overview of the Odys deployment."
+title: "Deployment"
+description: "Deployment overview"
 ---
 
-# Deployment Overview
+# Deployment
 
-This page provides a technical overview of the Odys application's deployment architecture, covering hosting platforms, continuous integration, cron job management, and the deployment status of auxiliary services.
+Understanding how Odys is deployed is crucial for grasping its operational resilience and the choices made to ensure its availability and performance. This document walks through the infrastructure and processes that bring Odys to life, from continuous integration to hosting the application and its critical WhatsApp integration.
 
-## Application Hosting
+## Overview
 
-The main Odys application is hosted on Vercel. Pushes to the `main` branch automatically trigger a production deployment, while pull requests generate preview deployments. Environment variables are managed directly within the Vercel dashboard.
+Odys leverages a modern, cloud-native deployment strategy, segmenting its core application from its specialized WhatsApp integration. The main application, built with Next.js, finds its home on Vercel, benefiting from its tight integration with the framework and serverless capabilities. The dedicated Evolution API, which powers Odys's WhatsApp-first approach, runs as a containerized service on Railway, providing the necessary environment for its long-running processes. Orchestrating this entire process is a robust CI/CD pipeline powered by GitHub Actions, ensuring code quality and automated deployments. Additionally, critical background tasks, such as sending reminders and monitoring the WhatsApp API, are managed through Vercel's cron job capabilities.
 
-Sentry is integrated for error monitoring, with configuration in `next.config.ts`. This includes `automaticVercelMonitors` for cron jobs and `tunnelRoute` for routing browser requests through `/monitoring` to circumvent ad-blockers.
+## Application Deployment on Vercel
 
-## Cron Jobs
+The primary Odys application, encompassing both the user-facing interface and its 21 API routes, is deployed on Vercel. This choice was a natural fit given Odys's foundation on Next.js 16 (App Router). Vercel provides a streamlined deployment experience, automatically building and deploying the application upon every push to the `main` branch, as configured in the `.github/workflows/ci.yml` workflow.
 
-Scheduled tasks are managed using Vercel Cron, as defined in `vercel.json`. Two primary cron jobs are configured:
+Vercel's serverless functions handle all API routes, such as `/api/booking` for managing appointments or `/api/stripe/webhook` for processing payment events. This architecture allows for efficient scaling of individual endpoints based on demand.
 
-*   `/api/cron/reminders`: Scheduled daily at 08:00 UTC. This handler is responsible for sending 24-hour and 1-hour WhatsApp reminders for confirmed appointments, and trial expiration emails.
-*   `/api/cron/whatsapp-watchdog`: Scheduled daily at 09:00 UTC.
+Error monitoring is integrated directly into the deployment process through Sentry. The `next.config.ts` file, specifically via `withSentryConfig`, ensures that client-side and server-side errors are tracked. It's configured to upload source maps and route browser requests through a `tunnelRoute` at `/monitoring` to circumvent potential ad-blockers, a common practice to ensure comprehensive error reporting. Furthermore, Sentry's `automaticVercelMonitors` feature is enabled within the webpack configuration, providing automatic instrumentation for Vercel Cron Monitors, which is vital for the reliability of scheduled tasks.
 
-Authentication for these cron handlers relies on a shared secret, checked via the `x-cron-secret` header or `Authorization: Bearer <CRON_SECRET>`.
+## Evolution API Deployment on Railway
 
-```json
-{
-  "crons": [
-    {
-      "path": "/api/cron/reminders",
-      "schedule": "0 8 * * *"
-    },
-    {
-      "path": "/api/cron/whatsapp-watchdog",
-      "schedule": "0 9 * * *"
-    }
-  ]
-}
-```
+The heart of Odys's WhatsApp integration, the Evolution API, operates independently on Railway. This separation is a deliberate architectural choice. While the main application thrives in Vercel's serverless environment, the Evolution API, being a self-hosted WhatsApp Web shim, often requires a more persistent, container-based hosting solution. Railway provides this by running the `tiagorcfortunato/evolution-api-odys` Docker image.
 
-## Continuous Integration (CI)
+This Evolution API instance connects to its own dedicated Supabase project, `odys-evolution`, utilizing a separate `evolution_api` schema. This isolation ensures that the WhatsApp integration's operational data does not intermingle with the core Odys application data, providing clearer separation of concerns and potentially different scaling or backup strategies. The connection to this database is made via PgBouncer, typically on port `6543`, which helps manage database connections efficiently.
 
-Continuous Integration is handled by GitHub Actions, configured in `.github/workflows/ci.yml`. The workflow consists of two main jobs:
+## Continuous Integration and Deployment (CI/CD)
 
-*   `check`: Runs `npm ci`, `npx tsc --noEmit`, and `npm run lint` on every pull request and push to the `main` branch. This ensures code quality and type safety.
-*   `build`: Executes `npm run build` (which runs `next build`) after the `check` job passes. This job injects necessary environment variables from GitHub Secrets, enabling a full production build.
+Odys employs GitHub Actions for its CI/CD pipeline, defined in `.github/workflows/ci.yml`. This workflow is triggered on every `push` to the `main` branch and for all `pull_request` events targeting `main`.
 
-It is important to note that the CI workflow currently does not include automated tests for the main application, as there are no tests present in `src/`.
+The pipeline consists of two main jobs:
 
-## Database Migrations
+1.  **`check`**: This job focuses on code quality and correctness. It first checks out the code, sets up Node.js 20, and installs dependencies. Then, it performs a TypeScript type-check using `npx tsc --noEmit` to catch any type-related errors early in the development cycle. Following this, `npm run lint` executes ESLint to enforce coding standards and identify potential issues.
+2.  **`build`**: Once the `check` job passes, the `build` job proceeds to create a production-ready build of the application using `npm run build`. This step is crucial for verifying that the application can be successfully compiled for deployment. All necessary environment variables, such as `DATABASE_URL`, `STRIPE_SECRET_KEY`, and `EVOLUTION_API_KEY`, are securely injected into the build process from GitHub Secrets, ensuring that sensitive credentials are never exposed in the repository.
 
-Database schema management uses Drizzle ORM. While the `drizzle/` directory contains generated SQL files, the standard workflow for schema updates is `npm run db:push` (drizzle-kit push). This declarative approach is currently executed manually against production environments, as migrations are not integrated into the CI pipeline.
+This CI/CD setup ensures that only type-checked, linted, and successfully built code reaches the deployment stage, maintaining a high standard of code quality and reducing the risk of introducing regressions into production.
 
-## Evolution API (WhatsApp)
+## Automated Cron Jobs
 
-The Evolution API, responsible for WhatsApp integration, is deployed as a separate service on Railway. It uses the Docker image `tiagorcfortunato/evolution-api-odys`. This service maintains its own independent Supabase PostgreSQL database (`odys-evolution` project, `evolution_api` schema), distinct from the main application's database. Configuration for its Railway deployment is assumed to be managed via the Railway dashboard, as no related configuration files are present in this repository.
+Odys relies on scheduled tasks for critical background operations, configured directly within `vercel.json` and executed by Vercel's cron job infrastructure.
 
-## MCP Server
+Two primary cron jobs are defined:
 
-The MCP (Multi-tool Code Processor) server is currently not deployed to a production environment. It operates as a local `stdio` process, invoked by development tools like Claude Code (via `.mcp.json`) or Claude Desktop (via `claude_desktop_config.json`). A production rollout path for this service has not yet been established.
+1.  **`GET /api/cron/reminders`**: This endpoint runs daily at `0 8 * * *` (8 AM UTC). Its purpose is to send out automated 24-hour and 1-hour reminders for upcoming appointments. It also handles sending trial expiration emails to professionals. A clever design choice here, as noted in the `README.md`, is that it skips sending reminders if a client is currently engaged in a conversation with the AI agent, preventing message overload and ensuring a smoother user experience.
+2.  **`GET /api/cron/whatsapp-watchdog`**: Scheduled daily at `0 9 * * *` (9 AM UTC), this cron job performs a health check on the Evolution API. This proactive monitoring helps ensure that the critical WhatsApp integration remains operational, allowing for early detection and resolution of any issues.
 
-## Known Gaps
+These cron jobs are essential for the automated communication features of Odys, significantly reducing the manual overhead for professionals and improving client engagement.
 
-*   **Cron Secret Comparison**: The authentication for cron jobs uses a plain `===` comparison for the `CRON_SECRET`. This is susceptible to timing attacks and should be updated to a timing-safe comparison.
-*   **Database Migrations in CI**: Database schema pushes (`npm run db:push`) are currently a manual process against production. Integrating these into the CI pipeline would improve reliability and reduce human error.
-*   **Main Application Test Coverage**: The CI workflow in `.github/workflows/ci.yml` does not include automated tests for the main application, as there are no tests in `src/`. This increases the risk of regressions.
-*   **MCP Server Production Path**: The MCP server, which provides AI assistant functionality, currently lacks a defined production deployment strategy.
+## Design Decisions
 
-## Why this shape
+The deployment architecture of Odys reflects several deliberate design choices:
 
-The current deployment architecture reflects a pragmatic approach for a pre-launch project, balancing rapid iteration with necessary infrastructure. Vercel is a natural fit for Next.js applications, providing integrated CI/CD and cron job capabilities. The Evolution API's separate deployment on Railway acknowledges its distinct runtime environment (Docker) and independent database requirements. The MCP server's local-only status indicates its current role as a developer-facing tool without immediate production scaling needs. Manual database migrations are a common pattern in early-stage projects with a single developer, prioritizing speed over a fully automated, team-oriented migration workflow.
+*   **Vercel for Next.js App**: The decision to host the main Odys application on Vercel is primarily driven by its deep integration with Next.js. This provides automatic serverless function deployment for API routes, optimized asset delivery, and a seamless developer experience, allowing Tiago to focus on application logic rather than infrastructure. The `next.config.ts` Sentry integration further solidifies this by providing robust error monitoring out-of-the-box for the Vercel environment.
+*   **Railway for Evolution API**: Deploying the Evolution API on Railway, separate from the main application, addresses the specific needs of this component. The Evolution API, being a wrapper around WhatsApp Web, often requires a long-running process or a containerized environment that might not fit perfectly within Vercel's serverless function model, especially for maintaining persistent WhatsApp sessions. Railway offers the flexibility and control needed for such a service, including Docker image deployment and dedicated database connections.
+*   **GitHub Actions for CI/CD**: Utilizing GitHub Actions for CI/CD is a standard and effective choice. It integrates directly with the source code repository, providing immediate feedback on code quality (type-checking, linting) and build success. This ensures that the `main` branch always contains deployable code, minimizing deployment risks.
+*   **Separate Database for Evolution API**: The choice to use a separate Supabase project (`odys-evolution`) for the Evolution API's database, distinct from the main Odys database, promotes isolation. This means that the operational data of the WhatsApp integration (e.g., message queues, session states) is kept separate from core application data (e.g., `professionals`, `appointments`). This separation can simplify backups, scaling, and security considerations for each component.
+
+## Potential Improvements
+
+While the current deployment strategy is well-structured and functional, here are a few concrete areas for improvement that could enhance robustness, maintainability, and operational visibility:
+
+1.  **Automated Database Migrations**: Currently, the `README.md` mentions `npm run db:push` for schema updates. While convenient for development, in a production environment, a robust migration system is critical. Implementing Drizzle Kit's migration capabilities would allow for version-controlled, incremental database schema changes, ensuring data integrity and providing a clear rollback path. This would involve generating migration files from `src/lib/db/schema.ts` and applying them as part of the deployment pipeline, rather than a direct push.
+2.  **Comprehensive Service Health Checks**: The `GET /api/cron/whatsapp-watchdog` is a great start for monitoring the Evolution API. However, expanding this concept to other critical external services like Supabase, Stripe, and Resend would provide a more holistic view of Odys's operational health. A new `/api/health` endpoint could be introduced, perhaps leveraging helpers from `src/lib/api.ts`, to check the connectivity and basic functionality of all integrated services. This would allow for quicker diagnosis of issues beyond just the WhatsApp integration.
+3.  **Staging Environment for Pre-Production Testing**: The current `ci.yml` deploys directly to Vercel on `main` branch pushes. Introducing a staging environment, perhaps by deploying a separate Vercel project from a `develop` or `staging` branch, would allow for thorough testing of new features and changes in a production-like setting before they impact live users. This would reduce the risk of introducing bugs into the production environment and provide a safe space for quality assurance.
+
+## References
+
+*   `vercel.json`
+*   `next.config.ts`
+*   `.github/workflows/ci.yml`
+*   `src/lib/db/schema.ts`
+*   `src/lib/whatsapp.ts`
+*   `src/app/api/cron/reminders/route.ts`
+*   `src/app/api/cron/whatsapp-watchdog/route.ts`
