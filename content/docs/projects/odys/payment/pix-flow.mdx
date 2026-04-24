@@ -71,7 +71,7 @@ The `handleCopy` asynchronous function allows users to easily copy the entire PI
 
 ### Payment Context and Amount Display
 
-The component also provides contextual messages based on the `paymentType` (e.g., "Realize o pagamento para garantir seu horário."). It conditionally displays the `amount` and `professionalName` as the favored recipient, offering clear instructions and confirmation to the client about the payment details. The `amount` is displayed as "R$ {(amount! / 100).toFixed(0)}", which converts cents to reais.
+The component also provides contextual messages based on the `paymentType` (e.g., "Realize o pagamento para garantir seu horário."). It conditionally displays the `amount` and `professionalName` as the favored recipient, offering clear instructions and confirmation to the client about the payment details. The `amount` is displayed as `R$ {(amount! / 100).toFixed(0)}`, which converts cents to reais.
 
 ## Design decisions
 
