@@ -1,44 +1,51 @@
 ---
-title: "Auth & Register Endpoints"
-description: "Auth + register endpoints, smart-linking, C1 fix"
+title: "Auth + Register Endpoints, Smart-Linking, C1 Fix"
+description: "Implementation of authentication, registration, and user linking logic in Odys backend"
 ---
 
-# Auth & Register Endpoints
+# Auth + Register Endpoints, Smart-Linking, C1 Fix
 
-This page covers the implementation and behavior of the authentication and registration endpoints, specifically `POST /auth/register` and `GET /auth/callback`. It details rate limiting, user creation strategies across environments, session handling, user metadata updates, and the smart-linking mechanism that connects verified users to pre-existing client records.
+This document covers the core authentication and user registration flow in Odys, a system designed for professionals managing client appointments. It explains how users sign up, how identity is verified via Supabase, and how the system intelligently links authenticated users to existing client records—ensuring data continuity without manual intervention.
 
-## Register Endpoint
+## Overview
 
-The `POST /auth/register` endpoint, defined in `src/app/api/auth/register/route.ts`, handles new user registrations. It expects `email`, `password`, `name`, and `type` in the request body.
+Odys operates on a 10-table schema where identity and access are managed through Supabase Auth, while user roles (`professional`, `client`) are tracked via metadata and linked records. The `/api/auth/register` endpoint handles new signups with rate limiting (`rl:register`, 5 attempts/hour), while the `/auth/callback/route.ts` handles post-verification logic, including a critical *smart-linking* step that binds verified emails to unclaimed client profiles.
 
-Rate limiting is enforced using `getRegisterLimiter()` from `src/lib/ratelimit.ts`. The client's IP is extracted via `getIp(req)` and checked against the rate limit. If exceeded, a `429` status is returned with the message `"Muitas tentativas de registro. Aguarde um momento."`.
+Registration behavior differs between environments: in production, `signUp()` triggers email confirmation; in development, the service role client creates pre-confirmed users for faster iteration. This duality is managed via `SUPABASE_SERVICE_ROLE_KEY` and `NODE_ENV`, ensuring realistic flows in production while accelerating local testing.
 
-User creation differs by environment:
-- In `production`, `supabase.auth.signUp()` is used with the anon key. This triggers Supabase’s email verification flow. The response’s `data.session` determines whether `requiresEmailConfirmation` is set to `true` (if no session is returned).
-- In `development`, the service role `adminClient.auth.admin.createUser()` is used with `email_confirm: true`. This creates a confirmed user directly, bypassing email verification for faster iteration.
+## Smart-Linking: Bridging Anonymous and Authenticated States
 
-The endpoint returns `{ success: true, type, requiresEmailConfirmation }` on success. Errors during registration return a `400` status with the Supabase error message.
+A key challenge in Odys is onboarding clients who may have been created manually (e.g., via admin UI) before having an account. The smart-linking mechanism solves this: when a client verifies their email, the system checks for unlinked `clients` records with matching emails and updates the `userId` field.
 
-## Callback Endpoint
+This occurs in `src/app/auth/callback/route.ts` after `exchangeCodeForSession`. Using Drizzle ORM, it runs:
+```ts
+await db.update(clients)
+  .set({ userId: user.id })
+  .where(and(isNull(clients.userId), eq(clients.email, user.email)))
+```
+This ensures that once a user verifies their email, they immediately gain access to their historical data—appointments, notes, messages—without manual association.
 
-The `GET /auth/callback` endpoint, located in `src/app/auth/callback/route.ts`, handles post-authentication redirects from Supabase, such as after email verification or password recovery.
+## Design Decisions
 
-The `origin` is constructed using `x-forwarded-host` and `x-forwarded-proto` headers to support correct redirection in proxy environments like Vercel.
+The use of `user_metadata.type` (`professional` | `client`) allows role-based routing post-login. However, the actual authorization is enforced at the API layer by checking ownership via `professionalId` or `clientId` in queries.
 
-Key behaviors:
-- **Session Exchange**: The `code` query parameter is exchanged for a session via `supabase.auth.exchangeCodeForSession(code)`.
-- **Password Recovery**: If `type=recovery`, the user is redirected to `/reset-password`.
-- **User Metadata Update**: If `type` is `"professional"` or `"client"`, `supabase.auth.updateUser({ data: { type } })` sets the user type in metadata.
-- **Smart-linking**: After successful session exchange and only if `type="client"`, the endpoint performs a database update. It links the authenticated `user.id` to any `clients` records with a matching `email` and `null` `userId`, using `db.update(clients).set({ userId: user.id })` with a condition on `isNull(clients.userId)` and `eq(clients.email, user.email)`.
+The decision to skip email verification in development using `admin.createUser({ email_confirm: true })` trades security for velocity. It avoids the need for test inboxes or manual link clicking, but relies on strict environment separation.
 
-On success, the user is redirected to `/auth/redirect`. If the session exchange fails, they are redirected to `/login?error=auth`.
+Rate limiting via `getRegisterLimiter()` (5/hour) prevents abuse while allowing normal usage. This is part of a broader rate-limiting strategy (`rl:booking`, `rl:api`, etc.) using Redis-backed tokens.
 
-## Known Gaps
+## Potential Improvements
 
-In `src/app/api/auth/register/route.ts`, the use of `adminClient.auth.admin.createUser()` in development with `email_confirm: true` bypasses email verification for faster testing. However, this method does not trigger actual email delivery even when `email_confirm` is `false`. As a result, the development environment does not replicate the production email verification flow, including email sending and user interaction with confirmation links.
+1. **Move type assignment to registration metadata**  
+   In `src/app/api/auth/register/route.ts`, the `type` is passed in request body but only conditionally applied in callback. Instead, always store `type` during signup via `options.data`, eliminating reliance on query param persistence.
 
-## Why This Shape
+2. **Add telemetry on smart-link success**  
+   In `src/app/auth/callback/route.ts`, the `db.update(clients)` call lacks logging. Adding a debug log when a client is linked would help diagnose connection issues during onboarding.
 
-The separation of registration and callback logic allows focused handling of user creation versus post-authentication actions. The register endpoint is optimized for input validation and environment-specific user provisioning, while the callback endpoint acts as a centralized handler for authentication completion.
+3. **Validate `type` in register POST handler**  
+   Currently, any string can be passed as `type` in `/api/auth/register`. Enforce allowed values (`"professional"`, `"client"`) early in the request lifecycle to prevent inconsistent metadata.
 
-Smart-linking is placed in `GET /auth/callback` because it depends on email verification being completed by Supabase. This ensures that the `user.email` is trusted before linking to existing `clients` records, maintaining data integrity. The design supports both immediate user linking and deferred identity resolution, enabling a smooth onboarding flow for users who interact with the system before creating an account.
+## References
+
+- `src/app/api/auth/register/route.ts`: Registration logic with environment-aware auth flow
+- `src/app/auth/callback/route.ts`: Smart-linking implementation post-email verification
+- `drizzle.config.ts`: Schema definition for `clients.userId` nullable text field used in linking
