@@ -1,38 +1,39 @@
 ---
-title: "Database RLS Gap"
-description: "No RLS policies; app-layer authorization pattern and its trade-offs"
+title: "RLS Gap: No Row-Level Security Policies"
+description: "Analysis of Odys' current lack of RLS policies and reliance on app-layer authorization, including trade-offs and improvement opportunities."
 ---
 
-# Database RLS Gap
+# RLS Gap: No Row-Level Security Policies
 
-This page details the current authorization pattern, which relies on application-layer checks rather than PostgreSQL Row-Level Security (RLS) policies. It outlines how authorization is enforced and discusses the associated trade-offs.
+Odys operates a 10-table schema where user data isolation is critical—professionals manage clients, appointments, messages, and payments. Despite this, the system currently has no Row-Level Security (RLS) policies in place. Access control is instead enforced entirely at the application layer, a decision with significant implications for security, maintainability, and long-term scalability.
 
-## App-Layer Authorization Pattern
+## Overview
 
-The application currently implements authorization logic within API routes, primarily by verifying that a resource belongs to the authenticated user. This pattern is evident in how professional data is accessed and managed.
+The database schema includes core entities such as `professionals`, `clients`, `appointments`, `messages`, and `recurringSchedules`, all linked via `professionalId` or `userId`. There are 21 API routes handling operations from booking to notifications, and every authenticated action depends on verifying ownership or relationship before allowing access. For example, fetching messages or updating appointments requires checking whether the requesting professional owns the associated data. This logic is centralized in `src/lib/api.ts` through helpers like `getProfessional`, but it is not backed by database-level enforcement.
 
-For instance, the `src/lib/api.ts` module provides shared helpers for API routes, including authentication utilities. The `getProfessional` function retrieves a professional's record based on the authenticated Supabase user ID:
+Without RLS, any direct database access—whether through a compromised admin interface, misconfigured API, or future migration—could bypass these checks. The current model assumes perfect application logic, which becomes riskier as the codebase grows.
 
-```typescript
-export async function getProfessional(userId: string) {
-  const [professional] = await db
-    .select()
-    .from(professionals)
-    .where(eq(professionals.userId, userId))
-    .limit(1)
-  return professional ?? null
-}
-```
+## Design decisions
 
-After retrieving the `professional` record, subsequent API handlers (e.g., in `src/app/api/**`) are responsible for explicitly checking that the `professional.userId` matches the `user.id` obtained from `getUser()`. This ensures that a user can only access or modify data associated with their own professional profile.
+The app-layer authorization pattern was likely chosen for its simplicity and tight integration with Next.js server components and Supabase auth. Functions like `getProfessional` abstract identity resolution and are reused across API routes, promoting consistency. This approach also avoids the complexity of managing Postgres policies alongside Drizzle ORM, especially during early development.
 
-## Known Gaps
+However, this trade-off centralizes trust in the application code. If a route mistakenly omits an ownership check—such as failing to validate `professionalId` on a `DELETE /api/recurring` call—the database will still allow the operation. Rate limiting (e.g., `rl:booking` at 5/10m) helps mitigate abuse but does nothing to prevent unauthorized data access.
 
-The current app-layer authorization approach, while functional, introduces a significant trade-off:
+Additionally, the use of `userId` as a text field (rather than UUID) in tables like `professionals` and `follows` suggests alignment with Supabase auth IDs, but without RLS, this linkage remains logically enforced, not structurally guaranteed.
 
-*   **Scattered Authorization Logic**: Authorization checks are distributed across various API handlers (e.g., `src/app/api/**`). This increases the risk of a missed check leading to unauthorized data access or modification. The security audit explicitly flagged this as a "Phase-2" item, noting that "Every miss is a potential leak."
-*   **No Database-Level Enforcement**: Without RLS policies, the database itself does not enforce access control. Any direct database access (e.g., via an admin tool or a compromised backend service) would bypass the application's authorization logic entirely.
+## Potential improvements
 
-## Why This Shape
+1. **Introduce RLS policies for `appointments` and `messages`**  
+   These tables contain sensitive user interactions and scheduling data. Adding RLS policies that restrict access based on `professionalId` would provide defense-in-depth. The logic in `src/lib/api.ts` already extracts the user and resolves the professional, so enabling RLS would align the database with existing app assumptions. See `getProfessional` in `src/lib/api.ts`.
 
-The decision to implement authorization at the application layer, rather than via PostgreSQL RLS, reflects an iterative development approach. While RLS offers robust, database-enforced security, its implementation can add complexity early in a project's lifecycle. The current pattern allowed for faster initial development and deployment, with the understanding that a more comprehensive, database-level security layer would be a subsequent phase. The security audit confirmed this as a key area for future enhancement.
+2. **Enforce ownership in `client_notes` via policy**  
+   Client notes are highly sensitive. While the app checks ownership today, a direct DB query could expose them. A policy ensuring `auth.uid() = professionals.userId` via a join would close this gap. This strengthens trust without changing app logic.
+
+3. **Add RLS to `recurringSchedules` and `reviews`**  
+   These tables are tied to both `professionalId` and `clientId`. Without policies, a malicious actor could forge requests to view or delete others' recurring bookings or reviews. The current `eq(professionals.userId, userId)` pattern in `getProfessional` should be mirrored in SQL policies to ensure consistency.
+
+## References
+
+- `src/lib/api.ts`: `getProfessional`, `getUser`, and response helpers
+- API routes: `/api/messages`, `/api/appointments/[id]`, `/api/recurring`
+- Tables: `appointments`, `messages`, `client_notes`, `recurringSchedules`
