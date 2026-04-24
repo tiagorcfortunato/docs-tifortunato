@@ -1,42 +1,45 @@
 ---
-title: "Backend Overview"
-description: "Backend overview: API route tree, shared helpers, auth pattern"
+title: "Backend Overview: API Route Tree, Shared Helpers, Auth Pattern"
+description: "Structural overview of the Odys backend: API surface, shared utilities, authentication flow, and design rationale."
 ---
-# Backend Overview
 
-This page provides an overview of the backend architecture, focusing on the API route tree, shared helper functions, and the authentication pattern.
+# Backend Overview: API Route Tree, Shared Helpers, Auth Pattern
 
-## API Route Tree
+The Odys backend powers a professional booking and client management platform, balancing scalability, security, and developer ergonomics. This document maps the structural foundation of the API—its routes, shared logic, and authentication model—providing context for maintainability and future growth.
 
-The API route tree is structured exclusively around the App Router, with no `pages/` directory. Authentication-related pages reside within the `(auth)` route group, which shares the same URL space but utilizes its own layout and does not introduce a `/auth` prefix in the URL. Both the dashboard and client portal feature their own layouts, each protected by server-side authentication guards. The public booking page (`/p/[slug]`) is implemented as an async Server Component that performs its database reads server-side before rendering and handing off interactivity to the `BookingWidget` client component.
+## Overview
 
-There is no centralized `middleware.ts` for authentication. Instead, every route that requires authentication explicitly calls `supabase.auth.getUser()` itself via the `getUser()` and `getProfessional(userId)` helpers in `src/lib/api.ts`.
+Odys operates on a 10-table Drizzle schema, centered around `professionals` as the core entity, with related data for `appointments`, `clients`, `messages`, and `recurringSchedules`. The API exposes 21 endpoints across functional domains: booking, messaging, payments, notifications, and cron jobs. Authenticated routes rely on Supabase JWTs, with rate limiting enforced via IP hashing and Redis-backed counters. Critical workflows—like Stripe webhooks and WhatsApp integrations—are isolated under `/api/webhook` and `/api/cron`, ensuring separation of concerns.
 
-## Shared Helpers
+## API Structure and Routing
 
-Shared helpers for API routes are defined in `src/lib/api.ts`. These helpers standardize JSON responses, authenticate users, and extract client IPs.
+The route tree is organized by feature rather than resource, favoring action-oriented paths. For example, `/api/booking` handles both creation and availability checks, while `/api/recurring` manages recurring schedule mutations. Administrative tasks like `/api/cron/reminders` (scheduled at `0 8 * * *`) run via cron, reducing load on interactive routes.
 
-The `src/lib/api.ts` module provides:
+Authentication is abstracted through shared helpers in `src/lib/api.ts`. Every protected route uses `getUser()` to extract the Supabase user, then `getProfessional()` to resolve the corresponding row in the `professionals` table via `userId`. This two-step flow decouples auth from business logic and ensures consistent access control.
 
-*   **Response helpers**: Functions such as `ok`, `unauthorized`, `forbidden`, `notFound`, `badRequest`, `conflict`, `tooManyRequests`, and `serverError` return standardized JSON responses with appropriate HTTP status codes. The `serverError` helper logs the error server-side and returns a generic 500, preventing internal details from being exposed to the client.
-*   **Auth helpers**:
-    *   `getUser()` retrieves the authenticated Supabase user by calling `supabase.auth.getUser()` via `createClient()` from `src/lib/supabase/server`.
-    *   `getProfessional(userId)` fetches the corresponding professional record from the `professionals` table in `src/lib/db/schema` using `db` from `src/lib/db`.
-*   **Utility helpers**: `getIp(req)` extracts the client IP from the `x-forwarded-for` request header, primarily for rate limiting purposes.
+Rate limiting is applied contextually: `/api/booking` allows 5 requests per 10 minutes, while general API usage is capped at 60 per minute. Limits are enforced using the `getIp()` utility, which extracts the `x-forwarded-for` header for distributed rate tracking.
 
-## Auth Pattern
+## Design Decisions
 
-The authentication pattern relies on Supabase for end-to-end authentication.
+The backend favors simplicity and composability. Response helpers like `ok()`, `badRequest()`, and `serverError()` standardize JSON output and prevent accidental leakage of internal errors. The use of Drizzle ORM enables type-safe queries while remaining close to SQL, reducing impedance mismatch.
 
-*   `src/lib/supabase/server.ts` wraps the Supabase server client using `createServerClient` and a Next.js cookie adapter (leveraging `cookies()` from `next/headers`). The `try/catch` block around `setAll` handles the known "RSC cannot write cookies" error as per the Supabase SSR pattern.
-*   A browser-side equivalent client is used for operations like sign-out and signup.
-*   The register route utilizes the anonymous Supabase client in production to trigger verification emails.
-*   Smart-linking (backfilling `clients.userId` by email) is gated within `/auth/callback` to ensure it executes only after `exchangeCodeForSession` has successfully verified the user's inbox.
+Auth is intentionally minimal: no role-based access control beyond professional membership, and no session tokens stored in the database. This reduces attack surface and aligns with Supabase’s native auth model. The `userId` field in `professionals` and `clients` serves as the foreign key to Supabase auth, avoiding duplication.
 
-## Known Gaps
+Cron jobs are exposed as API routes for operational simplicity—deployed on Vercel, they’re triggered via external schedulers. While not RESTful, this pattern leverages existing infrastructure without requiring a separate worker layer.
 
-A notable design choice is the absence of a centralized middleware for authentication. Instead, every route that requires authentication must explicitly call `supabase.auth.getUser()` itself via the `getUser()` and `getProfessional(userId)` helpers in `src/lib/api.ts`. While this approach is explicit, it places the burden of authentication on each new route author and has been flagged by a security audit as a potential area for improvement.
+## Potential Improvements
 
-## Why This Shape
+1. **Extract rate limit configuration into a centralized registry**  
+   Currently, rate limits are hardcoded in middleware or route handlers. Moving them to a shared config (e.g., `rateLimits` object) would improve consistency and enable dynamic tuning. See `src/lib/api.ts` for scattered usage of `tooManyRequests`.
 
-The backend is structured around the App Router to leverage its server-side rendering and authentication capabilities effectively. The shared helpers in `src/lib/api.ts` provide a standardized and consistent way of handling API responses, authentication, and common utility functions across all routes. The authentication pattern relies on Supabase to manage end-to-end authentication, with a strong focus on verifying user inboxes and enabling smart-linking. This architectural shape aims for a flexible and scalable backend that can adapt to evolving requirements.
+2. **Add input validation schema for POST routes**  
+   Routes like `/api/booking` and `/api/messages` accept raw JSON without validation. Introducing Zod schemas would prevent invalid data from reaching the database and improve error clarity. No validation layer is currently present in `src/lib/api.ts`.
+
+3. **Refactor `getProfessional` to include authorization checks**  
+   The helper returns the professional row but doesn’t enforce active status or plan limits. Enhancing it to reject inactive or expired accounts early (e.g., checking `trialEndsAt`) would reduce redundant checks in individual routes. See `getProfessional()` in `src/lib/api.ts`.
+
+## References
+
+- `src/lib/api.ts`: Response and auth helpers
+- `drizzle.config.ts`: Schema definition
+- `/app/api/`: Route implementations
