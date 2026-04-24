@@ -1,32 +1,108 @@
 ---
-title: "API Routes Overview"
-description: "The complete API route tree and shared helpers (getUser, responses)"
+title: API Routes Overview
+description: The complete API route tree and shared helpers (getUser, responses)
 ---
 
 # API Routes Overview
 
-This document maps the entire backend API surface of Odys, a practice management platform for professionals. Understanding the API structure is essential for extending features, debugging flows, and maintaining consistency across auth, error handling, and data access. Every endpoint adheres to a shared set of helpers that enforce uniform responses and secure user resolution.
+The backend of odys is built around a comprehensive set of API routes, serving as the primary interface for both the frontend application and external integrations. This document provides a deep dive into the structure of these routes, the rationale behind their design, and the shared utility functions that ensure consistency and efficiency across the entire API surface. Understanding this architecture is crucial for anyone looking to extend or maintain the odys backend.
 
 ## Overview
 
-Odys exposes **21 API routes** across core domains like appointments, messaging, payments, and user management. The backend operates on a **10-table Drizzle ORM schema**, centered around the `professionals` table, which links to clients, appointments, messages, and reviews. Key subsystems include Stripe integration (`/api/stripe/*`), cron-triggered automation (`/api/cron/*`), and WhatsApp messaging via webhooks. Two cron jobs run daily: reminder dispatch at 8 AM and a WhatsApp watchdog at 9 AM. Rate limiting is enforced on critical paths like booking and registration, using Redis-backed limits to prevent abuse.
+The odys backend exposes a total of 21 distinct API routes, each designed to handle specific functionalities ranging from user authentication and professional management to client interactions, scheduling, and external service integrations. These routes are built using Next.js API route conventions, allowing for a clear file-system-based organization.
 
-The API design emphasizes consistency through shared utilities. Every route imports response helpers like `ok`, `badRequest`, and `serverError` from `src/lib/api.ts`, ensuring standardized JSON payloads and status codes. Authentication is abstracted via `getUser` and `getProfessional`, which resolve the current user from Supabase auth and their associated professional profile. This pattern reduces boilerplate and enforces security at the edge.
+Underpinning these API operations is a robust database schema comprising 10 tables, including `professionals`, `clients`, `appointments`, `messages`, and `notifications`. The interactions with these tables are orchestrated through Drizzle ORM, providing a type-safe and efficient way to manage data.
 
-## Design decisions
+A central piece of the API architecture is the `src/lib/api.ts` file. This module consolidates common functionalities such as standardized HTTP responses, authentication helpers, and utility functions for tasks like IP extraction. By centralizing these concerns, the project ensures that individual API route handlers can focus purely on their business logic, relying on these shared building blocks for foundational tasks.
 
-The current structure favors **composability and maintainability** over fragmentation. By centralizing response logic and auth resolution, the codebase avoids duplication and ensures that changes—like updating error formats—propagate globally. The use of Drizzle ORM with explicit schema definitions enables type-safe queries while keeping SQL intent clear. Routes are grouped by concern (e.g., `/api/messages`, `/api/recurring`) rather than HTTP method, improving discoverability. Cron endpoints are isolated and secured, reflecting their scheduled nature and need for external access (e.g., via Vercel Cron Jobs).
+## API Route Structure
 
-## Potential improvements
+The 21 API routes are organized logically, reflecting the core domains of the odys application. Let's explore them by their primary function:
 
-1. **Extract rate limit configuration into a dedicated module** (`src/lib/api.ts`). Currently, limits are defined in environment-dependent strings like `"10 m"`—centralizing them with typed constants would improve readability and reduce errors.
+### User and Professional Management
 
-2. **Add input validation utilities** to `src/lib/api.ts`. Functions like `badRequest` are used frequently, but validation logic is inlined across routes. Introducing a `validate()` helper with structured error returns would standardize request checks.
+Routes like `/api/account` (DELETE), `/api/onboarding` (POST), `/api/settings` (PATCH), and `/api/client-profile` (POST) handle the lifecycle and configuration of user accounts and professional profiles. The `/api/onboarding` route, for instance, is critical for initial setup, and it's protected by a rate limit of 3 requests per 1 hour to prevent abuse. The `professionals` table, with its 24 columns including `userId`, `name`, `slug`, and various payment-related fields, is central to these operations.
 
-3. **Enhance `getProfessional` with role-based access control**. The function returns the professional row but doesn’t enforce active status or plan eligibility. Adding a check for `professional.active` and returning `forbidden()` if false would harden security at the auth layer.
+### Authentication
+
+The `/api/auth/register` (POST) route is dedicated to user registration. To maintain system integrity, this route is also rate-limited to 5 requests per 1 hour.
+
+### Booking and Scheduling
+
+The core functionality of odys revolves around appointments. The `/api/booking` route supports both `GET` (likely for fetching availability or existing bookings) and `POST` (for creating new bookings). Recurring schedules are managed via `/api/recurring` (POST, DELETE), while individual appointments can be updated using `/api/appointments/[id]` (PATCH). The `appointments` table, with its 13 columns, and the `recurringSchedules` table, with 9 columns, are heavily utilized here. The `/api/booking` endpoint is subject to a rate limit of 5 requests per 10 minutes.
+
+### Client Interactions
+
+Professionals interact with their clients through several API endpoints. `/api/clients/notes` (POST) allows for adding notes to client profiles, leveraging the `clientNotes` table. Messaging is handled by `/api/messages` (GET, POST), which interacts with the `messages` table. Professionals can manage their followers via `/api/follows` (GET, POST, DELETE), which maps to the `follows` table. Finally, client feedback is captured through `/api/reviews` (POST), populating the `reviews` table.
+
+### Notifications
+
+User notifications are managed through `/api/notifications` (GET, PATCH), allowing users to retrieve and mark notifications as read. The `notifications` table stores these, tracking `recipientId`, `type`, `title`, and `body`.
+
+### Integrations
+
+odys integrates with several external services:
+*   **Stripe:** `/api/stripe/checkout` (POST) initiates payment flows, and `/api/stripe/webhook` (POST) processes events like `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+*   **WhatsApp:** `/api/whatsapp/webhook` (POST) receives incoming messages and events from WhatsApp, enabling conversational interactions. This webhook is rate-limited to 10 requests per 1 minute.
+*   **AI:** `/api/ai/chat` (POST) provides an interface for AI-powered chat functionalities, likely leveraging the 4 available AI tools: `get_appointments_today`, `get_customer_by_phone`, `get_revenue_summary`, and `update_appointment_status`.
+*   **File Uploads:** `/api/upload/avatar` (POST) handles the uploading of user avatars.
+
+### Cron Jobs
+
+Two critical background tasks are exposed as API routes, intended to be triggered by a cron scheduler:
+*   `/api/cron/reminders` (GET) runs daily at `0 8 * * *` (8 AM UTC) to send out appointment reminders.
+*   `/api/cron/whatsapp-watchdog` (GET) runs daily at `0 9 * * *` (9 AM UTC), likely monitoring WhatsApp message queues or statuses.
+
+All other API routes not specifically mentioned above are subject to a general rate limit of 60 requests per 1 minute, applied via the `rl:api` prefix.
+
+## Shared API Helpers (`src/lib/api.ts`)
+
+The `src/lib/api.ts` file is a cornerstone of the odys backend, providing a set of shared utilities that promote consistency, reduce boilerplate, and enforce best practices across all API routes.
+
+### Response Helpers
+
+A suite of functions ensures that API responses are standardized, predictable, and carry the correct HTTP status codes:
+*   `ok(data: object)`: Returns a `200 OK` response with the provided data.
+*   `unauthorized()`: Returns a `401 Unauthorized` response with a generic "Não autorizado" message.
+*   `forbidden(msg = "Sem permissão")`: Returns a `403 Forbidden` response, allowing for a custom message.
+*   `notFound(msg = "Não encontrado")`: Returns a `404 Not Found` response.
+*   `badRequest(msg: string)`: Returns a `400 Bad Request` response, typically used for invalid input.
+*   `conflict(msg: string)`: Returns a `409 Conflict` response, indicating a resource conflict.
+*   `tooManyRequests()`: Returns a `429 Too Many Requests` response, used in conjunction with rate limiting.
+*   `serverError(context: string, err: unknown)`: This is a crucial helper. It logs the internal error server-side with a provided context string and returns a generic `500 Internal Server Error` to the client, preventing sensitive internal details from being exposed.
+
+### Auth Helpers
+
+Authentication and user identification are fundamental to most API interactions:
+*   `getUser()`: This asynchronous function leverages the Supabase server client (`createClient()`) to retrieve the currently authenticated user. It returns the Supabase `user` object or `null` if no user is logged in.
+*   `getProfessional(userId: string)`: Once a `userId` is obtained (typically from `getUser()`), this function queries the Drizzle ORM `db` instance to fetch the corresponding professional's record from the `professionals` table. It uses `eq(professionals.userId, userId)` to find the professional and limits the result to 1, returning the professional object or `null`.
+
+### Utility Helpers
+
+*   `getIp(req: NextRequest)`: This function extracts the client's IP address from the `x-forwarded-for` header, which is common in environments behind a proxy or load balancer. It falls back to "anonymous" if the IP cannot be determined, primarily used for rate limiting.
+
+## Design Decisions
+
+The design of the odys API routes and shared helpers reflects several deliberate choices aimed at maintainability, consistency, and developer experience.
+
+The decision to centralize response helpers in `src/lib/api.ts` was made to ensure a consistent API contract. Instead of each route handler manually constructing `NextResponse.json` objects with varying error messages and status codes, developers can simply call `badRequest("Invalid input")` or `unauthorized()`. This not only makes the code cleaner but also guarantees that clients receive predictable error structures, simplifying frontend error handling. The `serverError` function, in particular, highlights a commitment to operational security by preventing internal server details from leaking to the client while still providing server-side visibility into issues.
+
+The separation of authentication concerns between Supabase and Drizzle ORM is another key design choice. `getUser` relies on Supabase's robust authentication system, which handles user sessions, tokens, and identity management. Once a user's identity is established, `getProfessional` then uses Drizzle to fetch application-specific profile data from the `professionals` table. This clear division leverages the strengths of each tool: Supabase for auth, Drizzle for relational data access, without conflating their responsibilities. The `professionals` table's `userId` column, being `unique` and `nullable: false`, is critical for this lookup, ensuring a one-to-one mapping between a Supabase user and their professional profile.
+
+Finally, the inclusion of `getIp` and the explicit definition of rate limits in the system's manifest (`rateLimits`) indicates a proactive approach to API stability and abuse prevention. By extracting the IP consistently, the system lays the groundwork for applying these rate limits effectively across various endpoints, protecting resources like booking and registration from excessive requests.
+
+## Potential Improvements
+
+While the current API structure and helpers provide a solid foundation, there are always opportunities for refinement and enhancement:
+
+1.  **Enhanced Type Safety for Response Payloads:** The `ok` function currently accepts `data: object`. While functional, this could be made more robust by introducing a generic type parameter, like `export const ok = <T>(data: T) => NextResponse.json(data)`. This would allow TypeScript to infer or enforce the exact shape of the data being returned, improving type safety in API route handlers and for consumers of the API.
+
+2.  **Centralized Error Handling Middleware:** Currently, `serverError` must be explicitly called within each route handler when an unexpected error occurs. This can lead to boilerplate and the risk of unhandled exceptions exposing internal details. A more robust approach would be to implement a global error handling middleware or a higher-order function that wraps API route handlers. This middleware could catch any uncaught exceptions, log them using `serverError`, and return a generic `500` response automatically, reducing repetitive code in individual routes.
+
+3.  **Unified Authentication and Authorization Helper:** The `getUser` and `getProfessional` functions are often called in sequence within API routes. Consider creating a single, higher-level helper or decorator that combines these operations. This helper could, for example, return the `professional` object directly if found, or automatically invoke `unauthorized()` or `forbidden()` if the user is not logged in or not associated with a professional profile. This would further streamline route handler logic by abstracting away the two-step lookup process.
 
 ## References
 
-- `src/lib/api.ts`: Contains `getUser`, `getProfessional`, and all response helpers
-- `drizzle.config.ts`: Defines the 10-table schema including `professionals`, `appointments`, and `recurringSchedules`
-- `api/[...]/route.ts`: Individual route files implementing the 21 endpoints listed in FACTS
+*   `src/lib/api.ts`
+*   `src/lib/db/schema.ts`
+*   `src/lib/supabase/server.ts`
