@@ -1,82 +1,82 @@
 ---
-title: "Odys Overview"
-description: "A scheduling SaaS for Brazilian independent professionals, replacing the WhatsApp-thread-as-agenda pattern."
+title: Odys Overview
+description: An introduction to Odys, a scheduling platform for independent professionals, detailing its purpose, features, and underlying architecture.
 ---
 
 # Odys Overview
 
-This page provides a high-level overview of Odys, including its purpose, target users, core functionality, current state, and documentation structure.
+Odys is a specialized SaaS platform designed to streamline operations for independent professionals in Brazil. It addresses the common challenges faced by individuals like psychologists, personal trainers, and beauticians who often manage their client interactions and scheduling manually, typically through WhatsApp. This document provides a deep dive into Odys's core functionality, its technical architecture, and the design decisions that shaped its current implementation, drawing insights from the application's landing page and overall project structure.
 
-Odys is a scheduling SaaS designed for **Brazilian independent professionals** in health, fitness, wellness, beauty, education, and creative services — such as psychologists, personal trainers, hairdressers, estheticians, nutritionists, and photographers. It replaces the common practice of managing appointments via chaotic WhatsApp threads.
+## Overview
 
-## The Problem
+At its heart, Odys aims to replace the "chaos of WhatsApp" with an organized, automated system for managing appointments, reducing no-shows, and handling payments. The platform is explicitly "WhatsApp-first," meaning it integrates deeply with WhatsApp for client communication, but crucially, it does so through a single, Odys-managed corporate WhatsApp number rather than requiring professionals to connect their personal accounts. This approach, detailed in the `README.md`, allows for automated reminders, booking confirmations, and even conversational AI interactions without cluttering a professional's personal communication channels.
 
-Most Brazilian independent professionals rely on WhatsApp to manage their schedules. Clients message directly to book sessions, leading to fragmented communication, missed payments, manual reminders, and no centralized calendar or analytics. Existing tools like Calendly or Simples Agenda fail to address local needs:
+The application is built on a modern web stack, primarily using Next.js 16 (App Router) with TypeScript for its frontend and API routes, and Supabase as its PostgreSQL database backend. Drizzle ORM provides a type-safe interface to the database, which comprises 10 distinct tables. The landing page, found in `src/app/page.tsx`, serves as the primary entry point, showcasing the platform's value proposition and key features to potential users.
 
-- Overly complex for solo practitioners
-- Lack native integration with WhatsApp, the primary communication channel
-- Built for English-speaking corporate markets, not Brazilian realities like PIX payments
+Odys targets a diverse range of independent professionals, with examples like "Psicólogo", "Personal Trainer", "Cabeleireiro", and "Nutricionista" displayed on the landing page. A comprehensive list of 30+ professions is defined in `src/lib/professions.ts`, categorized into areas like "Saúde & Clínica" and "Beleza & Estética", indicating the breadth of its intended user base. To ensure legal compliance and transparency, Odys includes dedicated pages for its privacy policy and terms of service, adhering to LGPD regulations.
 
-## What Odys Does
+## Core Functionality
 
-Odys provides a complete operational stack:
+Odys provides a suite of features tailored for both professionals and their clients, all orchestrated through a unified platform.
 
-- **Public booking page** at `/p/[slug]` — clients select slots and submit details without friction
-- **AI WhatsApp agent** — enables autonomous booking via chat using Groq LLM tool-calling
-- **Professional dashboard** — centralized interface to manage appointments, clients, and messages
-- **Transactional WhatsApp messages** — automated reminders, confirmations, and alerts sent from a single corporate number via Evolution API
-- **Stripe subscription billing** — professionals pay for Basic, Pro, or Premium plans
-- **PIX payment flow** — supports Brazilian-native off-Stripe client-to-professional payments
+### Scheduling and Availability
 
-## Scope of Professions Supported
+Professionals define their working hours using the `availability` table, which stores `dayOfWeek`, `startTime`, and `endTime` for each `professionalId`. Clients can then visit a public booking page (e.g., `/p/[slug]`) to view available time slots and schedule appointments. The `appointments` table tracks each booked session, including `startsAt`, `endsAt`, `status`, and `paymentStatus`. Professionals can configure whether appointments require manual confirmation or are automatically confirmed upon booking. Appointment statuses include `pending_confirmation`, `confirmed`, `completed`, `rejected`, `cancelled`, and `no_show`. Payment statuses include `none`, `authorized`, `captured`, and `refunded`. For recurring clients, the `recurringSchedules` table allows professionals to set up automated, repeating appointments, which are then generated by the system. The `/api/booking` API route handles the logic for fetching available slots and creating new appointments.
 
-Odys supports 29 professions across 6 categories, defined in `src/lib/professions.ts`:
+### Client Management and Communication
 
-- **Health**: psychologist, physiotherapist, nutritionist, dentist, therapist, speech therapist
-- **Fitness**: personal trainer, yoga instructor, pilates instructor, dance instructor
-- **Wellness**: massage therapist, acupuncturist, holistic therapist, osteopath
-- **Beauty**: hairdresser, barber, manicure, esthetician, makeup artist, tattoo artist, eyebrow designer, lash designer
-- **Education**: tutor, music instructor, language instructor, coach
-- **Creative**: photographer, personal stylist, personal organizer
+Each professional maintains a list of clients in the `clients` table, which links to the `professionalId`. This table stores essential client details like `name`, `phone`, and `email`. Professionals can keep private notes about their clients in the `clientNotes` table, accessible via the `/api/clients/notes` endpoint. A direct messaging system, managed through the `messages` table and exposed by the `/api/messages` API route, enables professionals and clients to communicate within the platform, centralizing all interactions.
 
-The data model is strictly per-individual-professional — there is no `salons` table. A salon owner would onboard each professional separately.
+### Automated WhatsApp Integration
 
-## The Corporate-Number Architecture
+A cornerstone of Odys is its deep integration with WhatsApp, powered by the Evolution API v2. The system uses approximately 20 distinct WhatsApp message templates, defined in `src/lib/whatsapp.ts`, to handle various communications. These include automated 24-hour and 1-hour reminders before sessions, booking confirmations, rejections, and cancellations. These messages are sent via cron jobs, specifically `GET /api/cron/reminders`, which runs daily at 8 AM. Additionally, a `GET /api/cron/whatsapp-watchdog` cron job runs daily at 9 AM to perform a health check on the Evolution API. The system also implements conversation-aware delivery, where the reminder cron job skips sending a message if the client is actively conversing with the AI agent, deferring the reminder to avoid interrupting the dialogue. Inbound messages from clients are processed by the `POST /api/whatsapp/webhook` endpoint, which routes them to an AI intake agent for conversational scheduling and context resolution. This ensures that even replies to transactional messages are handled intelligently, by looking up `last_outbound:{phone}` in Redis to link them back to the relevant professional or appointment. In addition to WhatsApp, Resend is used for transactional emails, such as confirmations and notifications, as managed by `src/lib/email.ts`.
 
-Odys operates a **single corporate WhatsApp number** (via Evolution API) for all outbound and inbound interactions:
+### Payments and Subscriptions
 
-- **Outbound**: reminders, confirmations, AI replies, and professional alerts originate from this number
-- **Inbound**: client and professional messages are routed through `/api/whatsapp/webhook` to the AI intake agent
-- **Reply routing**: context is preserved using a Redis key `last_outbound:{phone}`, allowing the AI to identify which professional or appointment a reply concerns
-- **Conversation-aware delivery**: the reminder cron skips pushes if a client is mid-conversation with the AI (\<15 min idle), preventing interleaved notifications
+Odys facilitates payment collection for professionals and manages subscriptions for the platform itself. Professionals can configure their PIX key (`pixKeyType`, `pixKey` columns in the `professionals` table) to receive payments directly from clients. For platform subscriptions, Odys uses Stripe, integrating with its API via routes like `/api/stripe/checkout` and handling webhook events (e.g., `checkout.session.completed`, `customer.subscription.updated`) through `POST /api/stripe/webhook`. The platform offers four distinct plans: `free`, `basic`, `pro`, and `premium`, each with different pricing and feature limits, as defined in the `PLANS` constant in `src/lib/stripe`. For Pro plan users, the platform also provides financial reports, detailing revenue by period, completed sessions, and no-shows.
 
-This architecture ensures professionals' personal numbers remain private, while enabling scalable, brand-consistent communication. The system is designed to transition to Meta's WhatsApp Business Cloud API when volume demands it.
+### User Engagement and Discovery
 
-## Current State (2026-04-23)
+Clients can discover professionals through the `/explore` page and "follow" their favorites, recorded in the `follows` table. After an appointment, clients can submit ratings and comments via the `reviews` table, linked to a specific `appointmentId`. Notifications, stored in the `notifications` table, keep both professionals and clients informed of important events, with the `/api/notifications` route allowing users to fetch and mark them as read. Clients also have access to a dedicated client portal (`/c`) where they can view their appointment history, check statuses, and manage cancellations. The platform supports both dark and light modes, allowing users to customize their interface preference.
 
-- **Deployed** at [odys.com.br](https://odys.com.br) — launch-ready
-- **Zero paying customers** — intentionally pre-launch
-- Core systems are production-hardened: Drizzle ORM with Supabase Postgres, Stripe + PIX payments, active security audit (15 findings in progress), three-runtime Sentry observability, and an MCP server exposing the database to AI agents
+## Design Decisions
 
-When documentation states "the system handles X," it means the feature is implemented and tested end-to-end — but not yet validated under real user load.
+The architectural choices in Odys reflect a pragmatic approach to building a feature-rich SaaS application with a lean team, prioritizing developer experience and rapid iteration.
 
-## Known Gaps
+### Next.js App Router for Unified Development
 
-- **Data Residency**: Current infrastructure likely hosts data in the US (Sentry DSN points to `*.ingest.us.sentry.io`, PostHog defaults to `https://us.i.posthog.com`, Vercel defaults to `iad1`). For LGPD compliance, migrating Supabase to `sa-east-1` and Vercel to `gru1` is a future requirement. This is an honest flag regarding data sovereignty for the target market.
+The decision to use Next.js App Router allows for a single codebase to manage both server-side rendered pages (like the landing page `src/app/page.tsx` and public booking pages `src/app/p/[slug]/page.tsx`) and backend API routes (e.g., `/api/booking`). This eliminates the need for a separate backend project, simplifying deployment and development workflows. Server Components contribute to faster initial page loads and improved SEO, which is crucial for professional discovery.
 
-## What's in the Rest of These Docs
+### Drizzle ORM for Type Safety and Simplicity
 
-- [Architecture](./architecture) — high-level diagram of how the pieces connect
-- [User Journeys](./user-journeys) — the 3 flows that define the product
-- [Frontend](./frontend) — Next.js 16 App Router structure
-- [Backend](./backend) — the API route tree
-- [Database](./database) — 10-table Drizzle schema on Supabase Postgres
-- [Payment](./payment) — Stripe subscriptions + PIX flow
-- [AI Layer](./ai-layer) — Groq + Llama, tool-calling, AI intake agent, dashboard assistant
-- [MCP Server](./mcp-server) — local stdio server with 4 tools
-- [WhatsApp](./whatsapp) — corporate-number architecture, Evolution API, ~20 message templates
-- [Observability](./observability) — Sentry 3-runtime + PostHog
-- [Deployment](./deployment) — Vercel + Railway + GitHub Actions
-- [Security](./security) — the 15-finding audit, what's fixed, what's open
-- [Tech Decisions](./tech-decisions) — the "why" behind every major choice
-- [Lessons Learned](./lessons-learned) — what I'd do differently
+Drizzle ORM was chosen over alternatives like Prisma for its lightweight nature and strong TypeScript integration. By defining the entire database schema in `src/lib/db/schema.ts`, Drizzle ensures that all database interactions are fully typed. This means that any change to the schema immediately surfaces type errors in related code, preventing common runtime bugs and improving code maintainability.
+
+### Evolution API for WhatsApp Integration
+
+The use of Evolution API v2 for WhatsApp integration is a strategic decision to provide a "WhatsApp-first" experience without the complexities and restrictions of Meta's official WhatsApp Business Cloud API for smaller-scale operations. Evolution API acts as a shim over WhatsApp Web, allowing Odys to manage a single corporate WhatsApp number that handles all client and professional communications. This abstracts away the need for individual professionals to configure their own WhatsApp accounts, simplifying onboarding and support. The architecture is designed with a clear abstraction layer (`sendWhatsApp()` in `src/lib/whatsapp.ts`) to allow for a future transition to Meta's official API as the platform scales, minimizing changes to call sites.
+
+### Supabase as a Managed Backend
+
+Supabase provides a managed PostgreSQL database, authentication, and storage services, significantly reducing operational overhead. This choice allows the development team to focus on application features rather than database administration. Supabase Auth handles user registration and login, including email/password and Google OAuth, integrating seamlessly with the `professionals` and `clients` tables.
+
+### Operational Infrastructure
+To ensure reliability and performance, Odys integrates several key operational services. Upstash Redis provides robust rate limiting for API endpoints, preventing abuse and ensuring fair usage (see `src/lib/ratelimit.ts`). For production error tracking, Sentry is utilized, offering real-time insights into application issues. User behavior and platform engagement are monitored using PostHog analytics, informing product development and improvements.
+
+## Potential Improvements
+
+While the current implementation serves its purpose effectively, several areas present opportunities for refinement and enhancement:
+
+1.  **Dynamic Profession Display on Landing Page**: The `PROFESSIONS` array used in `src/app/page.tsx` for the "Profession pills" section is a hardcoded subset of the more comprehensive `PROFESSIONS` object defined in `src/lib/professions.ts`. To maintain consistency and reduce duplication, the landing page could dynamically fetch or derive this list from `src/lib/professions.ts`, perhaps by filtering for the most popular or representative professions. This would ensure that updates to the master list of professions are automatically reflected on the landing page without manual synchronization.
+
+2.  **Centralized Feature Definition for Plans and Landing Page**: The `FEATURES` array in `src/app/page.tsx` describes the platform's core functionalities, while the `PLAN_FEATURES` (implicitly used in the pricing section of the landing page, likely from `src/lib/stripe`) defines features tied to subscription plans. These two lists, though serving different display purposes, describe overlapping sets of features. Consolidating these feature definitions into a single source of truth, perhaps with metadata indicating visibility on the landing page or inclusion in specific plans, could prevent inconsistencies and simplify feature management.
+
+3.  **Automated JSON-LD Generation**: The `jsonLd` object in `src/app/page.tsx` is statically defined. While functional for SEO, its `description` and `offers.description` fields could be dynamically generated or pulled from a content management system. This would allow for easier updates to SEO metadata without requiring code changes and redeployments, especially for marketing-driven text.
+
+## References
+
+*   `src/app/page.tsx`
+*   `README.md`
+*   `src/lib/db/schema.ts`
+*   `src/lib/professions.ts`
+*   `src/lib/whatsapp.ts`
+*   `src/lib/stripe/index.ts`

@@ -1,43 +1,95 @@
 ---
-title: "API Routes Overview"
+title: API Routes Overview
 description: "The complete API route tree and shared helpers (getUser, responses)"
 ---
 
 # API Routes Overview
 
-This page documents the backend API structure of the Odys platform, detailing the available endpoints, shared utilities, and authentication patterns. Understanding this layer is essential for extending functionality, debugging integrations, or securing routes—especially as the system scales across professionals, clients, and third-party services like Stripe and WhatsApp.
+The backend of Odys is structured around a set of API routes, primarily built using Next.js API features. These routes serve as the interface for both the frontend application and external services, handling everything from user authentication and professional profile management to appointment scheduling and payment processing. A core component supporting these routes is `src/lib/api.ts`, a utility file that centralizes common functionalities like standardized response formats, user authentication helpers, and critical security utilities.
 
 ## Overview
 
-The backend exposes **23 API routes** across public, authenticated, and cron-triggered contexts. These routes interact with **10 database tables**, including `professionals`, `appointments`, `clients`, and `messages`, forming a cohesive system for managing bookings, payments, and communications. Key operations—like creating appointments, handling Stripe webhooks, or sending WhatsApp reminders—are encapsulated in dedicated endpoints, many protected by rate limiting and cron authorization.
+Odys exposes a total of `23` distinct API routes, each designed to handle specific operations within the application. These routes interact with a database schema comprising `10` tables, including central entities like `professionals`, `clients`, and `appointments`. The API design emphasizes clear separation of concerns, with routes often grouped by the domain they serve.
 
-Notably, the API supports both user-facing actions (e.g., `POST /api/booking`) and automated workflows (e.g., `GET /api/cron/reminders`), with shared helpers ensuring consistent responses and secure authentication. The presence of MCP (Model Context Protocol) tools like `get_appointments_today` and `update_appointment_status` suggests integration with AI agents, while 19 WhatsApp message templates indicate deep messaging automation.
+For instance, core user and professional management is handled by routes such as `/api/account`, `/api/client-profile`, `/api/onboarding`, and `/api/settings`. Scheduling and booking operations are managed through `/api/booking`, `/api/recurring`, and `/api/appointments/[id]`. Communication features leverage `/api/messages` and `/api/notifications`, while integrations with external services like Stripe are found under `/api/stripe/checkout`, `/api/stripe/portal`, and `/api/stripe/webhook`.
 
-## Shared Helpers: Consistency and Security
+A few routes are dedicated to background tasks, specifically `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`, which are invoked on a predefined schedule. The `/api/cron/reminders` route runs daily at `0 8 * * *` (8 AM UTC), and `/api/cron/whatsapp-watchdog` runs daily at `0 9 * * *` (9 AM UTC). To protect against abuse and ensure system stability, several endpoints are subject to rate limiting. For example, the `/api/booking` route is limited to `5` requests per `10 m`, while the `/api/ai/chat` endpoint allows `20` requests per `1 h`.
 
-The `src/lib/api.ts` file provides foundational utilities used across all routes. Response helpers like `ok`, `badRequest`, and `serverError` standardize JSON output and status codes, ensuring clients receive predictable payloads—even during errors, where internal details are logged but never exposed.
+## API Route Structure and Helpers
 
-Authentication is handled via `getUser` and `getProfessional`, which chain Supabase auth with a Drizzle ORM lookup to resolve a professional’s profile from their user ID. This pattern ensures that only registered professionals can access protected routes, and it’s reused across endpoints like `/api/settings` and `/api/messages`.
+The API routes are organized logically, reflecting the application's features.
 
-Security-critical utilities include `getIp` for rate limiting and `isCronAuthorized`, which uses constant-time comparison (`safeEqual`) to validate cron secrets—resisting timing attacks whether the header is `Authorization: Bearer <secret>` or `x-cron-secret: <secret>`. This dual-header support allows both Vercel cron jobs and manual testing.
+### Core Application Routes
 
-## Design decisions
+Many routes directly manage user and professional data. For example, `/api/auth/register` handles new user sign-ups, while `/api/onboarding` facilitates the initial setup for professionals. The `/api/settings` route allows authenticated professionals to update their profile details, which are stored in the `professionals` table. This table is quite extensive, with `24` columns capturing details from `name` and `slug` to `sessionDuration`, `sessionPrice`, and various payment-related fields like `pixKey` and `stripeCustomerId`.
 
-The API design prioritizes **reusability** and **security**. By centralizing response and auth logic, the code avoids duplication and enforces consistency. Using `NextRequest` and `NextResponse` aligns with Next.js App Router patterns, while Drizzle ORM offers type-safe database access.
+Client-specific interactions are managed through routes like `/api/clients/notes`, which allows professionals to add notes about their clients, stored in the `clientNotes` table. The `clients` table itself has `8` columns, linking clients to professionals via `professionalId` and optionally to a Supabase `userId`.
 
-Rate limiting is implicitly supported via `getIp`, enabling middleware integration (not shown). The cron authorization model is flexible, supporting multiple invocation methods without compromising security.
+### Scheduling and Communication
 
-The use of Portuguese error messages (e.g., "Não autorizado") suggests a Brazil-focused initial market, aligning with Pix payment support in the `professionals` table.
+The `/api/booking` route is central to creating and retrieving appointments, which are stored in the `appointments` table. This table tracks `13` columns, including `startsAt`, `endsAt`, `status`, and `paymentStatus`. Recurring appointments are managed via `/api/recurring`, interacting with the `recurringSchedules` table, which defines `9` columns for frequency and timing.
 
-## Potential improvements
+Communication features include `/api/messages` for sending and retrieving messages between professionals and clients, stored in the `messages` table (9 columns). Notifications are handled by `/api/notifications`, allowing users to fetch and mark notifications as read, which are stored in the `notifications` table (8 columns).
 
-1. **`src/lib/api.ts`: `getProfessional` lacks error handling** — If the database query throws, it will bubble up uncaught. Wrap in a try/catch and use `serverError` to maintain consistency.
+### Integrations and Utilities
 
-2. **`src/lib/api.ts`: `safeEqual` could misbehave with non-ASCII secrets** — Since `Buffer.from(string)` defaults to UTF-8, but timing-safe comparison assumes uniform encoding, consider validating input or documenting encoding requirements.
+Odys integrates with Stripe for payments, with dedicated routes like `/api/stripe/checkout` for initiating payment flows, `/api/stripe/portal` for managing subscriptions, and `/api/stripe/webhook` for processing events from Stripe, such as `checkout.session.completed` and `customer.subscription.updated`.
 
-3. **`src/lib/api.ts`: Response helpers don’t support optional metadata** — Adding fields like `timestamp` or `requestId` would aid debugging. Consider enhancing `ok(data, meta?)` to accept optional context.
+The `/api/ai/chat` route provides an interface to AI capabilities, likely leveraging tools like `get_appointments_today` or `update_appointment_status` from the `4` available MCP tools. File uploads, such as avatars, are managed by `/api/upload/avatar`.
+
+### Shared API Helpers (`src/lib/api.ts`)
+
+The `src/lib/api.ts` file provides a set of shared utilities that are imported and used across various API routes, promoting consistency and reducing code duplication.
+
+#### Response Helpers
+
+A suite of functions standardizes API responses:
+- `ok(data: object)`: Returns a `200 OK` response with the provided JSON data.
+- `unauthorized()`: Sends a `401 Unauthorized` response.
+- `forbidden(msg = "Sem permissão")`: Returns a `403 Forbidden` response, allowing for custom messages.
+- `notFound(msg = "Não encontrado")`: Provides a `404 Not Found` response.
+- `badRequest(msg: string)`: For `400 Bad Request` errors, requiring a specific message.
+- `conflict(msg: string)`: Returns a `409 Conflict` response, useful for resource conflicts.
+- `tooManyRequests()`: Sends a `429 Too Many Requests` response, indicating rate limit exhaustion.
+- `serverError(context: string, err: unknown)`: This critical helper logs the error server-side using `logger.error` and returns a generic `500 Internal Server Error` to the client, preventing sensitive internal details from being exposed.
+
+#### Authentication Helpers
+
+These functions simplify user and professional identification:
+- `getUser()`: Asynchronously fetches the currently authenticated Supabase user. It uses `createClient()` from `@/lib/supabase/server` to interact with Supabase's authentication service. If no user is logged in, it returns `null`.
+- `getProfessional(userId: string)`: Given a Supabase `userId`, this function queries the `professionals` table using Drizzle ORM (`db`, `professionals`, `eq`) to retrieve the corresponding professional's profile, or `null` if no professional is found. This is a common pattern for routes that require professional-specific data.
+
+#### Utility Helpers
+
+- `getIp(req: NextRequest)`: Extracts the client's IP address from the `x-forwarded-for` header, taking the first IP in a comma-separated list and trimming it. It returns `"anonymous"` if the header is missing or empty. This IP is primarily used for rate limiting.
+- `safeEqual(a: string, b: string)`: This function attempts a constant-time string comparison using Node.js's `timingSafeEqual` for strings of equal length. It returns `false` early if inputs are empty or have different lengths, which is not constant-time in those specific cases. This is a security measure to prevent timing side-channel attacks when comparing secrets like API keys or cron tokens, provided the attacker cannot control the length of one of the inputs.
+- `isCronAuthorized(req: NextRequest)`: Verifies if an incoming request is authorized to trigger a cron job. It checks for the `CRON_SECRET` environment variable against either the `x-cron-secret` header or an `Authorization: Bearer` header, employing `safeEqual` for secure comparison. This protects the `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` endpoints.
+
+## Design Decisions
+
+The architectural choices for Odys's API routes and shared helpers reflect a pragmatic approach to building a full-stack application with Next.js.
+
+The decision to centralize API response helpers in `src/lib/api.ts` was made to enforce consistency in how the API communicates success and various error conditions. By providing specific functions like `unauthorized` or `badRequest`, developers are guided towards returning appropriate HTTP status codes and standardized JSON error payloads, which simplifies client-side error handling. The `serverError` helper is particularly important, as it ensures that internal server errors are logged for debugging while presenting a generic, non-revealing message to the client, a fundamental security practice.
+
+Leveraging Supabase for authentication, as seen in `getUser()`, offloads the complexities of user management and session handling to a dedicated service. This allows developers to focus on application-specific logic rather than reinventing authentication mechanisms. The subsequent `getProfessional()` function demonstrates a common pattern of linking a generic user identity to an application-specific profile, in this case, a professional's details from the `professionals` table.
+
+The inclusion of `safeEqual` and `isCronAuthorized` highlights a conscious decision to prioritize security, especially for sensitive operations like cron job invocations. Using a constant-time comparison for secrets mitigates the risk of timing attacks, where an attacker could infer parts of a secret by measuring the time it takes for a comparison function to return. This is a critical detail for protecting backend processes.
+
+Finally, the use of Next.js API routes itself is a design choice that allows for a unified development experience, keeping frontend and backend code within the same repository. This simplifies deployment and allows for easy sharing of types and utilities, such as the Drizzle ORM schema definitions used by `getProfessional()`.
+
+## Potential Improvements
+
+1.  **Enhanced Type Safety for Response Payloads:** The `ok` helper currently accepts `data: object`. While functional, this could be improved by making it generic, for example, `ok<T>(data: T)`, to provide stronger type guarantees for API consumers. This would allow the TypeScript compiler to verify that the data returned by an API route matches the expected type, reducing runtime errors and improving developer experience.
+    *   *Reference:* `src/lib/api.ts`, `ok` function.
+
+2.  **Centralized Rate Limiting Middleware:** The `rateLimits` are defined in the system's configuration, and `getIp` exists, but the actual enforcement logic for these limits is not present in `src/lib/api.ts`. Implementing a reusable middleware function within `src/lib/api.ts` that can be applied to specific API routes would centralize rate limit application. This would prevent individual routes from needing to implement their own rate-limiting logic, ensuring consistency and easier maintenance.
+    *   *Reference:* `src/lib/api.ts`, `getIp` function.
+
+3.  **Combined Professional Authentication Helper:** The common pattern of first calling `getUser()` and then `getProfessional(userId)` could be encapsulated into a single helper, perhaps named `getAuthenticatedProfessional()`. This helper would handle both steps, returning the `professional` object directly or `null` if the user is not authenticated or not registered as a professional. This would streamline the boilerplate in many professional-facing API routes.
+    *   *Reference:* `src/lib/api.ts`, `getUser` and `getProfessional` functions.
 
 ## References
 
 - `src/lib/api.ts`
-- Database schema definitions in `lib/db/schema`
+- `src/lib/db/schema.ts`
+- `src/lib/supabase/server.ts`

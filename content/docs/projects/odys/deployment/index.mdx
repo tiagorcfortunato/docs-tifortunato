@@ -1,46 +1,64 @@
 ---
-title: "Deployment"
+title: Deployment
 description: "Deployment overview"
 ---
 
-# Deployment
-
-Understanding how Odys is deployed reveals the operational backbone of a modern, WhatsApp-first SaaS platform. This page covers the infrastructure layout, automation pipelines, and key architectural choices that enable reliable, secure, and scalable delivery — from code commit to production.
+Odys employs a distributed deployment strategy, leveraging specialized platforms for different components of its architecture to optimize for performance, maintainability, and operational efficiency. The core Next.js application, serving both the frontend and API routes, is hosted on Vercel, benefiting from its tight integration with the framework. The critical WhatsApp messaging layer, powered by the Evolution API, runs as a self-hosted Docker container on Railway, providing a dedicated environment for this external dependency. Continuous integration and deployment workflows are orchestrated through GitHub Actions, ensuring code quality and automated builds.
 
 ## Overview
 
-Odys is split across two primary hosting environments: the **Next.js application** runs on **Vercel**, while the **WhatsApp messaging layer (Evolution API)** is hosted separately on **Railway**. This separation ensures that high-availability messaging remains resilient even if the main app experiences downtime.
+The deployment strategy for Odys is segmented to align with the distinct operational requirements of its primary services. The main application, encompassing all user-facing interfaces and the 23 API routes, is deployed on Vercel. This choice capitalizes on Vercel's native support for Next.js applications, enabling efficient server-side rendering and API route handling.
 
-The Vercel deployment is fully automated via GitHub Actions. Every push to `main` triggers a CI pipeline that performs type-checking, linting, and a production build. Environment variables — including Supabase, Stripe, Redis, and Evolution API credentials — are injected during the build phase, ensuring secure configuration without hardcoding secrets.
+Complementing the main application, the Evolution API, which manages all WhatsApp interactions, is deployed independently on Railway. This separation isolates the WhatsApp integration, allowing it to scale and operate without directly impacting the core application's performance or stability. The Evolution API uses its own dedicated Supabase project, `odys-evolution`, with an `evolution_api` schema, ensuring data isolation for the messaging infrastructure.
 
-Two **cron jobs** are defined in `vercel.json` and executed daily:
-- `GET /api/cron/reminders` at 8 AM: sends 24-hour and 1-hour appointment reminders, skipping clients actively engaged in AI conversations.
-- `GET /api/cron/whatsapp-watchdog` at 9 AM: verifies the health of the Evolution API instance.
+Finally, a robust CI/CD pipeline, defined in `.github/workflows/ci.yml`, automates the testing and building processes. This pipeline runs on every push to the `main` branch and for every pull request, performing essential checks like type-checking, linting, and unit tests before proceeding to a production build.
 
-These routes are protected by `CRON_SECRET`, ensuring only authorized triggers can invoke them. The cron system leverages Vercel’s built-in scheduling, eliminating the need for external tools.
+## Application Deployment on Vercel
 
-Security is enforced at the edge via `next.config.ts`, which applies strict HTTP headers: `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `X-DNS-Prefetch-Control: on`, and `Strict-Transport-Security` with a two-year max age. Permissions are tightly scoped, disabling camera, microphone, and geolocation access except for Stripe.js.
+The primary Odys application is deployed to Vercel, a platform well-suited for Next.js projects. This setup facilitates automatic deployments whenever changes are pushed to the `main` branch of the repository. Environment variables, crucial for connecting to services like Supabase, Stripe, and Resend, are securely configured within the Vercel dashboard, ensuring that sensitive credentials are not exposed in the codebase.
 
-## Design decisions
+Vercel also manages the application's scheduled tasks through its cron job feature, as defined in `vercel.json`. Two critical cron jobs are configured:
+*   The `/api/cron/reminders` endpoint runs daily at `0 8 * * *` (8 AM UTC), responsible for sending 24-hour and 1-hour appointment reminders to clients, as well as trial expiration emails to professionals.
+*   The `/api/cron/whatsapp-watchdog` endpoint executes daily at `0 9 * * *` (9 AM UTC), performing a health check on the Evolution API instance to ensure the WhatsApp integration remains operational.
 
-The deployment strategy prioritizes **isolation**, **observability**, and **developer velocity**. By hosting WhatsApp messaging separately on Railway, the platform avoids tying mission-critical communication to the app’s uptime. Evolution API runs in a Docker container with its own Supabase project (flag: specific project name `odys-evolution` not verifiable from provided code), minimizing blast radius.
+The `next.config.ts` file plays a significant role in the application's deployment configuration, particularly concerning security and observability. It integrates Sentry for error monitoring, routing client-side errors through a `tunnelRoute` at `/monitoring` to circumvent potential ad-blockers. The configuration also enables `automaticVercelMonitors` for cron jobs, although the inline comment notes this feature "Does not yet work with App Router route handlers." Furthermore, `next.config.ts` defines a comprehensive set of `securityHeaders` applied to every response. This includes `X-Frame-Options: DENY` to prevent clickjacking, `X-Content-Type-Options: nosniff` to mitigate MIME sniffing attacks, and a `Referrer-Policy` set to `strict-origin-when-cross-origin`.
 
-Vercel was chosen not only for its seamless CI/CD integration but also for its support of **App Router**, **serverless functions**, and **cron monikers**. The `tunnelRoute` in Sentry configuration routes error reports through `/monitoring`, bypassing ad blockers — a pragmatic trade-off between reliability and slight server cost increase.
+A key security measure is the Content Security Policy (CSP), which is initially deployed in `Content-Security-Policy-Report-Only` mode. This allows the browser to log violations without blocking content, providing a safe period to identify and resolve any misconfigurations before enforcing the policy. The CSP carefully allowlists all third-party resources used by the application, including `js.stripe.com` for Stripe Checkout, `*.supabase.co` for Supabase services, `us.i.posthog.com` for PostHog analytics, and `fonts.googleapis.com` for Google Fonts. A notable trade-off in the current CSP is the inclusion of `'unsafe-inline'` and `'unsafe-eval'` for `script-src`, which is a common necessity with Next.js's current architecture for inline bootstrap chunks.
 
-The use of **Drizzle ORM** enables zero-downtime schema pushes via `npm run db:push`, critical for iterative development. However, this approach skips formal migration files, relying instead on direct schema synchronization — acceptable in early-stage SaaS but risky at scale.
+## WhatsApp Integration Deployment on Railway
 
-## Potential improvements
+The Evolution API, which serves as the backbone for Odys's WhatsApp integration, is deployed as a separate service on Railway. This self-hosted approach provides greater control over the messaging infrastructure compared to relying on a third-party managed service. The Evolution API runs from a Docker image, `tiagorcfortunato/evolution-api-odys`, ensuring a consistent and reproducible deployment environment.
 
-1. **Add formal migration pipeline**: Currently, schema changes use `drizzle-kit push` directly, risking accidental data loss. Introduce `drizzle-kit generate` to create versioned migrations in `drizzle/`, ensuring auditability and rollback capability.
+This dedicated instance connects to its own Supabase project, `odys-evolution`, utilizing a specific `evolution_api` schema. This architectural choice ensures that the WhatsApp messaging data is logically separated from the main application's data, which resides in the primary Supabase project. The connection to the database is established via PgBouncer on port `6543`, a common practice for connection pooling and database load management.
 
-2. **Strengthen rate limiting context**: The `ratelimit.ts` module uses Upstash Redis. (Flag: The claim that it does not differentiate between client IP and authenticated user ID could not be verified as `src/lib/ratelimit.ts` was not provided for audit.) For endpoints like `/api/booking`, this could allow circumvention via multiple accounts. Enforce per-phone-number limits using `req.body.phone` in booking routes.
+## Continuous Integration and Deployment with GitHub Actions
 
-3. **Improve cron observability**: While Vercel cron is convenient, it lacks detailed monitoring. Although `automaticVercelMonitors` is enabled in `next.config.ts:90`, it currently does not support App Router route handlers. Therefore, consider manually wrapping `/api/cron/reminders` with `withSentryConfig` to capture execution metrics and errors, especially since it handles time-sensitive reminders.
+Odys uses GitHub Actions to automate its CI/CD pipeline, defined in the `.github/workflows/ci.yml` file. This workflow is triggered on every push to the `main` branch and for all pull requests, ensuring that code quality and build integrity are maintained throughout the development lifecycle.
+
+The pipeline consists of two main jobs:
+*   **`check`**: This job focuses on code quality and correctness. It performs a TypeScript type-check using `npx tsc --noEmit`, runs ESLint with `npm run lint` to enforce coding standards, and executes unit tests via `npm test`. This early feedback loop helps developers catch issues before they are merged into the main codebase.
+*   **`build`**: Dependent on the successful completion of the `check` job, the `build` job creates a production-ready artifact of the application using `npm run build`. This step ensures that the application can be successfully compiled for deployment. All necessary environment variables for the build process, such as `NEXT_PUBLIC_SUPABASE_URL`, `STRIPE_SECRET_KEY`, and `SENTRY_AUTH_TOKEN`, are securely passed as GitHub Secrets, preventing their exposure in the repository.
+
+## Design Decisions
+
+The deployment architecture reflects several deliberate design choices:
+
+*   **Vercel for Next.js Application**: Vercel was chosen for the main application due to its deep integration with Next.js, offering optimized performance, automatic scaling, and a streamlined developer experience. Its built-in cron job support also simplifies the scheduling of background tasks like reminders and health checks, consolidating infrastructure management.
+*   **Railway for Evolution API**: Deploying the Evolution API on Railway as a separate Docker container isolates the WhatsApp messaging service. This prevents potential issues with the Evolution API from directly impacting the core application and allows for independent scaling and maintenance of this critical, external dependency. The use of a separate Supabase project for the Evolution API further reinforces this isolation, ensuring data integrity and clear separation of concerns.
+*   **Security Headers in `next.config.ts`**: The inclusion of `securityHeaders` directly in `next.config.ts` ensures that fundamental security practices, such as preventing clickjacking (`X-Frame-Options: DENY`) and MIME sniffing (`X-Content-Type-Options: nosniff`), are applied consistently across all application responses. The initial `Content-Security-Policy-Report-Only` mode is a pragmatic choice, allowing for real-world testing and refinement of the CSP without risking production outages.
+*   **Sentry Integration**: Integrating Sentry via `withSentryConfig` in `next.config.ts` provides centralized error monitoring, which is crucial for identifying and diagnosing issues in a production environment. The `tunnelRoute` helps ensure that error reports are not blocked by client-side tools.
+*   **GitHub Actions for CI/CD**: Automating type-checking, linting, testing, and building with GitHub Actions ensures a consistent and reliable development workflow. This reduces the risk of introducing regressions and helps maintain a high standard of code quality before deployment.
+
+## Potential Improvements
+
+1.  **Enforce Content Security Policy**: The `Content-Security-Policy-Report-Only` header in `next.config.ts` is currently in a monitoring phase. After a sufficient period of clean reports, this header should be switched to `Content-Security-Policy` to actively enforce the defined security rules and block unauthorized resource loading.
+2.  **Stricter `script-src` CSP**: The `script-src` directive in `next.config.ts` currently includes `'unsafe-inline'` and `'unsafe-eval'`. While often necessary with Next.js, exploring a nonce-based CSP implementation could significantly enhance security by allowing only scripts with a cryptographically secure nonce to execute, eliminating the need for these less secure directives.
+3.  **Leverage Sentry's Vercel Cron Monitors for App Router**: The `next.config.ts` file notes that `automaticVercelMonitors` "Does not yet work with App Router route handlers." As Sentry and Next.js evolve, actively monitoring for updates that enable this functionality for App Router cron jobs would allow for more comprehensive monitoring of scheduled tasks.
+4.  **Implement Drizzle Migrations**: The `README.md` mentions `npm run db:push` for schema management. For production environments, adopting Drizzle's migration system would provide a more controlled and versioned approach to database schema changes, allowing for safer deployments and easier rollbacks compared to a direct schema push.
+5.  **Granular WhatsApp Watchdog**: The `/api/cron/whatsapp-watchdog` runs daily. Depending on the criticality of the WhatsApp integration, increasing the frequency of this health check or implementing more detailed monitoring metrics could provide earlier detection of issues with the Evolution API.
 
 ## References
 
-- `vercel.json` — cron job definitions
-- `next.config.ts` — security headers and Sentry integration
-- `.github/workflows/ci.yml` — CI/CD pipeline
-- `src/lib/whatsapp.ts` — WhatsApp message templates and delivery logic
-- `src/lib/ratelimit.ts` — rate limiting implementation
+*   `vercel.json`
+*   `next.config.ts`
+*   `.github/workflows/ci.yml`

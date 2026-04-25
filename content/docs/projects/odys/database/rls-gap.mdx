@@ -1,40 +1,65 @@
 ---
-title: "RLS Gap"
-description: "No RLS policies; app-layer authorization pattern and its trade-offs"
+title: Authorization Pattern
+description: No RLS policies; app-layer authorization pattern and its trade-offs
 ---
 
-# RLS Gap
+# Authorization Pattern
 
-This page examines a critical security and architecture decision in the application: the absence of Row-Level Security (RLS) policies in the database, and the resulting reliance on application-layer authorization. Understanding this gap is essential for assessing data safety, scalability, and long-term maintainability.
+Odys employs an application-layer authorization pattern, meaning that access control logic is primarily handled within the application code rather than relying on database-level mechanisms like Row-Level Security (RLS). This approach centralizes authorization decisions in the backend API routes, providing explicit control over data access based on the authenticated user's identity.
 
 ## Overview
 
-The database schema consists of **10 tables**, including core entities like `professionals`, `clients`, `appointments`, and `messages`. Despite handling sensitive user data and supporting authenticated interactions, **no RLS policies are defined** in the schema. Instead, access control is entirely managed in the application layer—primarily through helper functions in `src/lib/api.ts`. This pattern centralizes authorization logic but shifts the burden of enforcement from the database to the application code, creating a potential single point of failure if not consistently applied.
+The `src/lib/api.ts` file serves as a central module for shared helpers across all API routes. It provides fundamental building blocks for standardized JSON responses, authentication (identifying the current user and their associated professional profile), and utility functions like IP extraction for rate limiting. These helpers are designed to streamline API development, ensure consistent responses, and enforce security policies.
 
-## Authorization Through Application Logic
+The database schema, managed by Drizzle, reflects this application-centric approach. Many tables, such as `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews`, include a `professionalId` column. This `professionalId` is a `uuid` type, is never nullable, and establishes a foreign key relationship with the `professionals` table, specifically referencing the `id` column of a professional. This structural choice facilitates multi-tenancy, where each professional's data is logically separated by this identifier.
 
-Access control is implemented via a set of reusable helpers in `api.ts`. The `getProfessional(userId)` function, for example, retrieves a professional’s record using the authenticated Supabase user ID. This function is used across endpoints like `/api/messages` and `/api/appointments/[id]` to ensure users only access data tied to their account. Similarly, `getUser()` extracts the authenticated Supabase session, forming the basis of identity resolution.
+## API Helpers in `src/lib/api.ts`
 
-IP extraction for rate limiting is provided by `getIp(req)`. The enforcement of rate limits, such as '5 booking attempts per 10 minutes', is handled by other parts of the application logic. Cron jobs, like `/api/cron/reminders`, use `isCronAuthorized()`—a constant-time secret comparison—to restrict execution, illustrating a more robust pattern for sensitive operations.
+### Response Helpers
+`src/lib/api.ts` defines a set of standardized response functions to ensure consistent API output and status codes:
 
-## Design decisions
+*   `ok(data: object)`: Returns a 200 OK response with the provided JSON data.
+*   `unauthorized()`: Returns a 401 Unauthorized response with a generic error message.
+*   `forbidden(msg = "Sem permissão")`: Returns a 403 Forbidden response, allowing a custom message.
+*   `notFound(msg = "Não encontrado")`: Returns a 404 Not Found response, allowing a custom message.
+*   `badRequest(msg: string)`: Returns a 400 Bad Request response with a specific error message.
+*   `conflict(msg: string)`: Returns a 409 Conflict response with a specific error message.
+*   `tooManyRequests()`: Returns a 429 Too Many Requests response.
+*   `serverError(context: string, err: unknown)`: Logs the error server-side with context and returns a generic 500 Internal Server Error to the client, preventing internal details from being exposed.
 
-The lack of RLS suggests a deliberate choice to keep the database "dumb" and delegate security to the application. This simplifies initial development and allows fine-grained control over logic, such as handling soft deletes (`active` flags) or multi-tenant patterns via `professionalId` foreign keys. Using Drizzle ORM, queries are built programmatically, making it easier to inject filters (e.g., `.where(eq(professionals.userId, userId))`) than to manage SQL-level policies. However, this assumes every query correctly applies these filters—an implicit contract that grows riskier as the codebase scales.
+### Auth Helpers
+The `src/lib/api.ts` file defines two crucial asynchronous helper functions for authorization:
 
-## Potential improvements
+*   `getUser()`: This function interacts with Supabase to retrieve the currently authenticated user. It returns the Supabase user object if a session is active, or `null` otherwise. This is the initial step in identifying who is making the request.
+*   `getProfessional(userId: string)`: Once a Supabase `userId` is obtained, this function queries the `professionals` table to fetch the corresponding professional record. It uses Drizzle ORM to select from the `professionals` table, filtering by the `userId` column. The `professionals` table itself contains a `userId` column of type `text` which is unique, linking directly to the Supabase user. This function is critical for establishing the context of the professional who owns the data being accessed or modified.
 
-1. **Introduce RLS policies for `professionals` and related tables**  
-   Currently, a direct database query could expose all professionals’ data. Adding RLS on `professionals` (e.g., `USING (userId = auth.uid())`) would enforce isolation at the database level, providing defense in depth.
+These helpers are designed to be called at the beginning of API routes that require authenticated access. For instance, to access a client's notes, an API route would first call `getUser()`, then `getProfessional()` with the user's ID, and finally query the `clientNotes` table, ensuring that the `professionalId` in the query matches the ID of the authenticated professional.
 
-2. **Refactor `getProfessional` to include soft-delete awareness**  
-   The function in `src/lib/api.ts` does not filter by `active = true`. This could allow access to deactivated accounts. Adding this condition would align with business logic seen in other parts of the app.
+### Utility Helpers
+`src/lib/api.ts` includes utility functions to assist with common API tasks:
 
-3. **Centralize authorization checks in a middleware or decorator pattern**  
-   Endpoints like `/api/settings` and `/api/reviews` manually invoke auth helpers. A reusable middleware could reduce duplication and prevent accidental omissions, especially as new routes are added.
+*   `getIp(req: NextRequest)`: Extracts the client's IP address from request headers, primarily used for rate limiting purposes.
 
-## References
+## Cron Job Authorization
 
-- `src/lib/api.ts`
-- `/api/appointments/[id]`
-- `/api/messages`
-- `/api/cron/reminders`
+Beyond user-specific authorization, `src/lib/api.ts` also includes `isCronAuthorized(req: NextRequest)`. This function is specifically designed to secure cron job endpoints, such as `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`. It verifies that incoming requests carry a valid `CRON_SECRET` by checking either the `x-cron-secret` header or the `Authorization: Bearer <secret>` header.
+
+A notable detail in `isCronAuthorized()` is its use of `safeEqual()`, which in turn uses Node.js's `timingSafeEqual`. This constant-time string comparison is a critical security measure. It prevents timing side-channel attacks, where an attacker might infer parts of the secret by measuring the time it takes for a comparison function to return, as typical string comparisons can exit early upon finding a mismatch. By ensuring the comparison always takes the same amount of time, regardless of where mismatches occur, `safeEqual()` helps protect the `CRON_SECRET` from such attacks.
+
+## Design Decisions
+
+The choice to implement authorization at the application layer, rather than relying on database-native RLS, comes with several trade-offs:
+
+*   **Explicit Control and Flexibility**: By handling authorization in application code, Odys gains granular control over access logic. This allows for complex authorization rules that might be difficult or cumbersome to express purely in SQL RLS policies, especially when involving external services or multi-step logic. It also means that the authorization logic is written in TypeScript, aligning with the rest of the application's codebase and potentially simplifying development and debugging for developers familiar with the application's language.
+*   **Database Agnosticism**: Decoupling authorization from the database schema makes the application less dependent on specific database features. If Odys were to migrate to a different database system that lacks robust RLS capabilities, the core authorization logic would remain largely intact, requiring fewer changes.
+*   **Performance Considerations**: While RLS can sometimes introduce overhead, application-layer filtering allows developers to optimize queries and joins specifically for the application's access patterns. However, it also means that every query must explicitly include the `professionalId` filter, which, if missed, could lead to data exposure.
+*   **Increased Application-Layer Responsibility**: The primary drawback is that the application code bears the full responsibility for enforcing access control. Every data access point must correctly implement the necessary checks. A single oversight in an API route could inadvertently expose data, as the underlying database itself does not enforce these restrictions by default for direct queries. This contrasts with RLS, where policies are enforced automatically by the database for all queries, regardless of their origin.
+
+The current structure, with `professionalId` columns and `onDelete: 'cascade'` references on many tables, indicates a clear multi-tenancy model. For example, deleting a professional from the `professionals` table would automatically remove all their associated `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews` records. This cascade behavior is a powerful database feature that simplifies data integrity management for multi-tenant data.
+
+## Potential Improvements
+
+1.  **Introduce Row-Level Security (RLS)**: Implementing RLS policies on tables like `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews` would add a crucial layer of defense. By defining policies that restrict access to rows based on the `professionalId` matching the authenticated user's professional ID, the database itself would enforce authorization. This would mitigate the risk of accidental data exposure due to missed application-layer checks and provide a more centralized, database-enforced security model.
+2.  **Centralize Authorization Logic in Middleware**: While `getUser()` and `getProfessional()` are good primitives, the actual filtering logic (e.g., `where(eq(professionals.userId, userId))`) is currently repeated across various API routes. A dedicated middleware or higher-order function could encapsulate the `getUser()` and `getProfessional()` calls, injecting the `professionalId` into the request context or throwing an `unauthorized()` error if no professional is found. This would reduce boilerplate in individual API routes and ensure consistent authorization checks.
+3.  **Type-Safe Authorization Wrappers for Drizzle Queries**: To prevent accidental omission of `professionalId` filters in Drizzle queries, consider creating wrapper functions or Drizzle extensions that automatically add the `where(eq(table.professionalId, currentProfessionalId))` clause for multi-tenant tables. This would make it harder for developers to forget to scope queries, improving data isolation.
+4.  **Enhanced Logging for Authorization Failures**: The `serverError()` helper logs internal errors, but specific authorization failures (e.g., a user trying to access another professional's data) could benefit from more detailed, distinct logging. This would help in auditing and identifying potential misuse or vulnerabilities more quickly.
