@@ -1,134 +1,68 @@
 ---
 title: Technical Decisions
-description: Overview of major tech decisions
+description: "Overview of major technical decisions in the Odys project."
 ---
 
 # Technical Decisions
 
-Navigating the codebase of Odys reveals a series of deliberate technical choices, each made to address specific functional requirements and architectural goals. This document aims to provide a deeper understanding of these foundational decisions, exploring the rationale behind the chosen technologies and structural patterns, and identifying areas for potential refinement. We'll delve into the database schema, API design, external service integrations, and core libraries that collectively define the application's backend.
+This document provides an overview of the core architectural and technological choices that shape the Odys application. Understanding these decisions, and the reasoning behind them, is crucial for anyone looking to contribute to or deeply understand the codebase. We will explore the foundational technologies, the structure of the data model, the API design, and key integrations that define Odys.
 
 ## Overview
 
-Odys is structured around a Next.js application, leveraging its full-stack capabilities to host both the frontend and a robust set of API routes. The data layer is managed by Drizzle ORM, interacting with a PostgreSQL database, which underpins a comprehensive system for managing professional services, client interactions, and appointments. Key integrations include Supabase for authentication, Stripe for payments, Groq for AI-driven features, Upstash Redis for rate limiting, and Resend for email communication. Communication with users is enhanced through a sophisticated WhatsApp integration, utilizing a variety of predefined message templates. The system also incorporates scheduled tasks via cron jobs for routine operations like sending reminders, and uses PostHog for analytics and Sentry for error tracking.
+Odys is built upon a modern JavaScript ecosystem, primarily using **Next.js** version `16.2.4` and **React** version `19.2.5` for its full-stack capabilities. The backend data layer is managed with **Drizzle ORM** version `0.45.2`, interacting with a PostgreSQL database. For authentication and potentially other services, **Supabase** version `2.100.1` is integrated. Payment processing and subscription management are handled by **Stripe** version `22.1.0`, while AI functionalities are powered by **Groq SDK** version `1.1.2`.
 
-## Database Schema
+The application's data model comprises `10` distinct tables, with `professionals` serving as a central entity, featuring `24` columns to store comprehensive details about service providers. This schema supports a wide array of features, from client management to appointment scheduling and messaging. The application exposes `23` API routes, organized under the `/api` prefix, covering functionalities like booking, messaging, and Stripe webhooks. Automated tasks are managed by `2` cron jobs, scheduled for daily execution to handle reminders and WhatsApp message monitoring. Odys also supports `4` distinct payment plans—`free`, `basic`, `pro`, and `premium`—each with defined pricing. To maintain stability and prevent abuse, `6` different rate limits are applied across various API endpoints. Furthermore, the system integrates deeply with WhatsApp, utilizing `19` predefined message templates for various user interactions.
 
-The heart of Odys's data management lies in its PostgreSQL database, meticulously defined using Drizzle ORM. The schema comprises 10 distinct tables, designed to capture the intricate relationships between professionals, clients, and their interactions.
+## Database Schema and Data Model
 
-The central entity is the `professionals` table, which holds 24 columns detailing a service provider's profile, contact information, service pricing, payment preferences, and subscription plan. Notably, each professional is uniquely identified by a `uuid` primary key and a `userId` of type `text`, which is also unique, likely linking to an external authentication system. Critical business logic defaults are set here, such as `sessionDuration`, `sessionPrice`, `plan`, `paymentType`, `autoConfirm`, and `active`, ensuring a baseline configuration for new professionals.
+The Odys database schema is designed to manage the complex relationships between professionals, clients, and their interactions. The `professionals` table is foundational, containing `24` columns that capture essential information such as `name`, `slug`, `phone`, `email`, `profession`, and various payment-related fields like `plan`, `paymentType`, and `stripeCustomerId`. Each professional is uniquely identified by a `uuid` primary key and a unique `userId` (likely linking to an external authentication system) and `slug`.
 
-Supporting the `professionals` table are several related entities:
+Clients are represented in the `clients` table, which has `8` columns and is linked to a professional via the `professionalId` foreign key. This relationship is configured with `onDeleteCascade`, meaning that if a professional record is removed, all associated client records will also be deleted. This design choice simplifies data cleanup but requires careful consideration during deletion operations.
 
-*   The `availability` table tracks a professional's working hours, linking directly to `professionals` via `professionalId` with an `onDelete: cascade` rule, ensuring that a professional's availability is automatically removed if their profile is deleted.
-*   `clients` store information about individuals who book services, also linked to `professionals` with an `onDelete: cascade` for `professionalId`. This structure implies that clients are managed within the context of a specific professional.
-*   `clientNotes` provides a mechanism for professionals to record private notes about their clients, maintaining a clear relationship to both `professionals` and `clients`, again with `onDelete: cascade` for both foreign keys.
-*   `recurringSchedules` manages repeating appointments, linking to both `professionals` and `clients` with cascading deletes. It defines the `frequency`, `dayOfWeek`, and `time` for these schedules.
-*   `appointments` represents individual bookings, referencing `professionals`, `clients`, and optionally `recurringSchedules`. It tracks the `startsAt` and `endsAt` timestamps, `status`, `paymentStatus`, and integrates with Stripe via `stripePaymentIntentId`.
-*   `messages` facilitates communication between professionals and clients, storing `content`, `sender`, and `type`, with cascading deletes from `professionals` and `clients`.
-*   `follows` allows users to track professionals, linking a `userId` (likely from the external auth system) to a `professionalId` with a cascading delete.
-*   `reviews` captures client feedback, linking to `professionals`, `clients`, and `appointments`, with cascading deletes for all three. The `appointmentId` is unique, ensuring only one review per appointment.
-*   `notifications` stores system-generated alerts, targeting a `recipientId` and `recipientType`, indicating a flexible notification system for different user types.
+Appointments are central to the application's functionality, stored in the `appointments` table with `13` columns. This table links to both `professionals` and `clients` and can also reference a `recurringScheduleId` for repeated bookings. Key fields include `startsAt`, `endsAt`, `status`, and `paymentStatus`, along with `stripePaymentIntentId` for tracking payments. The `availability` table, with `5` columns, defines when a professional is available, linking directly to `professionalId` with `onDeleteCascade`. Similarly, `recurringSchedules` (9 columns) manages recurring appointments for clients, also linked to `professionalId` and `clientId` with `onDeleteCascade`.
 
-The consistent use of `uuid` for primary keys across all tables provides a robust, distributed, and collision-resistant identifier system. Many columns, such as `createdAt` and `updatedAt`, are automatically managed with default timestamp values, simplifying data auditing.
+Communication and feedback are handled by the `messages` table (9 columns), `clientNotes` (6 columns), `follows` (4 columns), and `reviews` (7 columns). The `messages` table tracks conversations between professionals and clients, while `clientNotes` allows professionals to record private notes about their clients. The `follows` table tracks user interest in professionals, and `reviews` stores client feedback, uniquely linked to an `appointmentId` to ensure each appointment can only have one review. All these tables maintain `onDeleteCascade` relationships with `professionalId` and `clientId` where appropriate, reinforcing the cascading deletion pattern. Finally, the `notifications` table, with `8` columns, provides a generic mechanism for system alerts to various recipients.
 
-## API Endpoints
+## API and Backend Architecture
 
-Odys exposes a total of 23 API routes, built using Next.js API route capabilities. These endpoints cover a wide range of functionalities, from core business logic to integrations with external services and internal cron jobs.
+The Odys application exposes `23` API routes, primarily under the `/api` prefix, built using Next.js API routes. These routes facilitate various operations, from user account management (`/api/account`) and booking (`/api/booking`) to client profile updates (`/api/client-profile`) and messaging (`/api/messages`). Specific routes like `/api/appointments/[id]` allow for targeted updates to individual appointments.
 
-Key functional groups include:
+Payment processing is deeply integrated through dedicated Stripe API routes: `/api/stripe/checkout` for initiating payment flows, `/api/stripe/portal` for managing customer subscriptions, and `/api/stripe/webhook` for handling critical events from Stripe. The webhook specifically listens for `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` events, allowing the application to react to changes in subscription status and payment outcomes.
 
-*   **Account & Profile Management**: `/api/account` (DELETE), `/api/client-profile` (POST), `/api/onboarding` (POST), `/api/settings` (PATCH), `/api/auth/register` (POST). These handle user registration, profile updates, and account deletion.
-*   **Booking & Scheduling**: `/api/booking` (GET, POST), `/api/appointments/[id]` (PATCH), `/api/recurring` (POST, DELETE). These manage the creation, retrieval, and modification of appointments and recurring schedules.
-*   **Client & Professional Interactions**: `/api/follows` (GET, POST, DELETE), `/api/messages` (GET, POST), `/api/clients/notes` (POST), `/api/reviews` (POST). These facilitate client-professional relationships, messaging, note-taking, and feedback.
-*   **Payments & Subscriptions**: `/api/stripe/checkout` (POST), `/api/stripe/portal` (POST), `/api/stripe/webhook` (POST). These integrate with Stripe for managing subscriptions and processing payments.
-*   **AI Features**: `/api/ai/chat` (POST) provides an interface for AI-driven interactions.
-*   **Utilities & Integrations**: `/api/health` (GET) for system status, `/api/upload/avatar` (POST) for file uploads, `/api/trial` (POST) for managing trial periods, and `/api/whatsapp/webhook` (POST) for incoming WhatsApp messages.
-*   **Internal Cron Jobs**: `/api/cron/reminders` (GET) and `/api/cron/whatsapp-watchdog` (GET) are dedicated endpoints for scheduled tasks.
+AI capabilities are exposed via the `/api/ai/chat` route, which interacts with `4` defined AI tools: `get_appointments_today`, `get_customer_by_phone`, `get_revenue_summary`, and `update_appointment_status`. These tools suggest an intention to automate or assist with common professional tasks.
 
-The choice of Next.js API routes allows for seamless integration with the frontend, enabling a full-stack development approach within a single framework.
+Automated background tasks are managed by `2` cron jobs: `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`. These jobs are scheduled to run daily at `0 8 * * *` and `0 9 * * *` respectively, indicating a focus on timely communication and system health monitoring.
 
-## Scheduled Tasks (Cron Jobs)
-
-Odys utilizes two distinct cron jobs to automate critical background processes, ensuring timely execution of routine tasks.
-
-1.  **`/api/cron/reminders`**: This endpoint is scheduled to run daily at 8 AM (`0 8 * * *`). Its purpose is to process and send out appointment reminders, likely checking upcoming appointments and dispatching notifications via WhatsApp or other channels.
-2.  **`/api/cron/whatsapp-watchdog`**: Scheduled daily at 9 AM (`0 9 * * *`), this cron job likely monitors the status of WhatsApp messages, handles delivery reports, or performs cleanup operations related to the messaging system.
-
-These cron jobs are essential for maintaining the operational flow of the application, particularly for time-sensitive communications.
-
-## Payment System
-
-The payment infrastructure in Odys is built around Stripe, a widely adopted platform for online transactions and subscriptions. The system supports 4 distinct subscription plans: `free`, `basic`, `pro`, and `premium`, each with a defined `price` (0, 39, 79, and 149 respectively) and associated `priceIdEnvVar` for paid plans, indicating a production-ready configuration.
-
-Stripe integration is handled through dedicated API routes:
-*   `/api/stripe/checkout` (POST) initiates the payment process, likely redirecting users to a Stripe-hosted checkout page.
-*   `/api/stripe/portal` (POST) allows users to manage their subscriptions through the Stripe customer portal.
-*   `/api/stripe/webhook` (POST) is a crucial endpoint that listens for 3 specific Stripe events: `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`. These webhooks enable Odys to react to payment successes, subscription changes, and cancellations in real-time, updating the `professionals` table's `plan`, `stripeCustomerId`, and `stripeSubscriptionId` accordingly.
-
-## AI Integration
-
-Odys incorporates AI capabilities through the `groq-sdk`, exposed via the `/api/ai/chat` (POST) endpoint. This integration provides access to 4 specific AI tools: `get_appointments_today`, `get_customer_by_phone`, `get_revenue_summary`, and `update_appointment_status`. These tools suggest that the AI is designed to assist professionals with common administrative tasks, such as retrieving daily schedules, looking up client information, summarizing financial data, and modifying appointment statuses, likely through natural language commands.
-
-## Rate Limiting
-
-To ensure system stability and prevent abuse, Odys implements robust rate limiting using `@upstash/ratelimit` and `@upstash/redis`. Six distinct rate limits are configured:
-
-*   `booking`: 5 requests per 10 minutes, prefixed `rl:booking`.
-*   `api`: 60 requests per 1 minute, prefixed `rl:api`. This serves as a general API rate limit.
-*   `onboarding`: 3 requests per 1 hour, prefixed `rl:onboarding`.
-*   `register`: 5 requests per 1 hour, prefixed `rl:register`.
-*   `whatsapp`: 10 requests per 1 minute, prefixed `rl:whatsapp`.
-*   `aichat`: 20 requests per 1 hour, prefixed `rl:ai-chat`.
-
-Each limit is tailored to specific functional areas, reflecting varying expected usage patterns and potential for resource exhaustion. Upstash Redis provides a distributed and performant backend for managing these limits.
-
-## WhatsApp Integration
-
-A significant communication channel for Odys is WhatsApp, integrated to facilitate various interactions between professionals and clients. The system utilizes 19 distinct message templates, covering a wide array of scenarios:
-
-*   **Booking Lifecycle**: `msgBookingRequest`, `msgBookingConfirmed`, `msgBookingRejected`, `msgBookingCancelled`, `msgCancelledByClientToPro`, `msgCancelledByProToClient`.
-*   **Reminders**: `msgReminder24h`, `msgReminder1h`.
-*   **Receipts & Status Updates**: `msgBookingConfirmedReceipt`, `msgBookingRejectedReceipt`, `msgPaymentConfirmedToClient`, `msgPaymentConfirmedToPro`, `msgAppointmentCompletedToClient`, `msgAppointmentCompletedToPro`, `msgNoShowToClient`, `msgNoShowToPro`.
-*   **General Communication**: `msgRegistrationInvite`, `msgNewMessageToClient`, `msgNewMessageToPro`.
-
-These templates ensure structured, consistent, and efficient communication, covering the entire client journey from booking to post-appointment follow-up. The `/api/whatsapp/webhook` (POST) endpoint handles incoming messages, allowing for two-way communication.
-
-## Core Technologies
-
-The project's `package.json` reveals a modern JavaScript ecosystem. It's built on `next` version `16.2.1` and `react` version `19.2.4`, indicating a commitment to recent framework versions. `drizzle-orm` version `0.45.2` is the chosen ORM, paired with `postgres` version `3.4.8` for database interaction. `@supabase/supabase-js` version `2.100.1` and `@supabase/ssr` version `0.9.0` are used for authentication and server-side rendering support. `stripe` version `21.0.1` and `groq-sdk` version `1.1.2` confirm the payment and AI integrations. `@upstash/ratelimit` version `2.0.8` and `@upstash/redis` version `1.37.0` are used for rate limiting. Development tooling includes `vitest` version `3.2.4` for testing and `drizzle-kit` version `0.31.10` for database migrations.
+To ensure system stability and fair usage, rate limiting is implemented using `@upstash/ratelimit` and `@upstash/redis`. There are `6` distinct rate limit configurations, such as `booking` (limiting to `5` requests per `10 m`) and `aichat` (limiting to `20` requests per `1 h`), preventing abuse and ensuring resources are available for legitimate users.
 
 ## Design Decisions
 
-The architectural choices in Odys reflect a pragmatic approach to building a feature-rich application.
+The architectural choices in Odys reflect a preference for modern, type-safe, and integrated development practices.
 
-The decision to use **Drizzle ORM** was likely driven by its strong type safety and SQL-like query builder, which provides a robust and developer-friendly interface for interacting with the PostgreSQL database. This approach minimizes runtime errors related to schema mismatches and offers excellent autocompletion, enhancing developer productivity. The use of `uuid` for primary keys across all tables is a common pattern for distributed systems, avoiding potential conflicts and simplifying data merging compared to sequential integer IDs. The extensive use of `onDelete: cascade` for foreign key relationships, particularly from `professionalId`, simplifies data management by automatically cleaning up related records when a professional's profile is removed, reducing the risk of orphaned data.
+**Drizzle ORM** was selected for its ability to define database schemas directly in TypeScript, offering strong type safety throughout the data layer. This approach reduces the likelihood of runtime errors related to schema mismatches and provides a more integrated development experience compared to writing raw SQL or using ORMs that rely heavily on code generation from external schema files. The trade-off is a steeper initial learning curve for developers unfamiliar with Drizzle's specific API and a potential need for more manual query optimization in highly performance-critical scenarios where raw SQL might offer finer control.
 
-**Next.js API routes** were chosen to co-locate backend logic with the frontend, streamlining development and deployment. This full-stack framework approach reduces context switching and simplifies the overall project structure, making it easier for a single team to manage both client and server-side code.
+The adoption of **Next.js App Router** allows for a unified codebase where frontend components and backend API routes coexist within the same project. This simplifies deployment and development workflows by keeping related code together. The decision to use server components and API routes within Next.js enables efficient data fetching and rendering, but it also introduces complexity in distinguishing between server-side and client-side logic, which requires careful architectural planning.
 
-Integrating **Stripe** for payments is a standard and sensible choice. Stripe offers a comprehensive suite of tools for subscriptions, one-time payments, and customer management, significantly reducing the development effort required to build a secure and compliant payment system from scratch. The use of webhooks is critical here, as it allows the application to react asynchronously to payment events, ensuring the database state remains consistent with Stripe's records without relying on client-side redirects.
+**Supabase** is integrated to handle authentication and potentially other backend-as-a-service needs. This choice offloads the burden of building and maintaining a custom authentication system, accelerating development and providing a secure, managed solution. The trade-off is a dependency on Supabase's platform and its specific API, which might limit customization options compared to a fully bespoke backend.
 
-The implementation of **rate limiting with Upstash Redis** demonstrates a proactive approach to system resilience. By offloading rate limit state management to a dedicated, performant Redis instance, the application can effectively protect its API endpoints from excessive requests, preventing denial-of-service attacks and ensuring fair usage for all clients. The granular configuration for different API groups (`booking`, `api`, `onboarding`, `whatsapp`, `aichat`) shows an understanding of varying traffic patterns and resource consumption across the application.
+**Stripe** was chosen as the payment gateway due to its industry prevalence, comprehensive feature set for subscriptions and payments, and developer-friendly APIs. This decision streamlines the implementation of various payment plans (`free`, `basic`, `pro`, `premium`) and recurring billing. The primary trade-off is the complexity of integrating Stripe's webhooks and managing the lifecycle of subscriptions and payment intents, which requires careful handling of events like `checkout.session.completed` and `customer.subscription.updated`.
 
-The inclusion of **Groq SDK for AI features** suggests a desire to augment the platform with intelligent assistance for professionals. By providing specific tools like `get_appointments_today` and `update_appointment_status`, the AI is designed to be a practical aid, automating routine queries and actions, thereby improving efficiency for professionals.
+The extensive **WhatsApp integration**, evidenced by `19` message templates, highlights a strategic decision to prioritize direct and immediate communication with users. This approach aims to enhance user engagement and provide timely notifications for events like `msgBookingConfirmed` or `msgReminder24h`. The trade-off involves managing the WhatsApp Business API, adhering to its policies, and ensuring message deliverability and template approval processes.
 
-Finally, the extensive use of **WhatsApp message templates** indicates a strategic decision to leverage a popular communication channel for critical user interactions. Templates ensure consistency in messaging, improve deliverability, and can help manage communication costs and compliance, especially for transactional messages like reminders and booking confirmations.
+Implementing **Rate Limiting with Upstash** is a deliberate choice to protect the application's API endpoints from abuse, denial-of-service attacks, and to ensure fair resource allocation among users. By setting limits on various operations, such as `booking` and `aichat`, the system maintains stability. The trade-off is the operational overhead of monitoring these limits and potentially fine-tuning them as usage patterns evolve.
+
+The consistent use of **UUIDs for primary keys** across all `10` tables, such as `professionals.id` and `appointments.id`, provides globally unique identifiers. This simplifies data merging, replication, and distributed system design by avoiding ID collisions. While UUIDs consume slightly more storage space and can have minor performance implications for indexing compared to sequential integers, the benefits in distributed environments often outweigh these concerns.
+
+Finally, the widespread use of **`onDeleteCascade`** for foreign key relationships (e.g., `availability.professionalId`, `clients.professionalId`) simplifies data integrity management. When a parent record is deleted, all associated child records are automatically removed, preventing orphaned data. This design decision reduces the need for manual cleanup logic but necessitates extreme caution when deleting parent records, as it can lead to irreversible data loss if not handled with appropriate user confirmations and access controls.
 
 ## Potential Improvements
 
-While the current architecture is well-reasoned, several areas present opportunities for refinement and enhancement:
-
-1.  **Unified User Management**: The schema currently uses `userId` (type `text`) in `professionals`, `clients` (nullable), `follows`, and `notifications` (`recipientId`). This duplication suggests that `userId` is an external identifier, likely from Supabase. Introducing a dedicated `users` table that centralizes authentication details and links to `professionals` and `clients` (perhaps as `user_id` foreign keys) could simplify user management, enforce referential integrity more explicitly, and provide a single source of truth for user profiles. This would also allow for clearer distinctions between a "platform user" and a "professional" or "client" entity within the application.
-2.  **Consistent Time Representation**: The `availability` table stores `startTime` and `endTime` as `text`, while the `appointments` table uses `startsAt` and `endsAt` as `timestamp`. Storing time as `text` can lead to inconsistencies and complexities when performing time-based calculations, sorting, or handling different time zones. Standardizing all time-related columns to `timestamp` (or `timestamptz` for explicit time zone handling) would simplify date arithmetic, improve query performance, and reduce potential bugs related to time parsing and comparison.
-3.  **Foreign Key `ON DELETE` Behavior for `recurringScheduleId`**: In the `appointments` table, the `recurringScheduleId` column references `recurringSchedules.id` but does not specify an `onDelete: cascade` action. This means if a `recurringSchedule` is deleted, any `appointments` generated from it would retain a reference to a non-existent schedule, potentially leading to orphaned data or integrity issues. Given that `professionalId` and `clientId` *do* have `onDelete: cascade` in `appointments`, it would be consistent and beneficial to add `onDelete: cascade` to `recurringScheduleId` as well, or at least `onDelete: set null` if the intention is to preserve appointments while dissociating them from a deleted recurring schedule.
-4.  **Externalize Rate Limit Configuration**: The rate limit parameters (e.g., `limit`, `window`) are hardcoded within the application's configuration. While functional, externalizing these values into environment variables or a dedicated configuration service would allow administrators to adjust rate limits dynamically without requiring a code deployment. This flexibility is particularly useful for responding to unexpected traffic patterns or fine-tuning system behavior in production.
+1.  **Refine `userId` Consistency Across Tables:** The `professionals.userId` column is defined as `text` and `unique`, suggesting a direct link to an external user identity. However, `clients.userId` is `text` and `nullable`, and lacks a unique constraint. If both `userId` columns refer to the same external user system (e.g., Supabase Auth), making `clients.userId` unique (if a client can only be associated with one external user) and potentially non-nullable for registered clients would improve data integrity. Alternatively, if `clients.userId` is intended for optional linking, the current design is acceptable, but the distinction should be clearly documented.
+2.  **Implement Comprehensive Database Indexing Strategy:** While primary and unique keys are automatically indexed, a more explicit indexing strategy for frequently queried foreign keys and columns used in `WHERE` clauses could significantly improve performance. For instance, columns like `professionalId` in `appointments`, `clientId` in `messages`, or `dayOfWeek` in `availability` are likely to be part of common queries. Reviewing query patterns and adding specific indexes where beneficial, beyond the default ones, would be a valuable optimization.
+3.  **Externalize WhatsApp Message Templates:** The `whatsapp.templates` list indicates `19` distinct message templates. Currently, these are likely embedded within the application code or configuration. Moving these templates to a more dynamic storage solution, such as a database table or a content management system, would allow for easier updates, A/B testing, and localization without requiring code deployments. This would enhance the flexibility and maintainability of the WhatsApp integration.
+4.  **Standardize API Error Responses:** While the API routes handle various operations, a consistent and well-documented standard for API error responses across all `23` routes would improve client-side error handling. This could involve defining specific error codes, messages, and HTTP statuses for common failure scenarios, such as validation errors, unauthorized access, or resource not found.
 
 ## References
 
-*   `package.json`
-*   `db/schema.ts` (or similar, for Drizzle schema definitions)
-*   `pages/api/` (directory for API routes)
-*   `lib/cron.ts` (or similar, for cron job definitions)
-*   `lib/stripe.ts` (or similar, for Stripe integration logic)
-*   `lib/ai.ts` (or similar, for Groq SDK and AI tool definitions)
-*   `lib/ratelimit.ts` (or similar, for Upstash Redis rate limit configuration)
-*   `lib/whatsapp.ts` (or similar, for WhatsApp template definitions and integration)
+- `package.json`
+- `tech-decisions/index.mdx`

@@ -1,56 +1,127 @@
 ---
-title: Webhook Verification
-description: Stripe webhook raw body, signature verification, and event dispatch for payment processing.
+title: Stripe Webhook Verification
+description: "Stripe webhook: raw body, signature verification, event dispatch"
 ---
 
-# Webhook Verification
+# Stripe Webhook Verification
 
-The `src/app/api/stripe/webhook/route.ts` file defines the API endpoint responsible for handling incoming webhook events from Stripe. This endpoint is a critical component of the payment system, as it allows odys to react to changes in subscription statuses and payment events initiated by Stripe, ensuring that the application's internal state remains synchronized with the payment provider.
+The `/api/stripe/webhook` endpoint serves as the critical integration point for Odys to react to asynchronous events from Stripe. This handler is responsible for receiving notifications about significant payment lifecycle changes, such as completed checkouts, subscription updates, and cancellations. By processing these events, the application maintains an accurate and up-to-date record of user subscription statuses within its own database, ensuring that user access and features align with their payment plan.
 
 ## Overview
 
-This API route, accessible at `/api/stripe/webhook`, is configured to accept `POST` requests. Its primary function is to receive event notifications from Stripe, verify their authenticity, and then process specific events to update the application's database. The system relies on the `professionals` table, which has 24 columns, to store and manage subscription-related information such as `plan`, `stripeCustomerId`, and `stripeSubscriptionId`.
+The `POST` handler in `src/app/api/stripe/webhook/route.ts` is designed to be a robust listener for Stripe's event stream. Upon receiving a request, it first performs a crucial security check by verifying the request's authenticity using Stripe's signature mechanism. Once validated, the handler inspects the event type and dispatches the appropriate logic to update the application's data model, primarily affecting the `professionals` table. This table, with its 24 columns, stores vital subscription-related information such as `plan`, `stripeCustomerId`, and `stripeSubscriptionId`, which are directly managed by this webhook. The system is configured to listen for three specific Stripe webhook events: `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`.
 
-The webhook is specifically designed to listen for three key Stripe events: `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`. Each of these events triggers a distinct logic flow to modify a professional's subscription status within the odys platform, ensuring that their access and features align with their current Stripe subscription.
+## Receiving and Verifying Webhook Events
 
-## Stripe Webhook Processing
+The initial step in processing any incoming Stripe webhook is to ensure its legitimacy. The `POST` handler begins by reading the raw request body using `req.text()` and extracting the `stripe-signature` header. Stripe's signature verification process requires the raw body, not a pre-parsed JSON object, to compute the signature correctly.
 
-The `POST` function in `src/app/api/stripe/webhook/route.ts` orchestrates the entire webhook handling process.
+```typescript
+const body = await req.text()
+const sig = req.headers.get("stripe-signature")
+```
 
-Upon receiving a request, the first crucial step is to extract the raw request body using `req.text()` and the `stripe-signature` header from `req.headers.get("stripe-signature")`. Stripe's security model mandates that the raw body, not a parsed JSON object, be used for signature verification. This ensures that no part of the payload has been altered during transit. If the signature is missing, the request is immediately rejected with a 400 status code.
+If the `stripe-signature` header is missing, the request is immediately rejected with a 400 status, as it cannot be verified. The core of the verification lies in the call to `stripe.webhooks.constructEvent(body, sig, process.env.STRIPE_WEBHOOK_SECRET!)`. This function uses the raw body, the signature, and a secret key (loaded from `process.env.STRIPE_WEBHOOK_SECRET`) to cryptographically verify that the event originated from Stripe and has not been tampered with. Any failure in this verification process results in an error being logged via `logger.error("stripe_webhook_invalid_sig", { err })` and a `400 Bad Request` response with the body `{ error: "Webhook inválido" }`, preventing malicious or malformed requests from affecting the system. If verification is successful, the handler proceeds to process the event (as detailed in the 'Event Handling Logic' section) and ultimately responds with a `200 OK` status and a JSON body `{ received: true }`.
 
-The extracted raw body and signature are then passed to `stripe.webhooks.constructEvent`, along with the `STRIPE_WEBHOOK_SECRET` environment variable. This function performs a cryptographic verification to confirm that the event genuinely originated from Stripe and has not been tampered with. If the verification fails, an error is logged, and a 400 status code is returned, preventing malicious or invalid requests from affecting the system.
+## Event Handling Logic
 
-Once the event's authenticity is established, the system proceeds to dispatch logic based on the `event.type`:
+Once an event is successfully verified, the handler proceeds to process it based on its `type`. The current implementation uses a series of `if` statements to differentiate between the three supported event types.
 
-*   **`checkout.session.completed`**: This event signifies that a customer has successfully completed a Stripe Checkout session, typically for a new subscription or a one-time payment. The handler extracts `professionalId` and `plan` from the `session.metadata`. These metadata fields are crucial for linking the Stripe event back to the corresponding professional in the odys database. The `professionals` table is then updated to reflect the new `plan`. The `stripeCustomerId` and `stripeSubscriptionId` are updated with the values from the session if they are non-null; otherwise, their existing values in the database are retained. The `updatedAt` timestamp is also refreshed.
+### `checkout.session.completed`
 
-*   **`customer.subscription.updated`**: This event is triggered when a customer's subscription changes, such as an upgrade or downgrade initiated through the Stripe customer portal. The handler checks if the subscription `status` is "active". It then identifies the `priceId` of the new subscription item and attempts to match it against the `PLANS` constant defined in `@/lib/stripe`. This constant provides a mapping between Stripe's internal price IDs and odys's internal plan keys (e.g., "basic", "pro"). If a matching plan is found, the professional's `plan` in the database is updated accordingly, along with the `updatedAt` timestamp.
+This event signifies that a customer has successfully completed a checkout session, typically for a new subscription. The handler extracts the `session` object from the event data. Crucially, it retrieves `professionalId` and `plan` from `session.metadata`. These custom metadata fields are populated during the checkout session creation to link the Stripe transaction back to a specific professional within the Odys application.
 
-*   **`customer.subscription.deleted`**: When a customer cancels their subscription, this event is fired. The handler sets the professional's `plan` back to "free" and nullifies their `stripeSubscriptionId` in the `professionals` table. This ensures that canceled subscriptions are correctly reflected in the application's state, revoking access to paid features. The `updatedAt` timestamp is also updated.
+```typescript
+if (event.type === "checkout.session.completed") {
+  const session = event.data.object as Stripe.Checkout.Session
+  const { professionalId, plan } = session.metadata ?? {}
 
-Finally, after processing the event, the endpoint returns a `200 OK` response with `{ received: true }`, acknowledging receipt of the webhook to Stripe.
+  if (professionalId && plan) {
+    await db.update(professionals).set({
+      plan,
+      stripeCustomerId: session.customer as string ?? undefined,
+      stripeSubscriptionId: session.subscription as string ?? undefined,
+      updatedAt: new Date(),
+    }).where(eq(professionals.id, professionalId))
 
-## Design Decisions
+    capture({
+      distinctId: professionalId,
+      event: "subscription_started",
+      properties: { plan },
+    })
+    setOnce({
+      distinctId: professionalId,
+      properties: { first_paid_subscription_at: new Date().toISOString() },
+    })
+  }
+}
+```
 
-The design of this Stripe webhook handler reflects several deliberate choices aimed at security, reliability, and maintainability:
+The `professionals` table is then updated, setting the `plan` to the newly purchased plan, and storing the `stripeCustomerId` and `stripeSubscriptionId` for future reference. Note that `session.customer` and `session.subscription` can sometimes be `null` from Stripe; the handler converts these to `undefined` to ensure proper database storage (typically as `NULL`). The `updatedAt` timestamp is also refreshed. Following the database update, analytics events (`subscription_started`) are captured and a `first_paid_subscription_at` property is set once for the `professionalId`, providing valuable insights into user behavior.
 
-*   **Raw Body for Verification**: The decision to read the request body as raw text (`req.text()`) before any parsing is fundamental. Stripe's signature verification mechanism requires the exact raw payload to compute and compare signatures. Parsing the body into JSON first would alter its structure and invalidate the signature, making verification impossible. This is a non-negotiable security requirement for Stripe webhooks.
-*   **Immediate Signature Verification**: Placing the `stripe.webhooks.constructEvent` call at the very beginning of the processing flow ensures that only legitimate and untampered events are processed. This "fail fast" approach is a strong security practice, preventing any further resource consumption or potential data manipulation from unauthorized sources.
-*   **Direct Database Updates**: The webhook directly interacts with the Drizzle ORM (`db.update(professionals)`) to modify the `professionals` table. This direct approach simplifies the data flow for critical subscription changes, ensuring that the application's view of a professional's plan is always in sync with Stripe's authoritative source. While this couples the webhook directly to the database, for these specific, high-priority updates, it minimizes latency and complexity compared to introducing an intermediary queue for simple state changes.
-*   **Explicit Event Type Handling**: The handler explicitly checks for `event.type` using `if (event.type === "...")` blocks. This makes the logic clear and focused, processing only the events that are relevant to odys's subscription management. It avoids unnecessary computation for other Stripe events that might be sent but are not critical for updating professional plans.
-*   **Centralized Plan Mapping**: The use of the `PLANS` constant from `@/lib/stripe` for mapping Stripe `priceId` values to internal `PlanKey` values is a good practice. It centralizes the configuration of subscription plans, making it easier to manage and update plan details without scattering Stripe IDs throughout the codebase.
+### `customer.subscription.updated`
 
-## Potential Improvements
+This event is triggered when a customer's subscription changes, often due to an upgrade or downgrade initiated through the Stripe customer portal. The handler checks if the subscription `status` is "active". It then attempts to match the `priceId` of the subscription's primary item to one of the predefined plans in the `PLANS` constant.
 
-While the current implementation effectively handles Stripe webhooks, several areas could be enhanced for greater robustness, scalability, and maintainability:
+```typescript
+if (event.type === "customer.subscription.updated") {
+  const sub = event.data.object as Stripe.Subscription
+  if (sub.status === "active") {
+    const priceId = sub.items.data[0]?.price.id
+    const matchedPlan = priceId
+      ? (Object.entries(PLANS) as [PlanKey, typeof PLANS[PlanKey]][])
+          .find(([, p]) => p.priceId === priceId)?.[0]
+      : undefined
 
-1.  **Asynchronous Event Processing**: The current webhook processes events synchronously, performing database updates directly within the `POST` request handler. For more complex event handling or to mitigate the risk of Stripe retries due to slow responses, consider offloading the actual event processing to an asynchronous job queue. The webhook could simply verify the signature, enqueue the event payload, and immediately return a `200 OK` response. A separate worker process would then consume events from the queue and perform the database operations. This decouples the webhook's response time from the processing time, improving reliability.
-2.  **Enhanced Idempotency Handling**: Although Stripe webhooks are designed to be idempotent, the current database update logic in `src/app/api/stripe/webhook/route.ts` does not explicitly track processed event IDs. While Drizzle's `update` operations are generally idempotent for setting specific values, adding a mechanism to store and check `event.id` in the database before processing could prevent unintended side effects if Stripe sends duplicate events (e.g., due to network issues or retries). This would involve adding a new table to store processed webhook event IDs.
-3.  **Structured Logging and Alerting**: The error handling for signature verification currently uses `console.error("[STRIPE WEBHOOK] Invalid signature:", err)`. For a production environment, integrating a more structured logging solution (e.g., a dedicated logging library) that captures more context (like the `event.id` if available, or the request headers) would be beneficial. Furthermore, setting up alerts for critical errors, such as failed signature verifications or database update failures, would allow for proactive monitoring and faster incident response.
+    if (matchedPlan) {
+      await db.update(professionals).set({
+        plan: matchedPlan,
+        updatedAt: new Date(),
+      }).where(eq(professionals.stripeSubscriptionId, sub.id))
+    }
+  }
+}
+```
+
+If a matching plan is found, the `professionals` table is updated with the new `plan` and `updatedAt` timestamp, using the `stripeSubscriptionId` to locate the correct professional record.
+
+### `customer.subscription.deleted`
+
+When a customer cancels their subscription, Stripe sends a `customer.subscription.deleted` event. This event signals that the professional should revert to the "free" plan.
+
+```typescript
+if (event.type === "customer.subscription.deleted") {
+  const sub = event.data.object as Stripe.Subscription
+  await db.update(professionals).set({
+    plan: "free",
+    stripeSubscriptionId: null,
+    updatedAt: new Date(),
+  }).where(eq(professionals.stripeSubscriptionId, sub.id))
+}
+```
+
+The handler updates the `professionals` table, setting the `plan` to "free" and nullifying the `stripeSubscriptionId`, effectively revoking access to paid features. The `updatedAt` timestamp is also updated.
+
+## Design decisions
+
+The design of this webhook handler reflects several deliberate choices to ensure security, data consistency, and maintainability:
+
+*   **Raw Body for Verification**: The decision to read the raw request body using `req.text()` before any parsing is fundamental for Stripe's signature verification. This is a security requirement, as the signature is computed over the exact bytes of the payload. Parsing the body into JSON first would alter it and invalidate the signature.
+*   **Stripe's `constructEvent`**: Using `stripe.webhooks.constructEvent` directly offloads the complexity of signature validation, timestamp checks, and event parsing to the Stripe SDK. This reduces the risk of implementation errors in cryptographic checks and ensures adherence to Stripe's recommended security practices.
+*   **Direct Database Updates**: The handler performs direct updates to the `professionals` table using Drizzle ORM. This approach keeps the application's internal state synchronized with Stripe's subscription status immediately upon receiving an event. The `professionals` table is the central source of truth for user plans, making it a logical target for these updates.
+*   **Metadata for Context**: Relying on `session.metadata` to pass `professionalId` and `plan` during `checkout.session.completed` is a practical way to bridge the gap between Stripe's generic checkout sessions and Odys's specific user context. It avoids the need for additional database lookups or complex mapping logic within the webhook handler itself.
+*   **Centralized Plan Definitions**: The `PLANS` constant, defined in `src/lib/stripe.ts`, centralizes the mapping between internal plan names and Stripe `priceId`s. This makes the `customer.subscription.updated` logic cleaner and less error-prone, as it can reliably find the corresponding internal plan based on the Stripe price.
+*   **Analytics Integration**: The inclusion of `capture` and `setOnce` calls from `src/lib/analytics.ts` directly within the webhook handler for `checkout.session.completed` events demonstrates a commitment to tracking key business metrics. This ensures that subscription start events are recorded accurately and promptly, providing immediate feedback on user acquisition and monetization.
+
+## Potential improvements
+
+While the current webhook handler effectively manages Stripe events, several areas could be enhanced to improve its architecture, resilience, and maintainability:
+
+1.  **Modular Event Dispatching**: The current structure uses a series of `if (event.type === "...")` statements in `src/app/api/stripe/webhook/route.ts`. As the number of handled Stripe events grows beyond the current three (`checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`), this approach can become less manageable. Introducing a dedicated event dispatcher or a map of event type to handler functions would make the code more modular, easier to extend, and improve readability. Each event type could have its own dedicated function, promoting separation of concerns.
+2.  **Idempotency Handling**: Stripe webhooks can occasionally be delivered multiple times. The `POST` handler in `src/app/api/stripe/webhook/route.ts` does not currently implement explicit idempotency checks beyond the inherent idempotency of `db.update` operations on unique keys. For events that might trigger more complex side effects (e.g., sending emails, provisioning resources), it would be beneficial to store the `event.id` in the database and check if an event has already been processed before executing its logic. This prevents duplicate processing and potential inconsistencies.
+3.  **Asynchronous Processing for Long-Running Tasks**: The `POST` handler performs direct database updates and analytics calls. While these are generally fast, for scenarios where these operations might be slow, or if more complex logic (e.g., calling external APIs, sending multiple notifications) were to be added, it could lead to the webhook timing out. Offloading the actual event processing to a background job queue (e.g., using a message broker like Redis Queue or a serverless function) would allow the webhook to respond to Stripe immediately with a 200 OK, improving resilience and preventing retries from Stripe. The current implementation is synchronous, which is simpler but less fault-tolerant for complex workflows.
+4.  **Granular Error Handling and Alerting**: The `try-catch` block for `stripe.webhooks.constructEvent` provides a general error message (`"Webhook inválido"`) and logs `stripe_webhook_invalid_sig`. However, errors that occur *during* the processing of a valid event (e.g., database connection issues, unexpected data in `session.metadata`) are not explicitly caught or handled. Adding more specific `try-catch` blocks around each event type's processing logic would allow for more targeted error logging, potentially triggering alerts for operational teams, and providing more informative responses if a processing error occurs.
+5.  **Type Safety for Metadata**: The `session.metadata ?? {}` access in the `checkout.session.completed` handler is functional but relies on runtime checks for `professionalId` and `plan`. Defining a TypeScript interface for the expected `session.metadata` structure would provide compile-time type safety, making it clearer what metadata fields are expected and reducing the chance of runtime errors due to missing or misspelled properties.
 
 ## References
 
 *   `src/app/api/stripe/webhook/route.ts`
-*   `src/lib/stripe.ts`
-*   `src/lib/db/schema.ts`

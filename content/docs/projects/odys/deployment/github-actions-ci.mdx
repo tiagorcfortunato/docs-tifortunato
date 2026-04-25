@@ -1,57 +1,73 @@
 ---
-title: GitHub Actions CI
+title: CI Pipeline
 description: "CI pipeline: typecheck + lint + build"
 ---
 
-# GitHub Actions CI
+# CI Pipeline
 
-The continuous integration (CI) pipeline defined in `.github/workflows/ci.yml` is a foundational element of the Odys development process. It ensures that every code change, whether a direct push to `main` or a pull request, adheres to established quality standards before it can be integrated or deployed. This workflow acts as an automated gatekeeper, performing essential checks like type validation, code style enforcement, and build verification, which are critical for maintaining a stable and reliable codebase.
+The `ci.yml` workflow defines the Continuous Integration (CI) pipeline for the Odys project, residing in the `.github/workflows/ci.yml` file. This pipeline is a critical component of the development process, designed to automatically verify the quality and buildability of the codebase whenever changes are introduced. By running a series of automated checks, it helps maintain code health, catch errors early, and ensure that the application remains in a deployable state.
 
 ## Overview
 
-The CI workflow is structured into two distinct jobs: `check` and `build`. This separation allows for a clear progression, where foundational code quality and correctness are verified first, followed by the successful compilation of the application.
+This GitHub Actions workflow is configured to trigger automatically on two primary events:
+*   Every `push` to the `main` branch, ensuring that all merged changes are validated.
+*   Every `pull_request` targeting the `main` branch, providing immediate feedback on proposed changes before they are integrated.
 
-The workflow is triggered automatically on `push` events to the `main` branch and for all `pull_request` events targeting the `main` branch. This ensures that all proposed changes undergo scrutiny, preventing regressions and maintaining code health.
+The workflow is structured into two distinct jobs: `check` and `build`. This separation of concerns allows for a clear progression of validation steps. The `build` job is explicitly configured to `needs: check`, meaning it will only execute if the `check` job completes successfully. This dependency ensures that no code is built unless it first passes all static analysis and tests, saving computational resources and providing a more reliable build artifact.
 
-### The `check` Job
+## The `check` Job: Typecheck, Lint & Tests
 
-The `check` job is designed to rapidly identify common development errors and enforce code quality standards. It runs on an `ubuntu-latest` runner, providing a consistent environment for execution.
+The `check` job, aptly named "Typecheck, Lint & Tests", is the first line of defense for code quality. It runs on an `ubuntu-latest` environment, providing a consistent execution context.
 
-1.  **Checkout Code**: The `actions/checkout@v4` action fetches the repository's code, making it available for subsequent steps.
-2.  **Node.js Setup**: The `actions/setup-node@v4` action configures Node.js version 20. It also leverages `cache: npm` to cache `node_modules`, significantly speeding up dependency installation in subsequent runs by reusing previously downloaded packages.
-3.  **Install Dependencies**: `npm ci` is executed to perform a clean installation of project dependencies, ensuring that the exact versions specified in `package-lock.json` are used, which is crucial for reproducible builds.
-4.  **Typecheck**: `npx tsc --noEmit` runs the TypeScript compiler to perform a type check across the entire codebase. This step is vital for catching type-related errors early, ensuring the strong typing benefits of TypeScript are fully realized.
-5.  **Lint**: `npm run lint` executes the project's linting configuration. This step enforces code style, identifies potential bugs, and ensures consistency, which is particularly important for a project with a diverse set of API routes and database interactions.
-6.  **Unit Tests**: `npm test` runs the project's unit tests. This step verifies the correctness of individual components and functions, providing confidence that changes haven't introduced regressions.
+The steps within this job are:
 
-### The `build` Job
+1.  **Checkout Code**: The `actions/checkout@v6` action fetches the repository's code, making it available for subsequent steps.
+2.  **Setup Node.js**: The `actions/setup-node@v6` action configures the environment with Node.js version 20. It also utilizes `npm` caching, which significantly speeds up subsequent workflow runs by reusing downloaded dependencies.
+3.  **Install Dependencies**: The `npm ci` command installs project dependencies. Using `npm ci` (clean install) instead of `npm install` is a deliberate choice for CI environments, as it guarantees that the exact versions specified in `package-lock.json` are installed, leading to more reproducible builds.
+4.  **Typecheck**: This step executes `npx tsc --noEmit`. The TypeScript compiler (`tsc`) is run to perform static type analysis across the entire codebase. The `--noEmit` flag is crucial here; it instructs TypeScript to only check for type errors without generating any JavaScript output files. This makes the step faster and ensures it focuses solely on type correctness.
+5.  **Lint**: The `npm run lint` command invokes the project's linter. This step enforces coding standards, identifies stylistic issues, and catches potential programming errors, contributing to a more consistent and maintainable codebase.
+6.  **Unit tests**: Finally, `npm test` runs the project's suite of unit tests. This step verifies the correctness of individual components and functions, ensuring that recent changes have not introduced regressions.
 
-The `build` job is responsible for compiling the application into its deployable artifacts. It is configured with `needs: check`, meaning it will only execute if the `check` job completes successfully. This dependency ensures that no resources are wasted attempting to build code that has failed basic quality or correctness checks.
+## The `build` Job: Application Compilation
 
-Like the `check` job, it runs on `ubuntu-latest` and includes steps for checking out the code, setting up Node.js 20 with npm caching, and installing dependencies via `npm ci`.
+The `build` job, named "Build", is responsible for compiling the application into a deployable artifact. It also runs on `ubuntu-latest` and, as mentioned, `needs` the `check` job to pass before it begins.
 
-Crucially, the `build` job requires a comprehensive set of environment variables, which are securely injected from GitHub secrets. These include sensitive keys and URLs for various services that Odys integrates with, such as `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `STRIPE_SECRET_KEY`, `STRIPE_BASIC_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`, `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, `EVOLUTION_INSTANCE`, `CRON_SECRET`, `RESEND_API_KEY`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and `SENTRY_AUTH_TOKEN`. The build process needs access to these configurations to correctly compile the application.
+A key aspect of the `build` job is the extensive list of environment variables it requires. These variables, sourced from GitHub Secrets, are essential for the build process to correctly configure the application for various services and integrations. They include:
 
-Finally, `npm run build` is executed to compile the application. This step generates the optimized production-ready assets.
+*   `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` for Supabase integration.
+*   `SUPABASE_SERVICE_ROLE_KEY` and `DATABASE_URL` for database access.
+*   `STRIPE_SECRET_KEY`, `STRIPE_BASIC_PRICE_ID`, `STRIPE_WEBHOOK_SECRET`, and `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` for Stripe payment processing, including the `STRIPE_BASIC_PRICE_ID` which corresponds to the basic plan's pricing.
+*   `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`, and `EVOLUTION_INSTANCE` for the Evolution API, likely related to WhatsApp integration given the project's use of 19 WhatsApp message templates.
+*   `CRON_SECRET` for securing cron job endpoints like `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`.
+*   `RESEND_API_KEY` for email services.
+*   `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` for Upstash Redis, which is used for rate limiting across 6 different categories, including `booking` and `aichat`.
+*   `SENTRY_AUTH_TOKEN` for error monitoring.
+
+The steps within the `build` job are similar to the initial setup of the `check` job:
+
+1.  **Checkout Code**: `actions/checkout@v6` retrieves the source code.
+2.  **Setup Node.js**: `actions/setup-node@v6` configures Node.js version 20 and `npm` caching.
+3.  **Install Dependencies**: `npm ci` installs dependencies reproducibly.
+4.  **Build**: The `npm run build` command executes the project's build script. This typically involves transpiling code, optimizing assets, and generating the final output files ready for deployment.
 
 ## Design Decisions
 
-The design of this CI pipeline reflects a deliberate choice to prioritize early feedback and maintain a high standard of code quality.
+The structure of this CI pipeline reflects several intentional design choices aimed at efficiency, reliability, and maintainability:
 
-1.  **Separation of Concerns (`check` vs. `build`)**: By splitting the workflow into `check` and `build` jobs, the pipeline provides faster feedback on code quality issues. Developers don't have to wait for a full build to complete to know if their changes introduced a type error or linting violation. The `needs: check` dependency ensures that the more resource-intensive build process only runs on code that has already passed initial quality gates.
-2.  **Comprehensive Pre-Build Checks**: The `check` job includes typechecking, linting, and unit tests. This combination covers a broad spectrum of potential issues, from static type errors to runtime logic bugs, before the code is even considered for deployment.
-3.  **Consistent Environment**: Using `ubuntu-latest` and explicitly setting `node-version: 20` ensures that the CI environment is consistent across all runs, minimizing "works on my machine" issues.
-4.  **Dependency Caching**: The `cache: npm` configuration for `actions/setup-node` is a pragmatic choice to optimize build times. While `npm ci` ensures exact dependency versions, caching prevents repeated downloads of the same packages, making the CI process more efficient.
-5.  **Secure Environment Variables**: Relying on GitHub secrets for all sensitive environment variables in the `build` job is a standard security practice. It prevents hardcoding credentials and ensures that secrets are not exposed in the repository.
+*   **Sequential Job Execution (`needs: check`)**: By making the `build` job dependent on the `check` job, the pipeline ensures that resources are not wasted on building code that already contains errors. This "fail fast" approach provides quicker feedback to developers and reduces overall CI costs.
+*   **Dedicated `check` Job for Fast Feedback**: Separating typechecking, linting, and testing into a distinct `check` job allows for rapid validation of code quality. Developers receive quick feedback on common issues without waiting for a full application build, which is often a more time-consuming process.
+*   **`npm ci` for Reproducibility**: The use of `npm ci` instead of `npm install` is a standard practice in CI environments. It guarantees that the exact dependency tree defined in `package-lock.json` is used, preventing unexpected build failures due to new or updated package versions.
+*   **`tsc --noEmit` for Type Safety**: Running TypeScript with `--noEmit` in the `check` job ensures that type correctness is verified without the overhead of generating JavaScript files. This keeps the `check` job focused and efficient.
+*   **Comprehensive Environment Variables for `build`**: Providing a complete set of environment variables to the `build` job ensures that the application is compiled with all necessary configurations for its various integrations, such as Supabase, Stripe, and WhatsApp. This prevents issues that might arise from missing configuration during the build phase.
 
 ## Potential Improvements
 
-While the current CI pipeline is robust, several opportunities exist to enhance its capabilities and efficiency:
+While the current CI pipeline provides a solid foundation for code quality and build verification, several opportunities exist to enhance its efficiency and coverage:
 
-1.  **Code Formatting Enforcement**: The `check` job currently includes linting, but it does not explicitly enforce code formatting. Adding a step like `npm run format:check` (assuming a corresponding script is added to `package.json`) after linting in the `check` job would ensure consistent code style across the project. This helps prevent merge conflicts related to formatting and improves readability, especially in a project with multiple contributors.
-2.  **Code Coverage Reporting**: The `check` job runs unit tests, but it doesn't report on code coverage. Integrating a step to generate and upload code coverage reports (e.g., using a tool like Codecov or Coveralls) after `npm test` would provide valuable insights into the thoroughness of the test suite.
-3.  **Dependency Vulnerability Scanning**: The pipeline installs dependencies but does not include a step to scan for known security vulnerabilities within those dependencies. Incorporating a step using `npm audit` or a dedicated vulnerability scanner (e.g., Snyk, Dependabot) in the `check` job would proactively identify and flag security risks, which is essential for the long-term security posture of the `odys` application.
+1.  **Parallelize Independent Checks**: The `Typecheck`, `Lint`, and `Unit tests` steps within the `check` job currently execute sequentially. Since these steps are largely independent of each other, they could be configured to run in parallel. This would involve restructuring the `check` job to leverage GitHub Actions' ability to run steps concurrently, significantly reducing the overall execution time of the `check` phase.
+2.  **Integrate Drizzle Schema Validation**: The project uses Drizzle ORM, managing 10 tables including `professionals`, `appointments`, and `clients`. Adding a step to validate the Drizzle schema against the database or generated types (e.g., using a `drizzle-kit check` command if available) within the `check` job could catch schema drift or definition errors early. This would prevent potential runtime issues related to database schema mismatches before deployment.
+3.  **Run `npm audit` for Dependency Security**: The project relies on 35 direct dependencies and 11 development dependencies. Incorporating an `npm audit` step into the `check` job would automatically scan for known security vulnerabilities in the dependency tree. This provides an additional layer of security assurance, identifying potential risks in third-party packages before the code is built or deployed.
 
 ## References
 
--   `.github/workflows/ci.yml`
+*   `.github/workflows/ci.yml`
