@@ -1,126 +1,42 @@
 ---
-title: Backend Overview
-description: An overview of the odys backend architecture, including API routes, shared helpers, authentication patterns, and database schema.
+title: "Backend Overview"
+description: "API route tree, shared helpers, and authentication patterns"
 ---
 
 # Backend Overview
 
-The `odys` backend serves as the operational core of the application, orchestrating data persistence, business logic, and integrations with external services. This document provides a deep dive into its structure, focusing on the API route tree, the foundational shared helpers, the authentication pattern, and the underlying database schema. Understanding these components is crucial for anyone looking to develop, maintain, or extend the `odys` platform.
+This document provides a structural understanding of the backend system powering Odys, focusing on the API architecture, shared utilities, and authentication flow. Understanding this layer is essential for extending features, debugging issues, and maintaining consistency across endpoints.
 
 ## Overview
 
-The `odys` backend is built around a set of Next.js API routes, totaling 21 distinct endpoints, which handle all client-server communication. These routes interact with a Drizzle ORM-managed PostgreSQL database, comprising 10 tables, to store and retrieve application data. Authentication is handled via Supabase, providing a robust and managed solution for user identity.
+The backend consists of **23 API routes** organized under `/api`, including public, authenticated, and cron-triggered endpoints. These routes interact with a **10-table Drizzle ORM schema** that models professionals, clients, appointments, messages, and subscriptions. Key subsystems include Stripe integration for payments, Supabase for auth, and WhatsApp messaging via webhook handlers. Rate limiting is enforced on critical paths like booking and registration using Redis-backed limits, and two cron jobs run daily for reminders and system health checks.
 
-Beyond standard API interactions, the backend integrates with several critical external services:
-*   **Stripe**: For managing subscriptions and processing payments, with dedicated webhook handling at `/api/stripe/webhook` for events like `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`.
-*   **WhatsApp**: For client communication, leveraging 19 distinct message templates and processing incoming messages via `/api/whatsapp/webhook`.
-*   **Groq SDK**: For AI-powered features, exposed through the `/api/ai/chat` endpoint and utilizing 4 specific tools like `get_appointments_today` and `update_appointment_status`.
+## API Structure and Patterns
 
-To ensure system health and timely actions, two cron jobs are configured: `/api/cron/reminders` runs daily at 8 AM to send out notifications, and `/api/cron/whatsapp-watchdog` runs daily at 9 AM, likely for monitoring or maintenance of WhatsApp interactions. The system also implements rate limiting across various critical endpoints, such as `booking` (5 requests per 10 minutes) and `api` (60 requests per 1 minute), to prevent abuse and ensure stability.
+The API surface is logically grouped: user-facing actions like `POST /api/booking` and `GET /api/messages`, administrative tasks like `PATCH /api/settings`, and third-party integrations such as `POST /api/stripe/webhook` and `POST /api/whatsapp/webhook`. Specialized routes under `/api/cron` are protected by `CRON_SECRET` and execute time-based jobs like sending 24-hour appointment reminders.
 
-## API Route Tree
+Authentication relies on Supabase JWTs. The `getUser()` helper extracts the authenticated user from the session, while `getProfessional(userId)` links that user to their profile in the `professionals` table via the `userId` text column. This pattern avoids duplicating auth logic across endpoints and ensures consistent access control.
 
-The API routes are organized within the `src/app/api` directory, following Next.js conventions. This structure naturally groups related functionalities and allows for clear separation of concerns.
-
-The 21 API routes cover a wide range of application features:
-
-*   **User and Professional Management**: Routes like `/api/account` (DELETE), `/api/onboarding` (POST), `/api/auth/register` (POST), and `/api/settings` (PATCH) handle user lifecycle and profile updates. The `/api/client-profile` (POST) route specifically caters to client-side profile creation.
-*   **Core Business Logic**: Endpoints such as `/api/booking` (GET, POST), `/api/appointments/[id]` (PATCH), `/api/recurring` (POST, DELETE), and `/api/reviews` (POST) manage the core scheduling and feedback mechanisms.
-*   **Communication and Engagement**: `/api/messages` (GET, POST), `/api/notifications` (GET, PATCH), and `/api/follows` (GET, POST, DELETE) facilitate in-app communication and user engagement.
-*   **Integrations**: Dedicated routes for external services include `/api/stripe/checkout` (POST) for initiating payments, `/api/stripe/webhook` (POST) for handling Stripe events, `/api/whatsapp/webhook` (POST) for WhatsApp interactions, and `/api/ai/chat` (POST) for AI functionalities.
-*   **System Operations**: Cron jobs are exposed as API routes, specifically `/api/cron/reminders` (GET) and `/api/cron/whatsapp-watchdog` (GET), allowing external scheduling services to trigger them.
-*   **File Uploads**: `/api/upload/avatar` (POST) handles image uploads, likely for user and professional avatars.
-
-This comprehensive set of routes ensures that all necessary interactions, from user registration to complex scheduling and external service integrations, are exposed through a well-defined API.
-
-## Shared Helpers (`src/lib/api.ts`)
-
-The `src/lib/api.ts` file is a cornerstone of the backend, providing a centralized collection of utility functions that promote consistency, reduce boilerplate, and enforce best practices across all API routes. This approach ensures that common tasks, such as sending standardized responses or handling authentication, are managed in a single, maintainable location.
-
-### Response Helpers
-
-A set of functions is provided to generate consistent `NextResponse` objects with appropriate HTTP status codes and error messages:
-
-*   `ok(data: object)`: Returns a `200 OK` response with the provided JSON data. This is the standard success response.
-*   `unauthorized()`: Returns a `401 Unauthorized` response, indicating that the request lacks valid authentication credentials.
-*   `forbidden(msg = "Sem permissão")`: Returns a `403 Forbidden` response, used when the authenticated user does not have the necessary permissions to access a resource.
-*   `notFound(msg = "Não encontrado")`: Returns a `404 Not Found` response, for when the requested resource does not exist.
-*   `badRequest(msg: string)`: Returns a `400 Bad Request` response, typically used for invalid input or malformed requests.
-*   `conflict(msg: string)`: Returns a `409 Conflict` response, often used when a request attempts to create a resource that already exists or violates a unique constraint.
-*   `tooManyRequests()`: Returns a `429 Too Many Requests` response, indicating that the user has sent too many requests in a given amount of time, aligning with the defined rate limits.
-*   `serverError(context: string, err: unknown)`: This critical helper logs the internal error server-side with a provided `context` for debugging, but returns a generic `500 Internal Server Error` to the client. This design choice is paramount for security, preventing sensitive internal error details from being exposed to external users.
-
-By using these helpers, developers can ensure that API responses are uniform, easy to consume by clients, and adhere to standard HTTP semantics.
-
-### Auth Helpers
-
-Authentication and authorization are fundamental to any application. `src/lib/api.ts` provides two key functions to manage user and professional identity:
-
-*   `getUser()`: This asynchronous function leverages the Supabase client (`createClient()`) to retrieve the currently authenticated user. It returns the Supabase `user` object if logged in, or `null` otherwise. This is the first step in verifying a user's identity.
-*   `getProfessional(userId: string)`: Once a Supabase `userId` is obtained, this function queries the Drizzle ORM `professionals` table to fetch the corresponding professional's data. It uses `eq(professionals.userId, userId)` to find the professional linked to the Supabase user ID and `limit(1)` to ensure only one record is returned. This function is crucial for professional-specific operations, as it links the generic Supabase user to the application's `professionals` entity. The `professionals` table itself has a `userId` column, which is `unique` and `nullable: false`, ensuring a one-to-one mapping between a Supabase user and a professional profile.
-
-### Utility Helpers
-
-*   `getIp(req: NextRequest)`: This helper extracts the client's IP address from the `x-forwarded-for` header. This is a common pattern when applications are deployed behind proxies or load balancers. The extracted IP is essential for implementing the application's rate limiting policies, which are configured for various endpoints like `booking` and `onboarding`. If the header is not present, it defaults to "anonymous".
-
-## Auth Pattern
-
-The authentication pattern in `odys` combines Supabase's robust user management with Drizzle ORM for application-specific professional data. When an API route requires authentication, the typical flow involves:
-
-1.  Calling `getUser()` to verify if a user is logged in via Supabase. If `null` is returned, the route can immediately respond with `unauthorized()`.
-2.  If a Supabase user is found, their `id` is then passed to `getProfessional(userId)` to retrieve the associated professional profile from the `professionals` table.
-3.  If `getProfessional` returns `null`, it implies that the authenticated Supabase user does not have a corresponding professional profile, which might lead to a `forbidden()` response depending on the route's requirements.
-4.  Once both the Supabase user and the `professionals` record are successfully retrieved, the route can proceed with its business logic, knowing the identity and role of the requester.
-
-This two-step process ensures that not only is a user authenticated, but they also possess the necessary application-level identity (`professional` or `client`) to perform the requested action.
-
-## Database Schema
-
-The `odys` backend interacts with a PostgreSQL database, managed through the Drizzle ORM, which defines 10 distinct tables. The schema is designed to support the core functionalities of a professional service booking and management platform.
-
-The central table is `professionals`, which holds 24 columns and represents the service providers. Key columns include:
-*   `id` (uuid, primary key)
-*   `userId` (text, unique, links to Supabase user ID)
-*   `name`, `slug` (unique identifier for public profiles), `phone`, `email`, `profession`, `bio`, `avatarUrl`
-*   Business-related fields: `sessionDuration`, `sessionPrice`, `plan` (e.g., "free", "basic", "pro", "premium"), `paymentType`, `paymentPercentage`, `pixKeyType`, `pixKey`
-*   Stripe integration: `stripeCustomerId`, `stripeSubscriptionId`
-*   Account status: `trialEndsAt`, `welcomeMessage`, `autoConfirm`, `active`
-*   Timestamps: `createdAt`, `updatedAt`
-
-Other significant tables and their relationships:
-
-*   `availability`: Stores the working hours for a `professionalId` (uuid, references `professionals` with `onDeleteCascade`).
-*   `clients`: Represents the clients of a professional, linked by `professionalId` (uuid, references `professionals` with `onDeleteCascade`). It also has an optional `userId` for clients who are also Supabase users.
-*   `clientNotes`: Stores notes made by a professional about a specific `clientId` (uuid, references `clients` with `onDeleteCascade`), also linked to `professionalId` (uuid, references `professionals` with `onDeleteCascade`).
-*   `recurringSchedules`: Defines recurring appointments for a `clientId` with a `professionalId` (both with `onDeleteCascade` references).
-*   `appointments`: The core booking table, linking `professionalId` and `clientId` (both with `onDeleteCascade` references). It can also link to `recurringScheduleId`. It tracks `startsAt`, `endsAt`, `status`, `paymentStatus`, and `stripePaymentIntentId`.
-*   `messages`: Stores chat messages between a `professionalId` and `clientId` (both with `onDeleteCascade` references), including `sender`, `type`, `content`, and `fileUrl`.
-*   `follows`: Tracks when a `userId` follows a `professionalId` (with `onDeleteCascade` reference).
-*   `reviews`: Stores ratings and comments from a `clientId` about an `appointmentId` (unique, with `onDeleteCascade` reference) for a `professionalId` (with `onDeleteCascade` reference).
-*   `notifications`: Generic notifications for a `recipientId` (text) and `recipientType` (text), indicating who should receive the notification.
-
-The extensive use of `uuid` for primary keys and foreign keys, along with `onDeleteCascade` for many relationships, ensures data integrity and simplifies cleanup when parent records are removed.
+Shared response helpers like `ok()`, `unauthorized()`, `forbidden()`, `notFound()`, `badRequest()`, `conflict()`, `tooManyRequests()`, and `serverError()` standardize JSON output and error handling. Notably, `serverError()` logs internally but returns a generic message to prevent information leakage—a deliberate security choice.
 
 ## Design Decisions
 
-The architectural choices in the `odys` backend reflect a commitment to maintainability, consistency, and developer experience.
+The use of **Drizzle ORM** enables type-safe database access across the stack, especially valuable given the 24 columns in the `professionals` table. Foreign key constraints (e.g., `appointments.professionalId` referencing `professionals.id`) ensure referential integrity with cascading deletes, simplifying cleanup.
 
-*   **Centralized API Helpers (`src/lib/api.ts`)**: The decision to consolidate response, authentication, and utility functions into `src/lib/api.ts` was made to enforce a consistent API contract and reduce code duplication. Instead of each route handler reimplementing error responses or authentication checks, they can import and use these standardized helpers. This makes the codebase easier to navigate, test, and refactor, as changes to response formats or authentication logic only need to be made in one place. The `serverError` helper, in particular, demonstrates a strong security posture by preventing internal error details from leaking to clients.
-*   **Next.js API Routes**: Utilizing Next.js API routes provides a serverless-friendly approach to backend development. Each route file acts as an independent endpoint, simplifying deployment and scaling. This structure naturally aligns with the application's need for distinct, focused API functionalities.
-*   **Drizzle ORM for Database Interactions**: Drizzle ORM was chosen for its type safety and SQL-like query builder. This allows developers to write database queries that are validated at compile time, significantly reducing runtime errors related to schema mismatches or incorrect column names. The explicit schema definition in Drizzle also serves as a clear, code-based documentation of the database structure.
-*   **Supabase for Authentication**: Offloading user authentication to Supabase allows the `odys` team to focus on core business logic rather than building and maintaining a complex authentication system. Supabase provides features like user registration, login, and session management out-of-the-box, which are then integrated with the application's `professionals` table via the `userId` column.
-*   **Explicit Error Handling with Specific Status Codes**: The comprehensive set of response helpers (`badRequest`, `unauthorized`, `forbidden`, `notFound`, `conflict`, `tooManyRequests`) ensures that API clients receive precise feedback on the outcome of their requests. This clarity is vital for building robust frontend applications that can react appropriately to different error conditions, rather than relying on generic error messages.
-*   **`professionals.userId` as a Unique Identifier**: Making the `userId` column in the `professionals` table unique and non-nullable ensures a strict one-to-one relationship between a Supabase user and a professional profile. This design prevents data inconsistencies and simplifies the logic for retrieving a professional's data based on their authenticated user ID.
+Rate limiting is applied selectively: `booking` allows 5 attempts per 10 minutes, while general API access permits 60 requests per minute. These are implemented using prefixed Redis keys like `rl:booking`, allowing isolation and monitoring per endpoint.
+
+Cron jobs use a dual-header authorization model (`Authorization: Bearer <secret>` or `x-cron-secret`) to support both Vercel’s native scheduler and manual testing. The `safeEqual()` function prevents timing attacks during secret comparison—an important detail when defending against side-channel exploits.
 
 ## Potential Improvements
 
-1.  **Centralized Authentication Middleware**: Currently, `getUser()` and `getProfessional()` are called explicitly in each API route that requires authentication. This pattern can lead to repetitive code. A more elegant solution would be to implement a higher-order function or a Next.js middleware that wraps API route handlers. This middleware could perform the authentication and professional lookup once, injecting the `user` and `professional` objects into the request context or handler arguments. This would significantly reduce boilerplate and improve consistency across protected routes.
-2.  **Enhanced Type Safety for Response Helpers**: The `ok(data: object)` helper currently accepts a generic `object`. While functional, this could be improved by allowing a more specific type for `data` using TypeScript generics, e.g., `export const ok = <T extends object>(data: T) => ...`. This would provide better type inference and safety for the data payloads returned by API routes, catching potential mismatches at compile time.
-3.  **Structured Error Objects**: While `badRequest(msg: string)` and other error helpers return `{ error: msg }`, a more structured error object could be beneficial for client-side error handling. For instance, returning `{ code: "INVALID_INPUT", message: "..." }` would allow clients to programmatically react to specific error types rather than relying solely on string matching or HTTP status codes. This would make error handling more robust and less brittle.
-4.  **Abstracting Rate Limiting Application**: The `getIp` utility function is present in `src/lib/api.ts`, and the `rateLimits` are defined in the facts, but the actual application of rate limiting logic isn't shown within `src/lib/api.ts`. To further centralize and standardize, a reusable rate-limiting decorator or helper function could be created. This helper would take a `NextRequest` and a rate limit configuration (e.g., `rateLimits.booking`), apply the logic, and return `tooManyRequests()` if the limit is exceeded, otherwise allowing the request to proceed. This would encapsulate the rate-limiting mechanism, making it easier to apply consistently across relevant routes.
+1. **Improve error context in `serverError()`** — in `src/lib/api.ts`, the function logs raw errors. While it accepts a `context` string, its current usage might not fully leverage structured context (e.g., request path, user ID). Enhancing the `context` parameter's usage would aid debugging without exposing internals.
+
+2. **Centralize rate limit configuration** — currently hardcoded in middleware or route handlers, limits like `5/10m` for booking should be defined once and reused, reducing drift risk.
+
+3. **Refactor `getProfessional()` to handle errors explicitly** — it returns `null` on not-found but doesn’t distinguish between DB errors and missing records. Wrapping in a try/catch would make failure modes clearer.
 
 ## References
 
-*   `src/lib/api.ts`
-*   `src/lib/db/schema.ts` (for Drizzle schema definitions)
-*   `src/app/api/` (for individual API route implementations)
+- `src/lib/api.ts`
+- `src/app/api/`
+- `src/lib/db/schema.ts`

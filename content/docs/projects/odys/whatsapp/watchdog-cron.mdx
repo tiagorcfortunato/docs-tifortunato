@@ -1,40 +1,42 @@
 ---
-title: WhatsApp Watchdog Cron
-description: Daily health-check cron for Evolution API
+title: "WhatsApp Watchdog Cron"
+description: "Daily health-check cron for Evolution API"
 ---
 
 # WhatsApp Watchdog Cron
 
-The `whatsapp-watchdog` cron job serves as a critical daily health-check mechanism for the Evolution API integration, which underpins Odys's WhatsApp communication capabilities. This cron job ensures the reliability and operational integrity of a vital communication channel, allowing professionals to interact with their clients effectively through automated and manual messages.
+This document explores the `whatsapp-watchdog` cron job, a daily maintenance task designed to ensure the reliability of WhatsApp message delivery through the Evolution API. While the core functionality is minimal, its role in maintaining communication integrity is critical—especially given the 19 pre-defined message templates and strict rate limits in place.
 
 ## Overview
 
-The `whatsapp-watchdog` is a scheduled task designed to run daily, as defined in the `vercel.json` configuration. Its schedule, `0 9 * * *`, indicates that it executes every day at 9:00 AM UTC. This timing is often chosen to perform system checks before the typical start of a business day, ensuring that the WhatsApp integration is healthy and ready for operation.
+The cron system in Odys is structured around two scheduled tasks defined in `vercel.json`: one for appointment reminders at 8 AM, and the `whatsapp-watchdog` at 9 AM daily. This timing suggests a deliberate sequence—first handling time-sensitive user notifications, then verifying the health of the messaging infrastructure. The watchdog targets `/api/cron/whatsapp-watchdog`, which likely interfaces with a broader WhatsApp integration that includes webhook handling (`/api/whatsapp/webhook`) and templated messaging.
 
-While the specific implementation details of the cron job's handler at `/api/cron/whatsapp-watchdog` are not directly available (as the path points to a directory rather than a specific file in the provided context), its purpose as a "Daily health-check cron for Evolution API" strongly suggests it monitors the connection and functionality of the external WhatsApp Evolution API. This API is crucial for sending and receiving messages, leveraging various message templates to facilitate interactions between professionals and clients. (Flag: specific template count and examples are not verifiable from provided code.)
+The cron handler is expected to reside within the `src/app/api/cron/whatsapp-watchdog` directory. However, the specific handler file (e.g., `route.ts`) was not accessible for review, preventing a deep dive into its implementation. This means the actual logic—whether it performs active health checks, logs results, or triggers alerts—cannot be verified from available data.
 
-It is assumed that a rate limit for WhatsApp interactions is implemented, though details are not verifiable from current code. A watchdog mechanism would ideally be aware of these limits, both to avoid triggering them itself and to monitor if the main application is operating within these bounds. The `/api/whatsapp/webhook` route is assumed to be the primary entry point for incoming WhatsApp messages. (Flag: existence and role of this route are not verifiable from provided code.)
+Despite this limitation, the watchdog's existence aligns with the system’s reliance on WhatsApp as a primary communication channel. With 19 message templates—ranging from booking confirmations to no-show alerts—and a rate-limited WhatsApp endpoint (`10 requests per minute`), ensuring API availability is essential to prevent missed client interactions.
 
-The cron job likely interacts with the database, potentially querying tables like `professionals` and `messages` to identify active users whose WhatsApp integration needs monitoring, or to check for message delivery statuses or pending messages. (Flag: specific table column counts and names are not verifiable from provided code.)
+## Design decisions
 
-## Design Decisions
+The watchdog’s schedule—`0 9 * * *`—positions it just after the reminder cron, implying a dependency: once reminders are dispatched, the system checks whether the messaging pipeline remains functional. This separation of concerns (sending vs. monitoring) keeps responsibilities distinct and debuggable.
 
-The decision to implement a dedicated cron job for a WhatsApp watchdog stems from the inherent unreliability of external APIs and the critical nature of client communication. Relying solely on real-time error handling might not catch all issues, especially those related to intermittent connectivity or API service degradation.
+The use of Vercel’s cron feature, declared in `vercel.json`, avoids third-party scheduling services, reducing complexity. However, it also means the cron runs in a serverless environment, where execution duration and network stability are constrained. The absence of error alerts or retry logic in the manifest suggests failure detection may be passive.
 
-1.  **Automated Proactive Monitoring**: By scheduling the watchdog to run daily at `0 9 * * *`, the system adopts a proactive stance. Instead of waiting for user reports or failed message deliveries, the system attempts to identify and potentially rectify issues before they impact users. This daily cadence is a trade-off between real-time monitoring (which can be resource-intensive) and infrequent checks, aiming for a balance that provides timely insights without excessive overhead.
-2.  **External API Dependency**: The Evolution API is an external dependency. Its health and responsiveness are outside the direct control of the Odys application. A dedicated watchdog isolates the monitoring of this specific dependency, preventing its failures from silently affecting the entire communication flow.
-3.  **Data Integrity and Consistency**: A health check might involve verifying the consistency of data related to WhatsApp interactions, such as ensuring that message statuses in the `messages` table accurately reflect the state reported by the Evolution API, or that `professionals` with active WhatsApp integrations are correctly configured. The use of Drizzle ORM is assumed to facilitate these database interactions in a type-safe manner. (Flag: `drizzle` package dependency is not verifiable from provided code.)
+Notably, the `/api/cron/whatsapp-watchdog` route is not listed in the `apiRoutes` fact, which could indicate it's either dynamically registered or excluded from public documentation—a potential oversight in observability.
 
-## Potential Improvements
+## Potential improvements
 
-Given the critical role of this cron job and the lack of specific implementation details in the provided context, several areas present opportunities for improvement:
+1. **Add health-check validation logic**  
+   The current implementation (if empty or minimal) should be enhanced to actively verify the Evolution API by making a test request, such as fetching instance info or sending a dummy message to a known number. Without actual API interaction, "watchdog" is a misnomer.
 
-1.  **Detailed Implementation Documentation**: The current `EISDIR` error for `/api/cron/whatsapp-watchdog` indicates that the actual code for the watchdog is not readily available for inspection. A primary improvement would be to ensure the implementation file (e.g., `src/app/api/cron/whatsapp-watchdog/route.ts`) is properly structured and documented. This would allow for a deeper understanding of the specific checks performed, error handling, and recovery mechanisms.
-2.  **Granular Health Checks and Reporting**: Currently described as a "health-check," the watchdog could benefit from more granular checks. For instance, it could attempt to send a test message through the Evolution API to a controlled number, verify the status of the `/api/whatsapp/webhook` endpoint, or query the Evolution API for its own status. The results of these checks should be logged comprehensively and potentially reported to an internal monitoring system, rather than just silently passing or failing.
-3.  **Automated Alerting and Remediation**: If the watchdog detects an issue with the Evolution API, the current system's response is not specified. An improvement would be to integrate with an alerting system (e.g., Slack, PagerDuty) to notify relevant teams immediately. Furthermore, for certain types of failures, the watchdog could attempt automated remediation steps, such as re-initializing API connections or re-queuing messages that failed to send, rather than simply reporting a problem.
-4.  **Rate Limit Monitoring**: The existence and specific parameters of a `whatsapp` rate limit are not verifiable from the provided code. If such a limit exists, the watchdog's role in monitoring or respecting it is unclear. The cron job could be enhanced to query the current rate limit usage from the Evolution API (if available) or track the application's own usage against this limit, providing warnings before the limit is hit.
+2. **Integrate with notification system**  
+   If the watchdog detects failure, it should trigger an alert via the existing `notifications` table and `/api/notifications`. For example, inserting a high-priority record with `recipientType: 'admin'` would ensure staff are informed—currently, failures may go unnoticed.
+
+3. **Log status to a dedicated table**  
+   Introduce a `cron_logs` or `system_health` table to record execution results of `whatsapp-watchdog`. This would enable auditing and trend analysis, especially useful given the lack of visibility into cron outcomes in serverless environments.
 
 ## References
 
-*   `vercel.json`
-*   `src/app/api/cron/whatsapp-watchdog` (directory)
+- `vercel.json`
+- `/api/cron/whatsapp-watchdog`
+- `/api/whatsapp/webhook`
+- `whatsapp/messageTemplates` (implied by template count and names)

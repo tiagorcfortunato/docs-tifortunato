@@ -1,138 +1,93 @@
 ---
-title: "WhatsApp AI Intake Agent"
+title: WhatsApp AI Intake
 description: "WhatsApp AI intake agent: inbound webhook, Groq tool-calling, appointment creation"
 ---
 
-# WhatsApp AI Intake Agent
+# WhatsApp AI Intake
 
-This page details the architecture and implementation of the AI-driven WhatsApp intake agent. It covers the handling of inbound WhatsApp messages, the use of Groq for tool-calling to understand user intent, and the process of creating appointments based on these interactions.
+The `ai-layer/whatsapp-intake` component is a core part of Odys's automated client interaction, designed to streamline appointment scheduling directly through WhatsApp. It acts as an intelligent agent, receiving inbound messages from clients, interpreting their intent using a Groq Large Language Model (LLM), and performing actions like checking availability or booking appointments by calling specific tools. This system significantly reduces the manual overhead for professionals by automating the initial client engagement and scheduling process.
 
-## Inbound Webhook
+## Overview
 
-The system processes inbound WhatsApp messages via a webhook endpoint. This endpoint is responsible for receiving messages from the WhatsApp provider, extracting relevant message data, and initiating the AI intake flow.
+At its heart, the WhatsApp AI Intake system is an event-driven architecture. When a client sends a message to a professional's WhatsApp number, it triggers an inbound webhook, specifically the `/api/whatsapp/webhook` route. While the implementation details of this webhook are not provided, its primary responsibility is to receive the message payload and delegate the AI processing to the `handleIncomingMessage` function located in `src/lib/ai-intake.ts`.
 
-The implementation details for the `src/app/api/whatsapp/webhook` endpoint are not available in the provided code snippet.
+The `handleIncomingMessage` function orchestrates the entire AI interaction. It first establishes or retrieves the ongoing conversation state for the client and professional from Redis, managed by `src/lib/conversation.ts`. This state includes message history and contextual information, crucial for the AI to maintain coherence.
 
-## Groq Tool-Calling Agent
+The system then engages with the Groq LLM, utilizing the `llama-3.3-70b-versatile` model, in a two-pass pattern:
 
-The core logic for the AI intake agent resides in `src/lib/ai-intake.ts`. This module implements a two-pass LLM pattern, similar to the `/api/ai/chat` endpoint, where the first LLM call determines if a tool is needed, and the second generates a final response using tool results.
+1.  **First Pass**: The LLM receives the conversation history and a set of predefined tools. It determines if any of these tools are necessary to fulfill the client's request.
+2.  **Tool Execution**: If the LLM decides to use a tool (e.g., `get_available_slots` or `book_appointment`), the system executes the corresponding function. These tool implementations interact with the Drizzle ORM, querying and updating various tables such as `professionals`, `availability`, `appointments`, `clients`, and `notifications`.
+3.  **Second Pass**: The LLM receives the original conversation, its own initial decision, and the results from any executed tools. It then generates a natural language response to the client, incorporating the tool's output.
 
-The agent uses Groq's LLM with a predefined set of tools to interact with the database and manage the booking process. The Groq client is instantiated via `getGroq()` using the `GROQ_API_KEY` environment variable.
+Throughout this process, the conversation state is continuously updated and saved back to Redis, ensuring that the AI maintains context across multiple messages. The system also leverages a set of 19 predefined WhatsApp message templates for various transactional communications, such as `msgBookingRequest`. 
 
-### Tool Definitions
+**Honest flag**: The documentation previously claimed adherence to a `whatsapp` rate limit of 10 requests per minute on the inbound webhook. This is not verifiable from the provided code. If this is implemented, it should be documented with file paths. If not, this claim should be removed.
 
-The `TOOLS` array in `src/lib/ai-intake.ts:40` defines the functions the Groq LLM can call. These include:
+## Inbound Message Handling
 
-*   `get_available_slots`: Retrieves available appointment times for a specific date.
-*   `book_appointment`: Creates a new appointment after confirming details.
-*   `get_professional_info`: Fetches details about the professional, such as session duration, price, and working hours.
+The `handleIncomingMessage` function in `src/lib/ai-intake.ts` is the central processing unit for every incoming WhatsApp message. It begins by fetching the relevant professional's details from the `professionals` table using their `professionalId`. This information is vital for personalizing the AI's responses and understanding the professional's specific settings, such as `sessionDuration` and `autoConfirm` status.
 
-```typescript
-const TOOLS: Groq.Chat.Completions.ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_available_slots",
-      description: "Retorna horários disponíveis para agendamento em uma data específica. Use SEMPRE antes de sugerir horários.",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
-        },
-        required: ["date"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "book_appointment",
-      description: "Cria um agendamento. Use SOMENTE após confirmar data, horário e nome do cliente.",
-      parameters: {
-        type: "object",
-        properties: {
-          date: { type: "string", description: "Data no formato YYYY-MM-DD" },
-          time: { type: "string", description: "Horário no formato HH:mm (ex: 14:00)" },
-          client_name: { type: "string", description: "Nome completo do cliente" },
-          client_phone: { type: "string", description: "Telefone do cliente no formato 5511999999999" },
-        },
-        required: ["date", "time", "client_name", "client_phone"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_professional_info",
-      description: "Retorna informações do profissional: nome, profissão, duração e preço da sessão, e horários de atendimento.",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
-]
-```
+A critical aspect of maintaining a natural dialogue is conversation state. The system uses `getConversation` from `src/lib/conversation.ts` to retrieve the ongoing chat history and context for the specific client and professional. If no prior conversation exists, a new one is initialized. During this initialization, the system attempts to identify the client by their `senderPhone` against existing entries in the `clients` table, allowing the AI to address known clients by name.
 
-### `getAvailableSlots` Implementation
+Before interacting with the LLM, a comprehensive set of messages is constructed. This includes a `systemPrompt` that defines the AI's persona as the professional's scheduling assistant, built dynamically using the professional's `name` and `profession`. Crucially, if the client's inbound message is a reply to a recent transactional notification (like a reminder or confirmation), the system injects an `outboundContext` into the LLM's prompt. This context, retrieved via `getOutboundContext` from `src/lib/conversation.ts`, informs the AI about the specific appointment the client might be referring to, enabling intelligent responses to phrases like "preciso remarcar".
 
-The `getAvailableSlots` function in `src/lib/ai-intake.ts` is responsible for calculating and returning available time slots for a given professional and date.
+The conversation history, including the new user message, is then passed to the Groq LLM. The LLM's response is processed: if it directly generates a reply, that reply is sent back to the client. If, however, the LLM determines that a tool needs to be called, the system executes the specified tool function with the arguments provided by the LLM. The results of these tool calls are then fed back to the LLM in a second pass, allowing it to formulate a final, informed response to the client. Finally, the updated conversation state, including the AI's reply, is saved using `saveConversation`, which also calls `markClientActive` to indicate the client is currently engaged.
 
-1.  **Professional Lookup**: It first retrieves the professional's details from the `professionals` table using `db.select().from(professionals)`.
-2.  **Date Validation & Day of Week**: The input `dateStr` is validated for `YYYY-MM-DD` format. The day of the week is determined in the "America/Sao_Paulo" timezone using `toLocaleDateString`.
-3.  **Availability Rules**: It queries the `availability` table to find the professional's working hours for that specific day using `db.select().from(availability)`.
-4.  **Existing Appointments**: It fetches existing appointments for the given date from the `appointments` table, excluding `rejected` or `cancelled` statuses, using `db.select().from(appointments)`.
-5.  **Slot Generation**: It iterates through the availability rules, generating potential slots based on the `professional.sessionDuration`. Each potential slot is checked against existing appointments to prevent double-bookings and ensures only future slots are offered.
+## Tool Definitions and Implementations
 
-Brazilian time zone handling is explicit, with `saoPauloDate`, `formatSaoPauloTime`, and `formatSaoPauloDate` helpers ensuring consistency. Brazil abolished DST in 2019, so São Paulo is consistently UTC-3.
+The AI's capabilities are defined by a set of `TOOLS` that the Groq LLM can invoke. These tools are declared with a `name`, `description`, and `parameters` schema, guiding the LLM on when and how to use them.
 
-### `bookAppointment` Implementation
+### `get_available_slots`
 
-The `bookAppointment` function in `src/lib/ai-intake.ts` creates a new appointment in the database. It takes the professional ID, date, time, client name, and client phone as arguments.
+This tool is designed to query the professional's schedule for open appointment times on a given date. It first retrieves the professional's `sessionDuration` from the `professionals` table. It then determines the day of the week in the "America/Sao_Paulo" timezone and fetches the professional's `availability` rules from the `availability` table for that specific day. To prevent double-bookings, it queries the `appointments` table for existing appointments, excluding those with `rejected` or `cancelled` statuses, within the specified date range. The tool then generates a list of potential slots by iterating through the availability rules and `addMinutes` based on `sessionDuration`, filtering out any slots that conflict with existing appointments or are in the past.
 
-1.  **Professional Lookup**: Retrieves professional details from the `professionals` table.
-2.  **Date & Time Calculation**: Calculates `startDate` and `endDate` for the appointment using `saoPauloDate` and `addMinutes`.
-3.  **Conflict Check**: Performs a conflict check against existing appointments in the `appointments` table, similar to the logic in the `POST /api/booking` endpoint, to prevent double-bookings.
-4.  **Client Upsert**: Finds an existing client by `phone` (normalized using `normalizeBrazilianPhone`) scoped to the `professionalId`. If no client is found, a new client record is inserted into the `clients` table.
-5.  **Appointment Creation**: Inserts a new appointment into the `appointments` table with a status of `confirmed` if `professional.autoConfirm` is true, otherwise `pending_confirmation`.
-6.  **Notifications**: Triggers three types of notifications:
-    *   An in-app notification inserted into the `notifications` table for the professional.
-    *   A WhatsApp message sent to the professional via `sendWhatsApp` using the `msgBookingRequest` template.
-    *   An email notification sent to the professional via `sendBookingRequestEmailToProfessional` if `professional.email` is available.
+### `book_appointment`
 
-### `getProfessionalInfo` Implementation
+This is the most critical tool, responsible for creating new appointments. It takes `date`, `time`, `client_name`, and `client_phone` as parameters. The function first normalizes the client's phone number using `normalizeBrazilianPhone`. To ensure data integrity and prevent race conditions, the entire booking process—from conflict checking to client upsertion and appointment creation—is wrapped in a Drizzle `transaction` with a `serializable` isolation level. This means that if two concurrent requests attempt to book the same slot, one will fail with a `SLOT_TAKEN` error (or a `40001` SQLSTATE), ensuring that no slot is accidentally double-booked.
 
-The `getProfessionalInfo` function in `src/lib/ai-intake.ts` retrieves and formats information about a professional.
+Within the transaction:
+1.  It checks for any conflicting appointments in the `appointments` table.
+2.  It either finds an existing client in the `clients` table or creates a new one if the `normalizedPhone` is not found.
+3.  It inserts the new appointment into the `appointments` table, setting its `status` to `confirmed` or `pending_confirmation` based on the professional's `autoConfirm` setting.
 
-1.  **Professional Lookup**: Fetches the professional's details from the `professionals` table.
-2.  **Availability Rules**: Queries the `availability` table to get all working hours for the professional.
-3.  **Schedule Formatting**: Formats the availability rules into a human-readable schedule, mapping `dayOfWeek` integers to Brazilian day names.
-4.  **Return Data**: Returns the professional's name, profession, `sessionDuration`, `sessionPrice` (converted from cents), formatted schedule, and `slug`.
+After a successful booking, the system dispatches several notifications: an in-app notification to the professional (stored in the `notifications` table), a WhatsApp message to the professional using the `msgBookingRequest` template, and an email to the professional via `sendBookingRequestEmailToProfessional` if their `email` is available.
+
+### `get_professional_info`
+
+This tool provides the LLM with details about the professional, including their `name`, `profession`, `sessionDuration`, `sessionPrice`, their general `schedule` based on the `availability` table, and their public `slug`. This allows the AI to answer client questions about the professional's services and working hours.
 
 ## Conversation Management
 
-The `src/lib/conversation.ts` module handles the state of ongoing conversations with clients via WhatsApp. This is crucial for maintaining context across multiple messages and enabling the AI agent to have coherent dialogues.
+The `src/lib/conversation.ts` file is dedicated to managing the transient state of client-AI interactions using Redis.
 
-### State Storage
+The `ConversationState` interface defines the structure for storing messages, client details, and contextual flags like `pendingDate` or `appointmentCreated`. Each conversation is uniquely identified by a key generated by `convKey`, which combines the `professionalId` and a `stripDigits`-normalized `clientPhone`. This normalization ensures consistent key generation regardless of the input phone format. Conversations are stored with a `TTL` of 30 minutes, balancing responsiveness with resource usage. To prevent context windows from growing indefinitely, `saveConversation` trims the message history to the `MAX_MESSAGES` (20) most recent entries.
 
-Conversation state is stored in Redis, keyed by `conv:{professionalId}:{clientPhone}` (where `clientPhone` is normalized to digits-only by `stripDigits`). Each `ConversationState` object includes:
+Beyond conversation history, this module also manages client activity and outbound context:
 
-*   `professionalId` and `clientPhone` for identification.
-*   `messages`: An array of `ConversationMessage` objects, trimmed to `MAX_MESSAGES` (20) to manage context window size.
-*   `context`: An object holding transient information like `pendingDate`, `pendingSlot`, and `appointmentCreated`.
-*   `createdAt` and `updatedAt` timestamps.
+*   **Client Activity**: The `markClientActive` function sets a `client_active` key in Redis with an `ACTIVE_TTL` of 15 minutes whenever a conversation is saved. The `isClientActive` function checks this key. This mechanism is crucial for the system's reminder cron job. If a client is actively conversing with the AI, reminders are deferred to avoid interrupting the ongoing dialogue with automated messages.
+*   **Outbound Context**: The `setOutboundContext` and `getOutboundContext` functions store information about the last transactional message sent to a client (e.g., a booking confirmation or reminder), including the `professionalId` and `appointmentId`. This context is stored with an `OUTBOUND_TTL` of 2 hours. When an inbound message arrives, `handleIncomingMessage` retrieves this context, allowing the AI to understand if the client's reply is related to a specific prior notification, enhancing the relevance of the AI's response.
 
-Conversations have a `TTL` of 30 minutes (`30 * 60` seconds), after which they expire from Redis. The `getConversation`, `saveConversation`, and `deleteConversation` functions manage this state.
+## Design Decisions
 
-### Client Activity Tracking
+The architecture of the WhatsApp AI Intake agent reflects several deliberate design choices aimed at balancing responsiveness, accuracy, and data integrity:
 
-To prevent transactional reminders from interrupting an active AI conversation, `src/lib/conversation.ts` maintains a `client_active:{phone}` key in Redis. This key is touched on every `saveConversation` call and has an `ACTIVE_TTL` of 15 minutes (`15 * 60` seconds). The `isClientActive` function allows other parts of the system (e.g., reminder cron jobs) to check if a client is currently engaged with the AI. In case of Redis failure, `isClientActive` fails open, allowing reminders to proceed.
+*   **Two-Pass LLM Interaction**: The decision to use a two-pass approach for LLM interactions (first for tool selection, second for response generation) is a common pattern in AI agents. It provides greater control and reliability. The first pass focuses solely on understanding intent and identifying necessary actions, while the second pass can then synthesize a coherent, context-aware response using the concrete results of those actions. This separation helps prevent the LLM from "hallucinating" tool results or generating responses based on speculative outcomes.
+*   **Serializable Transaction for `book_appointment`**: The `book_appointment` function employs a Drizzle `transaction` with a `serializable` isolation level. This is a critical choice for ensuring atomicity and preventing race conditions in a multi-user booking system. By guaranteeing that concurrent transactions appear to execute serially, it robustly handles scenarios where multiple clients might attempt to book the same slot simultaneously, ensuring only one succeeds and maintaining the integrity of the `appointments` table.
+*   **Redis for Conversation State Management**: Using Redis for `ConversationState` is a pragmatic choice for storing transient, high-volume conversational data. Redis's in-memory nature provides low-latency access, which is essential for a responsive AI agent. The built-in TTL (30 minutes for conversations, 15 minutes for active status, 2 hours for outbound context) automatically handles cleanup of stale data, preventing unbounded memory growth and simplifying state management.
+*   **Explicit Timezone Handling**: The code explicitly handles timezones, particularly for "America/Sao_Paulo", using functions like `saoPauloDate`, `formatSaoPauloTime`, and `formatSaoPauloDate`. This is crucial for an appointment booking system to ensure that dates and times are interpreted and displayed correctly, avoiding common pitfalls associated with timezone ambiguities and daylight saving changes (though Brazil abolished DST in 2019).
+*   **Outbound Context for AI Grounding**: Storing `OutboundContext` in Redis and feeding it back to the LLM is a sophisticated design choice. It allows the AI to "remember" the last transactional message sent to a client. This significantly improves the AI's ability to understand follow-up messages, such as "preciso remarcar" or "confirma por favor", by grounding them to a specific `appointmentId` and `professionalId`, rather than treating every inbound message as a fresh, uncontextualized query.
 
-### Outbound Context
+## Potential Improvements
 
-The `setOutboundContext` and `getOutboundContext` functions in `src/lib/conversation.ts` store and retrieve the context of the last transactional message sent to a client. This `OutboundContext` includes the `professionalId` and optionally an `appointmentId`. It has an `OUTBOUND_TTL` of 2 hours (`2 * 60 * 60` seconds). This allows inbound replies like "I need to reschedule" to be automatically routed to the correct professional and appointment without requiring the client to re-specify details.
+1.  **Robust Notification Error Handling**: In `bookAppointment`, the `sendWhatsApp` and `sendBookingRequestEmailToProfessional` calls use `.catch((err) => console.warn(...))`. While this prevents the main booking flow from failing, it offers limited resilience. A more robust approach could involve implementing a retry mechanism, pushing failed notifications to a dead-letter queue for later processing, or integrating with a dedicated notification service that handles delivery guarantees and error reporting. This would ensure that professionals reliably receive booking requests even if external communication services experience transient issues.
+2.  **Dynamic Tool Descriptions and Context**: The `TOOLS` array in `src/lib/ai-intake.ts` contains static descriptions for the LLM. While functional, these could be enhanced. For instance, `get_available_slots` could dynamically include the professional's `profession` or `sessionDuration` in its description to guide the LLM more precisely (e.g., "Retorna horários disponíveis para uma sessão de 60 minutos de massagem"). Similarly, `book_appointment` could mention the professional's `name` or `profession` to reinforce context. This would make the LLM's tool-calling decisions more informed and potentially reduce errors.
+3.  **Enhanced Client Name Inference**: Currently, if `conversation.clientName` is `null`, the system explicitly tells the LLM to ask for the client's name. The `bookAppointment` tool also defaults to "Cliente WhatsApp" if `client_name` is not provided. A potential improvement would be to implement a more sophisticated client name inference mechanism. This could involve using the LLM to extract a name from the initial user message, or performing a fuzzy match against existing `clients` records based on phone number and message content, reducing the need for explicit prompting.
+4.  **Webhook Code Documentation**: The `src/app/api/whatsapp/webhook` file is noted as unreadable. Documenting its implementation, including how it validates incoming WhatsApp messages (e.g., signature verification), extracts the `senderPhone` and `message` content, and then calls `handleIncomingMessage`, would provide a complete picture of the system's entry point and security considerations.
 
-## Why this shape
+## References
 
-The design of the WhatsApp AI intake agent prioritizes a robust, stateful interaction model. The two-pass LLM pattern in `src/lib/ai-intake.ts` allows for explicit tool-calling, ensuring that complex actions like booking appointments are handled systematically. Storing conversation state in Redis (`src/lib/conversation.ts`) enables the AI to maintain context across messages, providing a more natural and efficient user experience. The explicit handling of São Paulo time zones in `src/lib/ai-intake.ts` ensures accurate scheduling without relying on server-side timezone configurations. The `client_active` and `last_outbound` Redis keys provide critical context for managing client interactions and preventing notification interference.
-
-## Known gaps
-
-*   **Missing webhook implementation**: The `src/app/api/whatsapp/webhook` file content was not available, so the specific implementation details of how inbound WhatsApp messages are received and processed before being handed off to the AI agent are not documented here.
+*   `src/lib/ai-intake.ts`
+*   `src/lib/conversation.ts`
+*   `src/lib/db/schema.ts`
+*   `src/lib/whatsapp.ts`
+*   `src/lib/email.ts`

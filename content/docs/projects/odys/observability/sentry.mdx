@@ -1,161 +1,51 @@
 ---
-title: Sentry Observability
-description: Sentry server/edge/browser, source maps, /monitoring tunnel
+title: "Sentry Observability"
+description: "Sentry server/edge/browser, source maps, /monitoring tunnel"
 ---
 
 # Sentry Observability
 
-In any application, understanding what goes wrong and why is paramount. The `odys` project leverages Sentry, a robust error tracking and performance monitoring platform, to gain deep insights into its runtime behavior across various environments: server, edge, and client-side browser. This document explores the architectural choices behind `odys`'s Sentry integration, highlighting how it captures errors, monitors performance, and provides context for debugging.
+Observability is critical for maintaining reliability and diagnosing issues in production. This page covers how Sentry is integrated across the Odys stack—server, edge, and browser—with source map support and a tunneling strategy to bypass ad blockers. It explains the current setup, design rationale, and opportunities for refinement.
 
 ## Overview
 
-The Sentry integration in `odys` is meticulously structured to cover the full stack of a Next.js application. It distinguishes between server-side, edge runtime, and client-side environments, ensuring that errors and performance data are captured regardless of where they originate. This multi-faceted approach is achieved through dedicated configuration files and a central `next.config.ts` file that orchestrates the Sentry Webpack plugin for build-time enhancements like source map uploads and a custom error tunneling route.
+Sentry is configured across three runtime environments: Node.js (server), Edge (edge functions), and browser (client). The setup ensures comprehensive error tracking, performance tracing, and session replay. Source maps are uploaded during deployment to enable readable stack traces, and a `/monitoring` tunnel route ensures client-side events reach Sentry even when ad blockers interfere. The configuration leverages `@sentry/nextjs`, with environment-specific initialization and security-conscious headers.
 
-The project utilizes Sentry's Next.js SDK, which intelligently adapts its behavior based on the execution environment. For instance, server-side errors, edge function failures, and client-side JavaScript exceptions are all routed to the same Sentry project, `javascript-nextjs`, under the `odys-hx` organization. This unified approach simplifies error management and provides a holistic view of application health.
+## Client-Side Initialization
 
-## Server and Edge Runtime Initialization
+The client-side Sentry configuration in `src/instrumentation-client.ts` initializes the SDK with several key features. The DSN is hardcoded, and integrations include session replay for debugging user flows. Error filtering is applied via `beforeSend` to suppress known noise—such as "Object Not Found Matching" and non-Error promise rejections—reducing alert fatigue. Tracing is fully enabled (`tracesSampleRate: 1`), and logs are forwarded to Sentry. Replay session sampling is set to 10% (`replaysSessionSampleRate: 0.1`), while replay sampling on error is set to 100% (`replaysOnErrorSampleRate: 1.0`). The session sample rate could be increased during incident investigations or tied to user opt-in for better data control.
 
-The core of Sentry's server and edge runtime initialization resides within `src/instrumentation.ts`. This file is a Next.js specific entry point designed to run code before the application starts. The design here is to conditionally load Sentry configurations based on the `NEXT_RUNTIME` environment variable:
+User PII is sent via `sendDefaultPii: true`, which enables richer context but requires careful compliance handling. The `onRouterTransitionStart` export captures navigation performance, aiding in diagnosing routing delays.
 
-```typescript
-// src/instrumentation.ts
-import * as Sentry from "@sentry/nextjs";
+### App Router Error Boundary
 
-export async function register() {
-  if (process.env.NEXT_RUNTIME === "nodejs") {
-    await import("../sentry.server.config");
-  }
+`src/app/global-error.tsx` implements a global error boundary for the App Router. It uses `useEffect` to call `Sentry.captureException(error)` whenever an error is caught, ensuring that all unhandled client-side exceptions in the App Router are reported to Sentry. This complements the automatic error capture from `instrumentation-client.ts` and guarantees visibility into rendering and component-level failures.
 
-  if (process.env.NEXT_RUNTIME === "edge") {
-    await import("../sentry.edge.config");
-  }
-}
+## Server and Edge Configuration
 
-export const onRequestError = Sentry.captureRequestError;
-```
+Server and edge initialization is handled in `src/instrumentation.ts`, which conditionally imports `sentry.server.config` or `sentry.edge.config` based on `NEXT_RUNTIME`. This ensures minimal bundle impact and correct environment targeting. The `onRequestError` hook captures server-side request errors, providing parity with client-side observability.
 
-This conditional import ensures that the appropriate Sentry SDK is initialized for the specific runtime. For example, if the code is running in a Node.js environment (like API routes or server-side rendering), `sentry.server.config` is loaded. If it's running in an Edge environment (like middleware or Edge API routes), `sentry.edge.config` is loaded. This separation is crucial because server and edge environments have different capabilities and limitations, requiring tailored Sentry SDK configurations. The `onRequestError` export further ensures that any errors occurring during request processing in these environments are automatically captured by Sentry.
+## Build and Security Integration
 
-## Client-side Configuration
+`next.config.ts` wraps the Next.js config with `withSentryConfig`, enabling source map upload and Vercel Cron Monitor integration. Source maps are widened via `widenClientFileUpload: true` for better stack trace fidelity. Additionally, Sentry webpack plugin logs, including those for source map uploads, are configured to be silent outside of CI environments (`silent: !process.env.CI`). The `tunnelRoute: "/monitoring"` rewrites client SDK traffic through a first-party endpoint, evading ad blockers that target known Sentry domains.
 
-For the browser environment, Sentry is initialized in `src/instrumentation-client.ts`. This file is specifically designed to configure Sentry for client-side operations, capturing errors and performance metrics from the user's browser.
+Security headers are defined to harden the app, though CSP is deferred due to complexity. Notably, `Permissions-Policy` restricts camera, microphone, and geolocation, while allowing Stripe.js payments. HSTS is set for two years with preload, and referrer policy is `strict-origin-when-cross-origin`.
 
-```typescript
-// src/instrumentation-client.ts
-import * as Sentry from "@sentry/nextjs";
+## Design decisions
 
-Sentry.init({
-  dsn: "https://4c49acd323505a3be3603c5c4c7245ef@o4511124807417856.ingest.us.sentry.io/4511124816658432",
-  integrations: [Sentry.replayIntegration()],
-  beforeSend(event) { /* ... */ },
-  tracesSampleRate: 1,
-  enableLogs: true,
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
-  sendDefaultPii: true,
-});
+The current Sentry setup prioritizes visibility and resilience. Tunneling through `/monitoring` ensures reliable event delivery despite ad blockers, a common issue in client-side monitoring. Conditional imports in `instrumentation.ts` prevent edge/server code from bloating the client bundle. The `beforeSend` filter reduces noise from third-party scripts and known edge cases. Enabling `sendDefaultPii` trades privacy complexity for debugging efficiency—justified in a B2B context where user consent can be managed.
 
-export const onRouterTransitionStart = Sentry.captureRouterTransitionStart;
-```
+## Potential improvements
 
-Here, the `dsn` (Data Source Name) points to the specific Sentry project where events are sent. The configuration includes `Sentry.replayIntegration()`, which enables session replay functionality, allowing developers to visually reconstruct user sessions leading up to an error.
+1.  **Externalize DSN**: The DSN in `src/instrumentation-client.ts` is hardcoded. It should be moved to an environment variable (e.g., `NEXT_PUBLIC_SENTRY_DSN`) to allow per-environment configuration and avoid exposing production keys in dev builds.
 
-A `beforeSend` hook is implemented to filter out common noise, specifically messages containing "Object Not Found Matching" and "Non-Error promise rejection captured". This proactive filtering helps keep the Sentry dashboard clean and focused on actionable errors.
+2.  **Refine replay sampling**: `replaysSessionSampleRate: 0.1` may miss critical issues. Consider increasing it during incident investigations or tying it to user opt-in for better data control.
 
-Performance monitoring is enabled with `tracesSampleRate: 1`, meaning 100% of transactions are sampled for tracing. This provides comprehensive performance data. For session replays, `replaysSessionSampleRate` is set to `0.1` (10% of sessions are recorded), while `replaysOnErrorSampleRate` is `1.0` (100% of sessions are recorded if an error occurs). This strategy balances data collection with resource usage, ensuring that critical error-related sessions are always captured. The `sendDefaultPii: true` option indicates that Sentry is configured to send personally identifiable information by default, which can be useful for debugging but requires careful consideration of privacy implications. Additionally, `enableLogs: true` is set to ensure Sentry's internal logs are sent to the service, aiding in debugging Sentry's own operations.
-
-Finally, `onRouterTransitionStart` is exported to capture performance metrics related to Next.js router transitions, providing insights into client-side navigation performance.
-
-## Global Error Handling
-
-For errors that propagate to the top level of the React component tree, `odys` utilizes `src/app/global-error.tsx`. This file acts as a catch-all for unhandled exceptions in the client-side React application.
-
-```typescript
-// src/app/global-error.tsx
-"use client";
-
-import * as Sentry from "@sentry/nextjs";
-import NextError from "next/error";
-import { useEffect } from "react";
-
-export default function GlobalError({
-  error,
-}: {
-  error: Error & { digest?: string };
-}) {
-  useEffect(() => {
-    Sentry.captureException(error);
-  }, [error]);
-
-  return (
-    <html lang="en">
-      <body>
-        <NextError statusCode={0} />
-      </body>
-    </html>
-  );
-}
-```
-
-The `useEffect` hook ensures that any `error` passed to this component is immediately captured by `Sentry.captureException`. This guarantees that even if the application crashes due to an unhandled client-side error, Sentry will log the event, providing crucial debugging information. The `NextError` component is rendered with a `statusCode` of `0` as a fallback, providing a generic error message to the user without exposing specific error codes from the App Router.
-
-## Next.js Configuration for Sentry
-
-The `next.config.ts` file plays a pivotal role in integrating Sentry at the build and runtime levels for a Next.js application. The `withSentryConfig` wrapper from `@sentry/nextjs` enhances the standard Next.js configuration with Sentry-specific functionalities.
-
-```typescript
-// next.config.ts
-import { withSentryConfig } from "@sentry/nextjs";
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = { /* ... */ };
-
-export default withSentryConfig(nextConfig, {
-  org: "odys-hx",
-  project: "javascript-nextjs",
-  silent: !process.env.CI,
-  widenClientFileUpload: true,
-  tunnelRoute: "/monitoring",
-  webpack: {
-    automaticVercelMonitors: true,
-    treeshake: {
-      removeDebugLogging: true,
-    },
-  }
-});
-```
-
-Key configurations here include:
-*   `org: "odys-hx"` and `project: "javascript-nextjs"`: These specify the Sentry organization and project to which events and source maps are uploaded.
-*   `silent: !process.env.CI`: This setting controls the verbosity of Sentry's webpack plugin. Logs for uploading source maps are only printed when not in a CI environment, reducing build noise during local development.
-*   `widenClientFileUpload: true`: This option ensures that a broader set of source maps is uploaded, leading to more accurate and readable stack traces in Sentry, albeit potentially increasing build times.
-*   `tunnelRoute: "/monitoring"`: This is a critical design choice. Instead of sending Sentry events directly from the browser to Sentry's ingest servers, they are routed through a Next.js API route at `/monitoring`. This circumvents ad-blockers that might otherwise prevent Sentry events from being sent, ensuring reliable error reporting. It's important to ensure this route doesn't conflict with existing Next.js middleware.
-*   `webpack.automaticVercelMonitors: true`: This enables automatic instrumentation for Vercel Cron Monitors. Given that `odys` utilizes cron jobs like `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`, this feature aims to provide visibility into the health and execution of these scheduled tasks. However, the inline comment notes that it "Does not yet work with App Router route handlers," indicating a current limitation.
-*   `webpack.treeshake.removeDebugLogging: true`: This optimizes the bundle size by automatically removing Sentry's debug logging statements during the build process.
-
-## Design Decisions
-
-The Sentry integration in `odys` reflects several deliberate design choices aimed at comprehensive observability and maintainability:
-
-1.  **Environment-Specific Configuration**: The separation of Sentry initialization into `sentry.server.config`, `sentry.edge.config`, and `src/instrumentation-client.ts` (via `src/instrumentation.ts`) is a direct response to the distinct runtime environments of a Next.js application. This allows for tailored SDK configurations, ensuring optimal performance and compatibility for each context (Node.js server, Vercel Edge Functions, and client browser).
-2.  **Unified Error Reporting**: Despite the separate configurations, all errors and performance data are directed to a single Sentry project (`javascript-nextjs`). This centralizes observability, providing a consistent dashboard for monitoring the entire application stack.
-3.  **Proactive Noise Reduction**: The `beforeSend` filter in `src/instrumentation-client.ts` to drop specific error messages (e.g., "Object Not Found Matching") is a pragmatic choice. It prevents the Sentry dashboard from being cluttered with known, non-critical errors or browser extension noise, allowing developers to focus on genuine application issues.
-4.  **Reliable Event Ingestion via Tunneling**: The `tunnelRoute: "/monitoring"` in `next.config.ts` is a strategic decision to ensure that client-side Sentry events are reliably delivered. Ad-blockers often block direct requests to Sentry's DSN, but by proxying these requests through the application's own domain, `odys` significantly increases the likelihood of successful error reporting. This comes with the trade-off of increased server load and potential hosting costs, but the benefit of comprehensive error data is deemed more valuable.
-5.  **Comprehensive Performance Monitoring**: Setting `tracesSampleRate: 1` for client-side performance monitoring indicates a strong emphasis on understanding user experience and identifying performance bottlenecks. The selective sampling for session replays (`replaysSessionSampleRate: 0.1` and `replaysOnErrorSampleRate: 1.0`) is a balanced approach to gather rich context for errors without incurring excessive data storage or performance overhead for every user session.
-6.  **Source Map Management**: The `widenClientFileUpload: true` option, combined with conditional `silent` logging, demonstrates a commitment to high-quality stack traces in Sentry. This allows developers to quickly pinpoint the exact location of errors in the original source code, even in a minified production build.
-
-## Potential Improvements
-
-While the current Sentry integration is robust, several areas could be explored for further enhancement:
-
-1.  **Dynamic Sampling Rates**: The `tracesSampleRate` and `replaysSessionSampleRate` in `src/instrumentation-client.ts` are currently hardcoded. For production environments, it might be beneficial to implement dynamic sampling. For example, `tracesSampleRate` could be set to a lower value (e.g., `0.1` or `0.01`) to reduce data volume and Sentry costs, while still providing a representative sample of performance data. Similarly, `replaysSessionSampleRate` could be adjusted based on traffic or specific user segments. This could be achieved by reading environment variables or implementing a custom `tracesSampler` function.
-2.  **Enhanced Context Enrichment**: Although `sendDefaultPii: true` is enabled, `odys` could benefit from explicitly enriching Sentry events with more specific user context. For instance, when an authenticated user (either a `professional` or `client` from the database schema) encounters an error, their `userId` (from `professionals.userId` or `clients.userId`) could be explicitly set as Sentry's user context. This would allow for filtering errors by specific users and understanding the impact on individual accounts. This could be implemented in `src/app/global-error.tsx` or within API route handlers by calling `Sentry.setUser()`.
-3.  **Refined `beforeSend` Logic**: The `beforeSend` filter in `src/instrumentation-client.ts` currently filters out two specific message patterns. As the application evolves, new types of "noise" might emerge, or existing filters might become too broad or too narrow. A more configurable or pattern-based filtering mechanism could be considered, perhaps by maintaining a centralized list of regex patterns to ignore, or by integrating with a feature flag system to dynamically enable/disable certain filters. This would make the filtering logic more adaptable without requiring code changes for every new noise pattern.
-4.  **Vercel Cron Monitor Integration**: The `next.config.ts` explicitly enables `automaticVercelMonitors: true` but notes a limitation with App Router route handlers. An improvement would be to actively monitor Sentry's progress on this feature or, if it remains unsupported, implement manual Sentry Cron Monitoring for the critical `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` routes. This would involve adding `Sentry.startCronMonitor()` calls within these cron job handlers to ensure their execution and success/failure are reliably reported to Sentry.
+3.  **Implement dynamic CSP**: The comment in `next.config.ts` notes CSP is deferred. A gradual rollout—starting with a report-only header—could allow safe allowlisting of `js.stripe.com`, Supabase domains (including realtime), `sentry.io` (for the tunnel route), PostHog, and Next.js inline scripts without risking app breakage.
 
 ## References
 
-*   `src/instrumentation.ts`
-*   `src/instrumentation-client.ts`
-*   `src/app/global-error.tsx`
-*   `next.config.ts`
+-   `src/instrumentation.ts`
+-   `src/instrumentation-client.ts`
+-   `src/app/global-error.tsx`
+-   `next.config.ts`

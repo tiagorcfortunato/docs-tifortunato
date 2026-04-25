@@ -1,101 +1,41 @@
 ---
-title: Booking API
-description: Booking GET + POST endpoint internals
+title: "Booking API Internals"
+description: "Internals of the GET and POST handlers for client bookings"
 ---
 
-# Booking API
+# Booking API Internals
 
-The `/api/booking` endpoint serves as the central hub for managing appointment scheduling within the odys platform. It exposes both a `GET` method for retrieving a professional's availability and existing appointments, and a `POST` method for creating new bookings. This dual functionality is critical for enabling clients to discover available slots and for professionals to receive new appointment requests, forming the core interaction loop for the service.
+This document explores the implementation of the `/api/booking` endpoint, which powers client scheduling in the Odys platform. It handles both querying available time slots (GET) and creating new appointments (POST), enforcing business rules around availability, plan limits, and concurrency.
 
 ## Overview
 
-This API route, located at `src/app/api/booking/route.ts`, orchestrates the complex logic required for scheduling. The `GET` request is designed for read operations, allowing a client-side application to query a professional's schedule for a specific date. It fetches the professional's general availability rules from the `availability` table and combines them with already booked slots from the `appointments` table.
+The booking system interacts with `professionals`, `availability`, `appointments`, `clients`, and `notifications` tables. Two HTTP methods—GET and POST—serve distinct but related purposes: fetching scheduling rules and booking slots. The endpoint integrates with WhatsApp and email notifications, respects rate limits via `getBookingLimiter`, and enforces plan-based quotas defined in `PLANS`. It also uses a honeypot field (`website`) to silently reject bot submissions.
 
-The `POST` request, on the other hand, handles the write operations, facilitating the creation of a new appointment. This involves several crucial steps: validating incoming data, checking for plan-based limits, preventing scheduling conflicts, managing client records (upserting if necessary), and finally, persisting the new appointment. A robust notification system is also integrated, ensuring the professional is informed about the booking request.
+## GET: Fetching Availability Rules
 
-The database schema plays a pivotal role here, with the `professionals` table storing core professional data, `availability` defining their working hours, `appointments` tracking actual bookings, `clients` managing client information, and `notifications` handling in-app alerts. The system leverages Drizzle ORM for database interactions, `date-fns` for date manipulation, and Zod for schema validation, ensuring data integrity and a smooth user experience.
+The GET handler returns time rules and existing appointments for a given professional (identified by `slug`) and date. It avoids over-fetching by selecting only `id` and `sessionDuration` from `professionals`, preventing leakage of sensitive fields like `email`, `userId`, or `stripeCustomerId`. It then retrieves weekly availability patterns from the `availability` table and booked slots from `appointments`, filtering out `rejected` or `cancelled` entries. This two-query pattern is efficient and avoids N+1 issues.
 
-## GET Request: Fetching Availability
+## POST: Creating Appointments
 
-The `GET` method for `/api/booking` is responsible for providing the necessary data to display a professional's calendar to potential clients. When a request comes in, it expects two query parameters: `slug` to identify the professional and `date` to specify the day for which availability is being queried.
+The POST handler validates input using Zod, checks for bot activity via the `website` honeypot, and verifies the professional exists. It enforces plan limits—client count and monthly appointments—by querying the `clients` and `appointments` tables with `count()`. The client count limit specifically applies to *new* clients; existing clients can continue to book even if the professional's client limit is reached. The core scheduling logic runs in a serializable transaction to prevent race conditions: it checks for time conflicts, upserts the client (matching by phone or email), updating the client's email if an existing client is found without one and a new email is provided, and creates the appointment. If the professional has `autoConfirm` enabled, the status is set to `confirmed`; otherwise, it remains `pending_confirmation`.
 
-Upon receiving these parameters, the system first queries the `professionals` table to retrieve the professional's details using their unique `slug`. If no professional is found, a `404` error is returned, indicating that the requested professional does not exist.
+Upon success, it creates a notification, sends a WhatsApp message using `msgBookingRequest`, and optionally emails the professional. WhatsApp and email notifications are fire-and-forget, with errors caught and logged but not blocking the response. Notification persistence **is awaited** to ensure it is reliably recorded before responding to the client.
 
-Once the professional is identified, two parallel database queries are executed to gather all relevant scheduling information for the specified `date`:
+## Design decisions
 
-1.  **Availability Rules**: The `availability` table is queried to fetch all defined working hours for the professional, identified by `professionalId`. These rules typically specify the days of the week and time ranges when the professional is generally available.
-2.  **Existing Appointments**: The `appointments` table is queried to retrieve all existing bookings for the professional within the `startOfDay` and `endOfDay` of the requested `date`. Crucially, this query filters out appointments with a `status` of `"rejected"` or `"cancelled"` using `notInArray`, ensuring that only active or pending bookings are considered when determining available slots. This prevents already-rejected or cancelled appointments from blocking new bookings.
+The code prioritizes data safety and concurrency control. The switch from `SELECT *` to explicit column selection in GET prevents accidental PII exposure. The use of a serializable transaction in POST eliminates race conditions during booking, a critical safeguard in high-traffic scenarios. The honeypot pattern avoids challenging bots directly, instead feeding them a fake success to reduce spam. Plan limits are evaluated dynamically using `effectivePlan`, allowing trial states to influence access without duplicating logic.
 
-The response combines the `professional` details, their `rules` (general availability), and `existingAppointments`, allowing the frontend to calculate and display the actual available time slots to the client.
+## Potential improvements
 
-## POST Request: Creating a Booking
+1. **Avoid redundant plan lookup in POST**: The `effectivePlan` function is called, but `professional.plan` is already known. Since `trialEndsAt` is nullable, the logic could be inlined unless trial checks are complex—currently, it adds indirection without clear benefit (`src/app/api/booking/route.ts`, `effectivePlan` call).
 
-The `POST` method is where the core booking logic resides, handling the creation of new appointments. This is a multi-step process designed to ensure data integrity, prevent conflicts, and manage client and professional interactions effectively.
+2. **Client upsert logic could be simplified**: The OR condition on phone/email in client lookup may cause mismatches (e.g., same phone, different email). Consider standardizing on phone as the primary key, as it's required and unique per professional (`src/app/api/booking/route.ts`, client upsert block).
 
-### Rate Limiting
-
-Before any processing begins, the request is subjected to rate limiting using `getBookingLimiter`. This mechanism, configured in `src/lib/ratelimit.ts`, helps protect the API from abuse and ensures fair usage. If the limit is exceeded, a `429 Too Many Requests` response is immediately returned.
-
-### Input Validation
-
-The incoming request body is validated against the `bookingSchema` using Zod. This schema enforces that `slug`, `startsAt`, `clientName`, and `clientPhone` are present and correctly formatted. `clientEmail` is optional but, if provided, must be a valid email address. If validation fails, a `400 Bad Request` is returned with detailed `fieldErrors`.
-
-### Professional Lookup and Plan Limits
-
-Similar to the `GET` request, the professional is first retrieved from the `professionals` table using the provided `slug`. If the professional is not found, a `404` error is returned.
-
-Following this, the system performs a critical check against the professional's subscription plan. It determines the `effectivePlan` based on `professional.plan` and `professional.trialEndsAt`, then consults the `PLANS` configuration. If the plan has specific `limits` for `clients` or `appointmentsPerMonth` (i.e., not `Infinity`), these limits are enforced:
-
-*   **Client Limit**: The `clients` table is queried to count existing clients for the professional. If the `clientCount` exceeds the plan's limit, and the current `clientPhone` does not belong to an `existingClient`, a `403 Forbidden` error is returned. This allows existing clients to book even if the total client count is high, but prevents adding *new* clients beyond the limit.
-*   **Monthly Appointment Limit**: The `appointments` table is queried to count appointments for the current month. If `monthlyCount` exceeds `plan.limits.appointmentsPerMonth`, a `403 Forbidden` error is returned.
-
-### Overlap Check
-
-A crucial step to prevent double-booking is the "overlap check." Before creating a new appointment, the system queries the `appointments` table to see if any existing appointment for the professional conflicts with the proposed `startsAt` and `endsAt` times. An appointment is considered a conflict if its `startsAt` is before the new appointment's `endsAt` AND its `endsAt` is after the new appointment's `startsAt`, while also excluding `rejected` or `cancelled` appointments. If a conflict is detected, a `409 Conflict` response is returned, informing the client that the slot has just been taken.
-
-### Client Upsert Logic
-
-To maintain a clean and up-to-date client database, an "upsert" (update or insert) logic is applied for the client:
-
-1.  The system attempts to find an existing client in the `clients` table for the given `professionalId` using either the `clientPhone` or `clientEmail`.
-2.  If a client is found, that record is used. Additionally, if the existing client record had a `null` `email` but a `clientEmail` was provided in the booking request, the client's email is updated.
-3.  If no existing client is found, a new client record is inserted into the `clients` table with the provided `name`, `phone`, and `email`.
-
-This ensures that client data is consolidated and updated efficiently.
-
-### Appointment Creation and Notifications
-
-Finally, a new record is inserted into the `appointments` table with the `professionalId`, `clientId`, calculated `startsAt` and `endsAt` times, and an initial `status`. The `status` is set to `"confirmed"` if `professional.autoConfirm` is `true`, otherwise it defaults to `"pending_confirmation"`. The `paymentStatus` is initially set to `"none"`.
-
-After the appointment is created, a series of notifications are triggered:
-
-*   **In-app Notification**: A new entry is added to the `notifications` table, targeting the professional's `userId` with a `type` of `"booking_request"`, informing them of the new booking.
-*   **WhatsApp Notification**: A WhatsApp message is sent to the professional's `phone` using the `msgBookingRequest` template, providing details about the client and the appointment time.
-*   **Email Notification**: If the professional has an `email` address, an email is sent to them via `sendBookingRequestEmailToProfessional`, mirroring the WhatsApp notification content.
-
-These multi-channel notifications ensure the professional is promptly aware of new booking requests. The endpoint then returns a `200 OK` response with `success: true` and the newly created `appointment` data. Any unhandled errors during this process result in a `500 Internal Server Error`.
-
-## Design Decisions
-
-The design of the `/api/booking` endpoint reflects several deliberate choices aimed at robustness, user experience, and business logic integration:
-
-*   **Clear Separation of Concerns**: The `GET` and `POST` methods are distinctly separated, adhering to REST principles. `GET` is purely for data retrieval, while `POST` handles state changes (creating a booking). This makes the API predictable and easier to consume.
-*   **Declarative Validation with Zod**: The use of Zod for input validation in the `POST` request (`bookingSchema`) provides a clear, concise, and type-safe way to define expected data structures and constraints. This reduces boilerplate and improves maintainability compared to manual validation.
-*   **Optimistic Concurrency Control**: The explicit "overlap check" in the `POST` request is a critical design choice to prevent race conditions. By checking for conflicts *just before* inserting the new appointment, the system minimizes the chance of two users simultaneously booking the same slot, returning a `409 Conflict` if this occurs.
-*   **Client Data Deduplication (Upsert)**: The logic to find an existing client by `phone` or `email` before creating a new one is crucial for data integrity. It prevents the proliferation of duplicate client records for the same individual, simplifying client management for professionals. The update of a missing email also ensures client profiles are enriched over time.
-*   **Multi-Channel Notification Strategy**: Sending notifications via in-app alerts (`notifications` table), WhatsApp (`sendWhatsApp`), and email (`sendBookingRequestEmailToProfessional`) ensures that professionals receive timely updates through their preferred communication channels. This redundancy increases the likelihood of the professional seeing the booking request.
-*   **Integrated Business Logic (Plan Limits)**: The direct integration of `PLANS` and `effectivePlan` checks within the `POST` request ensures that subscription-based limits on clients and appointments are enforced at the point of creation. This prevents professionals from exceeding their plan's allowances and provides immediate feedback.
-*   **Rate Limiting for Stability**: Implementing `getBookingLimiter` is a proactive measure to protect the backend resources. It prevents malicious or accidental floods of requests, maintaining the stability and availability of the booking service for all users.
-
-## Potential Improvements
-
-While the current implementation is functional, several areas could be enhanced to improve robustness, maintainability, and user experience:
-
-1.  **Atomic Transactions for POST Operations**: The `POST` request involves multiple write operations: potentially inserting or updating a client, inserting an appointment, and inserting a notification. Currently, these are separate database calls. If any step fails after a preceding one has succeeded (e.g., appointment inserted, but notification fails), the system could be left in an inconsistent state. Wrapping these operations in a Drizzle transaction (e.g., `db.transaction(async (tx) => { ... })`) would ensure atomicity, meaning either all operations succeed, or all are rolled back, guaranteeing data consistency. This would apply to the client upsert, appointment insert, and notification insert within `src/app/api/booking/route.ts`.
-2.  **Enforce Availability Rules in POST**: The `GET` request returns `rules` from the `availability` table, but the `POST` request does not explicitly validate if the `startsAt` time of the new appointment actually falls within the professional's defined `availability` rules for that specific `dayOfWeek`. This is a significant gap; a professional could define availability from 9 AM to 5 PM, but a client could theoretically book for 8 AM if only the overlap check is performed. Adding this validation step in `src/app/api/booking/route.ts` before the appointment insertion would prevent invalid bookings.
-3.  **Consistent Timezone Handling**: The `date-fns` functions like `startOfDay`, `endOfDay`, `startOfMonth`, and `endOfMonth` operate based on the server's local timezone. If the server's timezone differs from the professional's or client's intended timezone, this could lead to subtle bugs or misinterpretations of "day start" or "month start." It would be beneficial to explicitly define and enforce a consistent timezone (e.g., UTC for all backend operations and conversions at the API boundary or client-side) to avoid ambiguity. This would impact how `startsAt` and `dateStr` are processed in `src/app/api/booking/route.ts`.
-4.  **More Granular Plan Limit Error Messages**: When a plan limit is hit, the current error messages are somewhat generic (e.g., "Limite de clientes atingido para este profissional."). For a better user experience, especially for professionals managing their accounts, providing more specific details (e.g., "Você atingiu o limite de X novos clientes para o seu plano. Considere fazer um upgrade.") could guide them more effectively. This would involve refining the error messages returned in `src/app/api/booking/route.ts` when `clientCount` or `monthlyCount` exceed `plan.limits`.
+3. **Unified error handling for post-booking side effects**: While notification persistence is correctly awaited, the WhatsApp and email notifications are fire-and-forget. To improve observability, consider wrapping all non-critical side effects (including `db.insert(notifications)`) in a `Promise.all` with error handling to log failures collectively, ensuring no silent drops (`src/app/api/booking/route.ts`, notification block).
 
 ## References
 
-*   `src/app/api/booking/route.ts`
+- `src/app/api/booking/route.ts`
+- `@/lib/db/schema`
+- `@/lib/whatsapp`
+- `@/lib/plan-guard`

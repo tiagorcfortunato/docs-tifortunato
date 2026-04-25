@@ -1,80 +1,88 @@
 ---
-title: "Payment Flow Journeys"
-description: "PIX flow (client → pro, off-Stripe) + Stripe subscription flow (pro → Odys)"
+title: Payment Flow
+description: PIX flow (client → pro, off-Stripe) + Stripe subscription flow (pro → Odys)
 ---
 
-# Payment Flow Journeys
+# Payment Flow
 
-This page details the two distinct payment flows implemented in Odys: the client-to-professional payment process using PIX (entirely off-Stripe) and the professional-to-Odys subscription payment process via Stripe Checkout. Understanding these separate mechanisms is crucial for comprehending the platform's financial architecture.
+The Odys platform orchestrates two distinct payment flows, each designed to serve a different relationship: direct payments from clients to professionals, and subscription payments from professionals to Odys itself. This document delves into the architectural choices and implementation details behind both, highlighting how the system manages financial transactions and professional plans.
 
-## Flow 1 — Client pays professional (PIX, off-Stripe)
+## Overview
 
-This flow facilitates session payments using PIX, Brazil's instant payment system. Stripe is not involved in this process.
+At its core, the payment infrastructure is bifurcated. For client-to-professional transactions, Odys leverages Brazil's instant payment system, PIX, allowing direct transfers without acting as an intermediary. This is reflected in the `professionals` table, which stores the necessary PIX key information, and the `appointments` table, which tracks the `paymentStatus` for each session.
 
-1.  The professional configures their PIX key within the `/dashboard/settings` interface.
-2.  For a confirmed appointment with `paymentType: "upfront"`, the booking widget renders a `<PixQR>` component. This component generates an EMV BR Code payload using the pure-TypeScript implementation in `src/lib/pix.ts`. This implementation includes inline CRC-CCITT (polynomial `0x1021`, initial `0xffff`) and ID-length-value fields, adhering to the Banco Central's "Manual de Padrões para Iniciação do Pix". The `buildPixPayload` function in `src/lib/pix.ts` constructs the payload, including fields for merchant name and city, and conditionally includes the amount only if it is greater than zero (converted from cents to reais). This enables both fixed-amount and open-amount (dynamic) PIX QR codes.
-3.  The client scans the generated QR code with their Brazilian banking application and makes a **bank-to-bank** payment directly to the professional.
-4.  The professional manually updates the appointment status to `paid` from their dashboard by sending a `PATCH` request to `/api/appointments/[id]` with `action: "paid"`. This action updates the `appointments.paymentStatus` column to `captured`.
+Conversely, for professionals subscribing to Odys's services, the platform integrates with Stripe for managing recurring payments. This involves a set of defined plans in `src/lib/stripe/plans.ts`, a checkout API route at `/api/stripe/checkout`, and a webhook endpoint at `/api/stripe/webhook` to process asynchronous payment events and update the `professionals` table with subscription details like `stripeCustomerId` and `stripeSubscriptionId`. The system currently manages 10 tables in total, with `professionals` and `appointments` being central to these payment processes.
 
-Odys's infrastructure and Stripe do not handle the movement of these funds. The platform functions solely as a QR code generator and a status tracker.
+## Client-to-Professional Payments: PIX Integration
 
-### Why PIX-first for Brazilian SMBs
+The primary mechanism for clients to pay professionals is through PIX, a direct and instant payment method popular in Brazil. Odys facilitates this by generating a static PIX QR code payload, which clients can then scan to complete the payment directly to the professional.
 
-The decision to prioritize PIX for client-to-professional payments is driven by several factors:
+The logic for generating these payloads resides in `src/lib/pix.ts`. This file exports a `buildPixPayload` function, which takes a professional's PIX `key`, `name`, `city`, and the `amount` (in cents) for the transaction. It normalizes the `name` and `city` by removing diacritics, converting to uppercase, and truncating them to 25 and 15 characters respectively, to comply with PIX payload specifications.
 
-*   **Zero processing fees**: PIX transactions are free for bank-to-bank transfers in Brazil.
-*   **Instant settlement**: Funds are transferred and settled within seconds, 24/7.
-*   **Universal adoption**: PIX is widely adopted, with approximately 90% of the Brazilian population using it.
-*   **Avoids Stripe's Brazilian fee structure**: This approach bypasses Stripe's transaction fees (typically ~4-6% plus FX) on small-ticket service payments.
+The `buildPixPayload` function relies on two helper functions:
+- `field(id, value)`: This utility formats a given ID and value into a length-prefixed string, adhering to the PIX payload structure. For instance, `field("00", "01")` becomes `"000201"`.
+- `crc16(str)`: This function calculates a CRC-16 checksum, which is a crucial part of the PIX payload for data integrity verification. The calculated checksum is appended to the end of the generated payload.
 
-Refunds for PIX payments are marked as `refunded` in the database, but the actual money transfer is a manual bank operation performed by the professional; Odys does not facilitate fund movement for refunds. The documentation states that PIX refunds are marked as `refunded` in the database, but no code implementing this state transition is present in the provided files. This functionality may exist in another API route (e.g., `PATCH /api/appointments/[id]` with `action: "refunded"`), but it is not included in the current code excerpts.
+When a professional sets up their profile, their PIX details, specifically `pixKey` (and potentially `pixKeyType` for internal categorization), are stored in the `professionals` table. The `pixKey` is then used by the system to retrieve the necessary information to generate the QR code for clients. The `appointments` table includes a `paymentStatus` column, which defaults to `"pending"`, indicating that while the PIX QR code might be generated, the actual payment confirmation is an external process that the professional would typically verify. The `professionals` table also contains `paymentType` and `paymentPercentage` columns, which could be used to define how professionals prefer to receive payments or if Odys were to take a commission, though the current PIX implementation is direct.
 
-## Flow 2 — Professional pays Odys (Stripe Checkout, subscription)
+## Professional-to-Odys Payments: Stripe Subscriptions
 
-This flow manages the professional's subscription payments to Odys for Basic, Pro, or Premium plans, leveraging Stripe.
+For professionals to access advanced features on the Odys platform, they subscribe to various plans managed via Stripe. This subscription model is defined and handled through a dedicated set of files.
 
-### Plan definition
+### Plan Definitions
 
-The `src/lib/stripe/plans.ts` file serves as the single source of truth for all plan-related data, including pricing, feature limits, and human-readable descriptions:
+The available subscription plans are meticulously defined in `src/lib/stripe/plans.ts`. This file exports:
+- `PLAN_FEATURES`: A master ordered list of all features, used for comparison displays (e.g., on a pricing page). It includes features like "Perfil público de agendamento" and "PIX integrado", with some marked as `comingSoon`.
+- `PLANS`: An object detailing each plan ("free", "basic", "pro", "premium"). Each plan specifies its `label`, `price`, `priceId` (linked to Stripe product IDs via environment variables like `STRIPE_BASIC_PRICE_ID`), `note` (for the free plan), `limits` (e.g., `clients: Infinity`, `appointmentsPerMonth: Infinity` for paid plans, or specific numbers for the free plan), and a list of `features` included. The `priceId` for paid plans is dynamically loaded from environment variables, ensuring flexibility and separation of configuration.
 
-*   **Free**: Limited to 10 clients and 20 appointments per month, with `priceId: null` as it does not correspond to a Stripe product.
-*   **Basic / Pro / Premium**: Each paid plan maps to a specific Stripe Price ID, retrieved from environment variables like `process.env.STRIPE_BASIC_PRICE_ID`, `process.env.STRIPE_PRO_PRICE_ID`, and `process.env.STRIPE_PREMIUM_PRICE_ID`. If an environment variable is missing, it explicitly defaults to `null`.
+It also exports the `PlanKey` type, used for type-safe plan identification across the application.
 
-Each plan object in `PLANS` includes a `limits` object (e.g., `clients`, `appointmentsPerMonth`) and a list of `features` for display on the `/dashboard/plans` page. The `PLAN_FEATURES` array defines the master list of all features for display purposes, including their order and labels in the UI. However, each plan's `features` array in `PLANS` contains the actual feature strings that determine what is enabled. These must match the `label` fields in `PLAN_FEATURES` exactly for proper rendering.
+### Stripe Checkout Flow
 
-### Checkout
+When a professional decides to upgrade their plan, the process is initiated via the `/api/stripe/checkout` API route. This route handles the creation of a Stripe Checkout Session.
 
-The subscription checkout process is initiated as follows:
+1.  **Authentication and Rate Limiting**: The route first authenticates the user using Supabase and applies an API rate limit (`getApiLimiter`) to prevent abuse, returning a `429 Too Many Requests` if limits are exceeded.
+2.  **Plan Validation**: It validates the requested `plan` against the `PLANS` object, ensuring it's a valid paid plan.
+3.  **Professional Data Retrieval**: The system fetches the professional's record from the `professionals` table using their `userId`. This record is crucial for linking the Stripe session to the professional and checking their `trialEndsAt` status.
+4.  **Trial Handling**: If the professional is upgrading to the "pro" plan and is still within their trial period, the Stripe Checkout Session is configured with a `trial_end` timestamp, allowing them to start the subscription without immediate payment. The `payment_method_collection` is set to `"if_required"` in this case, deferring card collection. Otherwise, it's `"always"`.
+5.  **Session Creation**: A Stripe Checkout Session is created in `mode: "subscription"`, explicitly setting `payment_method_types: ["card"]`, and specifying the `priceId` for the chosen plan, `success_url`, `cancel_url`, and `locale`. Importantly, `metadata` is attached, containing `professionalId` and the chosen `plan`, which are vital for the webhook to correctly update the database later. The user's `email` is also passed for Stripe's records.
+6.  **Redirection**: The API returns the `session.url`, to which the client-side application redirects the user to complete the payment on Stripe's hosted page.
 
-1.  A professional clicks the "Upgrade" button on the `/dashboard/plans` page.
-2.  The client-side application sends a `POST` request to the `/api/stripe/checkout/route.ts` API route.
-3.  The handler authenticates the user via `supabase.auth.getUser()` and retrieves the corresponding professional record from the `professionals` table using `db.select().from(professionals).where(eq(professionals.userId, user.id))`.
-4.  It then calls `stripe.checkout.sessions.create()` with the following key parameters:
-    ```ts
-    stripe.checkout.sessions.create({
-      mode: "subscription",
-      payment_method_types: ["card"],
-      line_items: [{ price: PLANS[plan].priceId!, quantity: 1 }],
-      metadata: { professionalId, plan },
-      customer_email: user.email,
-      locale: "pt-BR",
-      subscription_data: trialEnd ? { trial_end: trialEnd } : undefined,
-      payment_method_collection: trialEnd ? "if_required" : "always",
-      // ... other parameters
-    })
-    ```
-5.  If the professional is upgrading to the Pro plan and is within their 14-day trial period (determined by `trialDaysLeft(professional.trialEndsAt)`), `subscription_data.trial_end` is set and `payment_method_collection: "if_required"` is used. This behavior is specific to the Pro plan and does not apply to other paid plans.
-6.  The API route returns `session.url`, and the browser redirects (`window.location.href`) to the Stripe-hosted checkout page.
+### Stripe Webhook Processing
 
-This approach uses a **hosted, not embedded**, Stripe Checkout page. This keeps Odys entirely out of PCI scope, as no sensitive card data touches Odys's servers. The `locale: "pt-BR"` parameter ensures the Stripe checkout page is rendered in Portuguese for Brazilian professionals.
+After a payment event occurs on Stripe's side (e.g., a subscription is created, updated, or canceled), Stripe sends a notification to the `/api/stripe/webhook` endpoint. This endpoint is critical for keeping Odys's database synchronized with Stripe's subscription status.
 
-### Webhook — the state-update mechanism
+1.  **Signature Verification**: The webhook first verifies the `stripe-signature` header against the raw request body and a secret key (`process.env.STRIPE_WEBHOOK_SECRET!`). This is a security measure to ensure the request genuinely originated from Stripe.
+2.  **Event Handling**:
+    *   **`checkout.session.completed`**: When a user successfully completes a checkout session, this event is triggered. The webhook extracts `professionalId` and `plan` from the session's `metadata`. It then updates the corresponding professional's record in the `professionals` table, setting their `plan`, `stripeCustomerId`, and `stripeSubscriptionId`.
+    *   **`customer.subscription.updated`**: This event fires when a subscription changes, such as an upgrade or downgrade initiated through the Stripe customer portal. The webhook processes this event only if the subscription `status` is `"active"`. It then identifies the new `priceId` from the subscription items and matches it against the `PLANS` defined in `src/lib/stripe/plans.ts` to determine the new `plan`. The `professionals` table is then updated with this new `plan`.
+    *   **`customer.subscription.deleted`**: If a subscription is canceled, this event sets the professional's `plan` back to `"free"` and clears their `stripeSubscriptionId` in the `professionals` table, effectively revoking access to paid features.
 
-The `/api/stripe/webhook/route.ts` endpoint processes events sent by Stripe to update the professional's subscription status:
+These webhook handlers ensure that the `professionals` table accurately reflects the current subscription status, enabling the application to enforce plan-based feature access.
 
-1.  **Critical first step**: The handler reads the **raw request body** using `req.text()`. Using `req.json()` would strip whitespace and invalidate the HMAC signature.
-2.  It extracts the `stripe-signature` header. If this header is missing, the route immediately returns a `400` status before any `constructEvent` call.
-3.  `stripe.webhooks.constructEvent(body, sig, process.env.STRIPE_WEBHOOK_SECRET!)` is called within a `try/catch` block. A signature verification failure results in a `400` status **before any database write**. This "fails closed" mechanism prevents unauthorized updates.
-4.  Events are dispatched based on `event.type`. Three primary event types are handled:
+## Design Decisions
 
-| Event Type                      | Action
+The decision to implement two distinct payment flows—PIX for client-to-professional and Stripe for professional-to-Odys—stems from a pragmatic approach to the Brazilian market and the nature of the transactions.
+
+For client-to-professional payments, PIX was chosen because it is the dominant instant payment method in Brazil, offering direct, low-cost, and immediate transfers. By providing a PIX QR code generator in `src/lib/pix.ts`, Odys avoids becoming a payment intermediary, which would introduce complexities like payment processing fees, regulatory compliance, and settlement delays. This design choice simplifies Odys's operational overhead for these transactions, placing the direct financial relationship between the client and the professional. The `professionals` table stores the necessary `pixKey` details, making it easy for the system to generate the payment information on demand.
+
+Conversely, Stripe was selected for professional-to-Odys subscriptions due to its robust capabilities for managing recurring payments, trials, and subscription lifecycle events. Stripe's comprehensive API and webhook system (`/api/stripe/checkout`, `/api/stripe/webhook`) allow Odys to automate plan management, billing, and account updates. The `PLANS` configuration in `src/lib/stripe/plans.ts` centralizes pricing and feature definitions, making it straightforward to manage different tiers. Using `metadata` in Stripe Checkout Sessions to pass `professionalId` and `plan` back to the webhook is a clean way to link external Stripe events to internal database records, ensuring data consistency without relying on potentially stale session data. The `professionals` table's `stripeCustomerId` and `stripeSubscriptionId` columns are key to maintaining this link.
+
+The use of Drizzle ORM for database interactions provides a type-safe and expressive way to query and update the `professionals` table, enhancing developer experience and reducing potential errors. Rate limiting on API routes like `/api/stripe/checkout` is a standard security and stability practice, protecting against abuse and ensuring fair resource usage.
+
+## Potential Improvements
+
+1.  **Automated PIX Payment Confirmation**: Currently, the PIX payment flow from client to professional is off-platform, meaning Odys does not automatically confirm if a PIX payment has been successfully made. The `appointments.paymentStatus` column exists, but its update mechanism for PIX payments is not evident in the provided code. A significant improvement would be to integrate with a PIX API or a payment gateway that supports PIX webhooks to automatically update the `paymentStatus` in the `appointments` table, reducing manual work for professionals and improving data accuracy.
+2.  **Enforcement of Plan Limits**: The `PLANS` object in `src/lib/stripe/plans.ts` defines `limits` for "free" users, such as `clients: 10` and `appointmentsPerMonth: 20`. However, the provided code does not show where these limits are actively enforced within the application logic (e.g., preventing a "free" professional from adding an 11th client or booking a 21st appointment). Implementing checks against `professional.plan` and its associated `limits` before allowing certain actions would ensure that subscription tiers are properly respected.
+3.  **Robustness of Stripe Customer/Subscription ID Handling**: In `src/app/api/stripe/webhook/route.ts`, when handling `checkout.session.completed` events, `session.customer` and `session.subscription` are cast to `string ?? undefined`. While `undefined` is handled, Stripe's API types indicate `session.customer` can be `string | Stripe.Customer | null`. Explicitly checking for `null` and handling the `Stripe.Customer` object type (if it were ever returned directly) would make the code more robust and type-safe, preventing potential runtime issues if these values are not simple strings.
+4.  **PIX Key Validation on Professional Onboarding**: The `buildPixPayload` function in `src/lib/pix.ts` takes a `key` as a string. While it generates a valid payload, there's no explicit validation of the `pixKey` format (e.g., CPF, phone number, email, random key) at the point of entry into the `professionals` table. Implementing validation rules during professional onboarding or profile updates would ensure that only correctly formatted PIX keys are stored, reducing errors in QR code generation.
+5.  **Idempotency for Stripe Webhook Updates**: Although Stripe webhooks are designed to be idempotent, adding explicit idempotency keys or checks within the `src/app/api/stripe/webhook/route.ts` handlers could further safeguard against duplicate processing of events. For instance, when updating a professional's plan, checking if the `plan` or `stripeSubscriptionId` is already the expected value before performing the database update could prevent unnecessary writes and potential race conditions in highly concurrent scenarios.
+
+## References
+
+- `src/lib/pix.ts`
+- `src/lib/stripe/plans.ts`
+- `src/app/api/stripe/checkout/route.ts`
+- `src/app/api/stripe/webhook/route.ts`
+- `src/lib/db/schema.ts` (for `professionals` and `appointments` tables)
+- `src/lib/plan-guard.ts` (for `trialDaysLeft` utility)

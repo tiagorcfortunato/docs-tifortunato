@@ -1,108 +1,40 @@
 ---
-title: Customer Booking Flow
-description: "How a customer goes from /p/[slug] to a confirmed appointment — availability lookup, slot selection, server-side overlap check, notifications."
+title: "Booking Flow"
+description: "Customer booking flow: landing → slot selection → POST → overlap check → confirmation"
 ---
 
-# Customer Booking Flow
+# Booking Flow
 
-From arriving at a professional's public page to receiving confirmation. Client-side UX for speed, server-side enforcement for correctness, non-blocking side effects for resilience.
+This document details the end-to-end customer booking journey in Odys, from landing on a professional’s public page to submitting a confirmed appointment. It covers data flow, validation, conflict detection, and post-submission actions.
 
-## 1. Landing on the public page
+## Overview
 
-The customer opens `odys.com.br/p/dr-ana`. The page at `src/app/p/[slug]/page.tsx` is an **async Server Component**:
+The booking flow spans frontend and backend components across 10 database tables, including `professionals`, `availability`, `appointments`, and `clients`. It begins when a user visits a professional’s public page (`/p/[slug]`), selects a time slot, and submits their details via `/api/booking`. The system validates input, enforces plan limits, and notifies the professional. The core booking logic—checking for scheduling conflicts, upserting the client record, and inserting the appointment—is performed within a serializable database transaction to prevent race conditions.
 
-- Fetches the professional by slug. If missing or `active: false` → `notFound()` (Next renders 404).
-- If the visitor is authenticated as a client, pre-fills name / phone / email from the matching `clients` row.
-- Fetches related professionals (same profession) and existing reviews (inner join on `clients` for reviewer names).
-- Passes all server-resolved data down to `<BookingWidget>` — a client component.
+## Flow Breakdown
 
-SEO: `generateMetadata` pulls title, description, and `openGraph.images` from the professional row. A dynamic OG image is generated in `src/app/p/[slug]/opengraph-image.tsx`.
+The journey starts in `src/app/p/[slug]/page.tsx`, where the page fetches professional data using the `slug` param. The `BookingWidget` component renders a calendar and time slots by calling `GET /api/booking` with a date, which returns availability rules from the `availability` table and existing appointments from `appointments`. Slots are generated client-side via `generateSlots` in `src/lib/slots.ts`, which respects `sessionDuration` and avoids overlaps.
 
-## 2. Picking a slot
+On submission, `POST /api/booking` validates input with Zod, checks plan limits (e.g., `clients` or `appointmentsPerMonth`), and performs an atomic transaction: it checks for slot conflicts, upserts the `clients` record (matching by phone or email), and inserts the `appointments` record. If `autoConfirm` is enabled, the status is set to `confirmed`; otherwise, it remains `pending_confirmation`.
 
-`<BookingWidget>` keeps three pieces of UI state: the selected date, the selected slot, and the step (`"pick" | "form" | "success"`).
+After success, the system creates a notification for the professional and sends WhatsApp alerts using `msgBookingRequest` via `sendWhatsApp`. Email fallbacks are triggered if the professional has an email. The client sees a success screen, optionally with a Pix QR code if `paymentType` requires upfront payment.
 
-When the user selects a date:
+## Design decisions
 
-1. A `useEffect` fires `GET /api/booking?slug=...&date=...` (unauthenticated, no rate limit on GET).
-2. The endpoint reads the professional, the weekly `availability` ruleset, and every non-`rejected`/`cancelled` appointment whose `startsAt` falls in the selected day.
-3. The browser calls `generateSlots()` from `src/lib/slots.ts` — a pure function that combines the availability window, session duration, and existing appointments to emit available time strings like `"14:00"`.
-4. Slots in the past are dropped. Slots that overlap existing appointments are dropped.
+The API uses a serializable transaction to prevent double-booking, a critical choice given that separate queries could allow race conditions. The honeypot field `website` silently drops bot submissions without revealing the trap. Sensitive fields like `email` and `phone` are excluded from public `GET /api/booking` responses to prevent data leakage. Rate limiting via Upstash (`rl:booking`) caps submissions at 5 per 10 minutes per IP, reducing spam.
 
-Slot computation is **client-side for UX speed**. Server-side enforcement comes next.
+## Potential improvements
 
-## 3. Submitting the booking
+1. **Client deduplication logic in `src/app/api/booking/route.ts`** uses OR conditions on phone/email but doesn’t enforce uniqueness constraints in the DB. Adding a partial unique index on `(professionalId, phone)` and `(professionalId, email)` would prevent duplicates at the schema level.
 
-When the user picks a slot, fills the form, and submits, the widget POSTs to `/api/booking`. The handler does **six things in order**:
+2. **Slot generation in `src/lib/slots.ts`** runs client-side after fetching raw rules and appointments. Moving this to the API would reduce client-side logic and allow consistent handling of edge cases like timezone gaps.
 
-1. **Rate-limit** — 5 bookings per rolling 10 minutes per IP via `getBookingLimiter()`. IP is derived from the first entry in `x-forwarded-for` (standard Vercel pattern).
-2. **Zod validation** — `bookingSchema`: `slug` (string min 1), `startsAt` (ISO datetime), `clientName` (string min 2), `clientPhone` (string min 10), `clientEmail` (valid email, optional + nullable). Failure → 400 with field errors.
-3. **Professional resolution** — look up by slug.
-4. **Plan limit enforcement** — free plan caps at `10 clients` and `20 appointmentsPerMonth`. Paid plans (basic / pro / premium) set both to `Infinity`. At cap on free → booking is rejected, *unless* the phone already exists as a client (existing clients re-book for free).
-5. **Server-side overlap check** — the double-booking defense:
+3. **WhatsApp message context in `src/app/api/appointments/[id]/route.ts`** passes `professionalId` and `appointmentId` to `sendWhatsApp`, but this data isn’t persisted. Storing `context` in the `notifications` table would enable audit trails and message replay.
 
-   ```ts
-   const conflict = await db.select({ id: appointments.id })
-     .from(appointments)
-     .where(and(
-       eq(appointments.professionalId, professional.id),
-       notInArray(appointments.status, ["rejected", "cancelled"]),
-       lt(appointments.startsAt, endDate),   // existing starts before new ends
-       gt(appointments.endsAt, startDate),   // existing ends after new starts
-     ))
-     .limit(1)
+## References
 
-   if (conflict.length > 0) return 409 "Este horário acabou de ser preenchido..."
-   ```
-
-6. **Client upsert + appointment insert** — upsert the client (matched by phone OR email, scoped to the professional), then insert the `appointments` row as `pending_confirmation` (or `confirmed` if the professional has `autoConfirm: true`).
-
-## 4. Side effects (non-blocking)
-
-After the booking insert, three fire-and-forget operations run:
-
-- `notifications` row written with `type: "booking_request"`.
-- WhatsApp message to the professional via `sendWhatsApp(msgBookingRequest(...))`.
-- Email to the professional via `sendBookingRequestEmailToProfessional(...)`.
-
-Each wraps in `.catch(console.warn)` — **the booking succeeds even if Evolution API or Resend is down**. UX beats strict consistency on notifications.
-
-## 5. Confirmation and downstream
-
-The professional receives the WhatsApp / email / dashboard alert and either:
-
-- **Confirms** via dashboard → PATCH `/api/appointments/[id]` with `action: "confirm"` → client gets `msgBookingConfirmed` via WhatsApp.
-- **Rejects** → client gets `msgBookingRejected`.
-- Has **autoConfirm: true** → the appointment was already `confirmed` at insert time, no manual step needed.
-
-The full action set on PATCH `/api/appointments/[id]` is `confirm`, `reject`, `cancel`, `paid`, `complete`, `no_show` — enforced by an explicit allowlist; unknown actions return 400. `paid` / `complete` / `no_show` are pro-only (authentication + ownership gate).
-
-If the client booked without a registered account, the confirmation message appends `msgRegistrationInvite` — a short prompt with a pre-filled `/register` link so the client can claim their profile for future bookings.
-
-## Race condition — honest flag
-
-Two customers clicking the same slot at the same moment both see it as available (client-side computation has no lock). Server-side sequence:
-
-1. First request passes overlap check → inserts → returns 200.
-2. Second request runs the same overlap check → finds the just-inserted row → returns 409 with *"Este horário acabou de ser preenchido, por favor escolha outro."*
-
-The SELECT and INSERT are **not wrapped in a transaction** — there's a microsecond window between them where two simultaneous requests could both pass the check and both insert. In practice that window is microseconds on Supabase's pooled connection, and per-professional booking rate is far below contention threshold.
-
-**Upgrade path** if real contention emerges: either wrap select+insert in `db.transaction(...)` with `SERIALIZABLE` isolation, or add a Postgres `EXCLUSION CONSTRAINT` using `tstzrange(starts_at, ends_at)` with the `&&` operator. The `generateSlots()` function stays unchanged — it's UX, not authorization.
-
-## Timezone handling — honest flag
-
-- Booking widget builds `Date` in **browser-local time** (`date.setHours(h, m, 0, 0)`).
-- API stores it as UTC timestamp.
-- Reminder cron computes windows on Vercel's UTC clock.
-- AI intake agent explicitly anchors to `America/Sao_Paulo`.
-- MCP server resolves "today" in `America/Sao_Paulo` via `tzOffsetMs` helper.
-
-Today this works because every professional and client is in São Paulo. There is **no timezone-of-record column on the professional row** — if Odys ever goes multi-zone, that's a schema migration.
-
-## Why this shape
-
-- **Server Component for the public page** — SEO-friendly, single async query tree, no API-call waterfall on initial render.
-- **Client Component only for the widget** — the `"use client"` boundary is small, interactive state is isolated.
-- **Client-side slot filtering for UX, server-side overlap check for correctness** — two-layer defense. Client is fast and may drift at the edge; server is authoritative.
-- **Non-awaited side effects** — never let an email/WhatsApp failure cascade into a booking failure. The booking is the source of truth; notifications are best-effort.
+- `src/app/p/[slug]/page.tsx`
+- `src/app/p/[slug]/booking-widget.tsx`
+- `src/app/api/booking/route.ts`
+- `src/lib/slots.ts`
+- `src/lib/ratelimit.ts`

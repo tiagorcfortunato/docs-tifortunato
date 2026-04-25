@@ -1,81 +1,43 @@
 ---
-title: "Sign-Up & Onboarding"
-description: "How a Brazilian independent professional goes from landing on odys.com.br to having a live public booking page."
+title: "Sign-up & Onboarding Flow"
+description: "Professional sign-up + onboarding flow end-to-end"
 ---
 
-# Sign-Up & Onboarding
+# Sign-up & Onboarding Flow
 
-This page details the end-to-end journey for a professional signing up and onboarding, covering account creation with email verification and the multi-step wizard to configure their public booking page. Authentication is managed by Supabase, and all persistent state uses Drizzle ORM.
+This document details the end-to-end journey for professionals signing up and completing onboarding in the Odys platform. It covers authentication, rate limiting, data modeling, and post-registration setup, explaining how the system ensures security, scalability, and a smooth user experience.
 
-## Phase 1 — Account Creation
+## Overview
 
-The professional initiates the process by landing on `odys.com.br/register` and completing the registration form.
+The professional sign-up and onboarding flow spans multiple systems: Supabase for authentication, Drizzle ORM for database interactions, Upstash for rate limiting, and background processes for email and WhatsApp notifications. The flow begins at `/api/auth/register`, continues through OAuth callback handling, and concludes with profile creation via `/api/onboarding`. Multiple database tables support this workflow, with `professionals` as the central entity linked to `availability`, `clients`, and `appointments`. Multiple cron jobs and API routes—including MCP tools—reflect a mature, event-driven architecture.
 
-1.  The client-side form POSTs JSON data to the `/api/auth/register` endpoint, handled by `src/app/api/auth/register/route.ts`.
-2.  This handler is rate-limited to 5 attempts per rolling hour per IP address, enforced by `getRegisterLimiter()` from `src/lib/ratelimit.ts` using an Upstash `slidingWindow` strategy.
-3.  Account creation logic branches based on `NODE_ENV`:
-    *   **Production**: `supabase.auth.signUp()` is called with the anonymous client. Supabase's own SMTP service dispatches a verification email to the user. The response includes `requiresEmailConfirmation` set to `true` if no session is returned.
-    *   **Development**: `adminClient.auth.admin.createUser({ email_confirm: true })` is used. This bypasses the email verification round-trip, accelerating development and testing cycles.
-4.  The API response indicates `requiresEmailConfirmation`, allowing the client page to render the appropriate "check your inbox" message or proceed directly.
+## Account Creation and Type Safety
 
-## Phase 2 — Email Verification and Session
+Registration starts with a POST to `/api/auth/register`, which enforces a rate limit of 5 attempts per hour per IP using Upstash Redis. The endpoint accepts `email`, `password`, `name`, and `type`. The `type` value is passed to Supabase user metadata during registration. During the OAuth callback, the `type` query parameter from the URL is validated against a closed set of "professional", "client", or "recovery" to prevent metadata injection attacks. If valid, the user's metadata `type` is then updated with this validated value. In production, `supabase.auth.signUp()` triggers email verification; in development, the service role client creates confirmed users for faster iteration.
 
-Upon receiving and clicking the verification link, the professional's browser interacts with the system to establish a session.
+After email confirmation, Supabase redirects to `/auth/callback` with a one-time code. This route exchanges the code for a session and validates the `type` query parameter against a `Set` of allowed values, preventing arbitrary data injection into `user_metadata`. If the user is registering as a client and their email matches a pre-existing `clients` record (without `userId`), the system links them automatically—a "smart-linking" pattern that preserves client history across account creation.
 
-1.  The browser hits the `/auth/callback` route, implemented in `src/app/auth/callback/route.ts`.
-2.  This route uses `supabase.auth.exchangeCodeForSession(code)` to convert the one-time verification code into an authenticated Supabase session.
-3.  If a `type` parameter (e.g., `professional` or `client`) is present in the callback URL, the user's `user_metadata.type` is updated via `supabase.auth.updateUser({ data: { type } })`.
-4.  **Smart-linking** logic is executed *only* for `type === "client"` signups and *after* email verification. This process backfills the `clients.userId` field for any pre-existing `clients` table rows whose `email` matches the newly verified user's email and where `clients.userId` is currently `null`. This post-verification execution is a direct mitigation for audit finding C1, which identified an account takeover vulnerability when smart-linking occurred pre-verification.
-5.  Following successful session exchange, the user is redirected to `/auth/redirect`, which then routes professionals to `/onboarding` and clients to `/c` based on their `user_metadata.type`.
+## Onboarding and Profile Setup
 
-## Phase 3 — Onboarding Wizard (Professionals Only)
+Once authenticated, professionals submit their profile via `/api/onboarding`. The `/api/onboarding` endpoint is designed to be idempotent: if a professional record already exists for the authenticated user, the existing record is returned immediately without further processing. This endpoint is rate-limited to 3 requests per hour per IP and validates input using Zod. The schema requires `name`, `profession`, `phone`, `sessionDuration`, and `sessionPrice`, with optional `bio` and mandatory weekly `availability`. The `slug` is derived from the name using Unicode normalization and hyphenation, then made unique by appending a number if it conflicts with existing slugs or reserved routes like `/dashboard` or `/api`.
 
-Professionals are directed to the `/onboarding` path, where a multi-step wizard collects essential information to configure their public booking page. The wizard captures seven key fields:
+Upon successful insertion into the `professionals` table, the system writes availability blocks into the `availability` table and updates the user’s metadata to `type: professional`. A welcome email is sent in production using `sendProfessionalWelcomeEmail`, fire-and-forget style to avoid blocking the response.
 
-*   **Full name**: Used to derive the public URL slug.
-*   **Profession**: Selected from a predefined list.
-*   **WhatsApp number** (body key: `phone`): Canonicalized for communication routing.
-*   **Session duration**: An integer representing minutes.
-*   **Session price**: An integer representing cents.
-*   **Short bio**: Optional, free-form text.
-*   **Weekly availability**: An array of `{ dayOfWeek, startTime, endTime }` tuples.
+## Design decisions
 
-### Handler — `/api/onboarding`
+The use of Supabase’s service role in development allows rapid iteration without email verification delays, while production relies on standard `signUp()` to enforce security. The `VALID_TYPES` set in `/auth/callback/route.ts` prevents metadata pollution—a direct response to a prior security finding. Rate limiting is granular: `/onboarding` is capped at 3/hour to deter spam, while `/register` allows 5/hour. Slug generation avoids collisions with app routes via a hardcoded `RESERVED_SLUGS` set, ensuring URL integrity.
 
-The submission of the onboarding form POSTs JSON data to the `/api/onboarding` endpoint, handled by `src/app/api/onboarding/route.ts`.
+## Potential improvements
 
-1.  **Rate-limiting**: The handler is rate-limited to 3 submissions per rolling hour per IP address, managed by `getOnboardingLimiter()` from `src/lib/ratelimit.ts`.
-2.  **Zod validation**: The incoming request body is validated against `onboardingSchema` (defined in `src/app/api/onboarding/route.ts`). This schema enforces:
-    *   `name`: string, minimum 2 characters.
-    *   `profession`: string, minimum 1 character.
-    *   `phone`: string, minimum 10 characters.
-    *   `bio`: optional string.
-    *   `sessionDuration`: positive integer, maximum 480.
-    *   `sessionPrice`: non-negative integer.
-    *   `availability`: array of objects, minimum 1 entry. Each object requires `dayOfWeek` (integer 0-6), `startTime` (string matching `HH:mm`), and `endTime` (string matching `HH:mm`).
-    *   Validation failures result in a `400` status with detailed field errors.
-3.  **Identity**: The authenticated Supabase user is retrieved using `getUser()`.
-4.  **Idempotency**: The handler checks if a `professionals` row already exists for the current `user.id`. If found, the existing professional data is returned, preventing duplicate entries on re-submission.
-5.  **Slug generation**:
-    *   The `toSlug()` function normalizes the professional's `name` (NFD normalization, diacritic stripping, lowercase conversion, dash-separation, non-alphanumeric removal) to create a base slug.
-    *   `generateUniqueSlug()` then ensures the slug is unique and does not conflict with `RESERVED_SLUGS` (a `Set` of top-level application routes defined in `src/app/api/onboarding/route.ts`). If the base slug is reserved or already taken, it appends `-2`, `-3`, etc., iterating with one database query per attempt until a unique slug is found.
-6.  **Database inserts**:
-    *   A new row is inserted into the `professionals` table with the collected data and the generated slug.
-    *   For each entry in the `availability` array, a corresponding row is inserted into the `availability` table, linked to the new professional.
-7.  **User metadata update**: The user's `user_metadata` in Supabase is updated to `{ type: "professional", name: body.name }`. This ensures that subsequent logins correctly route the professional to their dashboard.
+1.  **Slug generation performance**: `generateUniqueSlug` in `/api/onboarding/route.ts` uses a loop with sequential DB queries. For high-traffic systems, this could cause contention. A probabilistic approach with random suffixes or batch checks could reduce round trips.
 
-### Outcome
+2.  **Availability validation**: The onboarding schema does not validate that `startTime` is before `endTime` or that time ranges are non-overlapping. Adding this in `onboardingSchema` would prevent invalid schedules from being stored.
 
-Upon successful completion of the onboarding wizard, the professional's public booking page becomes live and accessible at `odys.com.br/p/[slug]`.
+3.  **Error handling in email sending**: The `sendProfessionalWelcomeEmail` call uses `.catch()` but only logs warnings. In `/api/onboarding/route.ts`, consider retry logic or queuing via a durable function to ensure delivery.
 
-## Known Gaps
+## References
 
-*   **Slug Generation Collision Handling**: The `generateUniqueSlug` function, implemented in `src/app/api/onboarding/route.ts`, currently performs one database query for each attempt to find a unique slug in case of collisions. While this approach is acceptable at the current MVP scale, it could become a performance bottleneck if a large number of professionals were to register with names that frequently collide. A more optimized solution might involve a batch query or a dedicated counter column for common base slugs if collision rates increase significantly.
-
-## Why this shape
-
-*   **Two-phase (account → onboarding)**: This design separates the lightweight initial signup from the more data-intensive onboarding process. This approach is intended to improve conversion rates by reducing the initial barrier to entry.
-*   **Idempotent onboarding handler**: The handler in `src/app/api/onboarding/route.ts` is designed to be idempotent, protecting against issues like double-clicks or slow network conditions that could lead to duplicate submissions.
-*   **Slug generation as a pure function**: The `toSlug()` and `generateUniqueSlug()` functions in `src/app/api/onboarding/route.ts` ensure that URL ownership is predictable and testable. Professionals do not manually select their slugs, which bounds the number of edge cases.
-*   **Smart-linking after email verification, not before**: This placement, implemented in `src/app/auth/callback/route.ts`, is a direct result of lessons learned from audit finding C1. It prevents potential account takeover scenarios by ensuring user identity is confirmed before linking pre-existing client data.
-*   **Simple slug-collision loop**: The current slug collision resolution, while performing one database query per retry, is intentionally kept simple for the current scale. This design acknowledges that a more complex, batch-query-based solution might be necessary if the system ever experiences thousands of professionals colliding on the same base slug.
+-   `src/app/api/auth/register/route.ts`
+-   `src/app/auth/callback/route.ts`
+-   `src/app/api/onboarding/route.ts`
+-   `src/lib/ratelimit.ts`

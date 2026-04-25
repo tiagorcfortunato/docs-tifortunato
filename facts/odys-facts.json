@@ -1,6 +1,6 @@
 {
-  "extracted_at": "2026-04-24T16:34:43.062Z",
-  "source_repo": "/Users/tiagofortunato/Desktop/Money App/odys",
+  "extracted_at": "2026-04-25T00:02:09.631Z",
+  "source_repo": "/home/runner/work/Odys/Odys/.source/odys",
   "schema": {
     "tableCount": 10,
     "tables": [
@@ -1007,7 +1007,7 @@
     ]
   },
   "apiRoutes": {
-    "count": 21,
+    "count": 23,
     "routes": [
       {
         "path": "/api/account",
@@ -1034,6 +1034,12 @@
           "GET",
           "POST",
           "DELETE"
+        ]
+      },
+      {
+        "path": "/api/health",
+        "methods": [
+          "GET"
         ]
       },
       {
@@ -1124,6 +1130,12 @@
         ]
       },
       {
+        "path": "/api/stripe/portal",
+        "methods": [
+          "POST"
+        ]
+      },
+      {
         "path": "/api/stripe/webhook",
         "methods": [
           "POST"
@@ -1209,6 +1221,11 @@
       "limit": 10,
       "window": "1 m",
       "prefix": "rl:whatsapp"
+    },
+    "aichat": {
+      "limit": 20,
+      "window": "1 h",
+      "prefix": "rl:ai-chat"
     }
   },
   "stripeWebhookEvents": [
@@ -1226,7 +1243,7 @@
     "stripe": "^21.0.1",
     "groqSdk": "^1.1.2",
     "depCount": 32,
-    "devDepCount": 8
+    "devDepCount": 9
   },
   "whatsapp": {
     "messageTemplateCount": 19,
