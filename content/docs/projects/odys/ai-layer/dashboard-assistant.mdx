@@ -1,81 +1,36 @@
 ---
-title: "Dashboard AI Assistant"
+title: "AI Assistant"
 description: "In-dashboard AI chat"
 ---
 
-# Dashboard AI Assistant
+# AI Assistant
 
-This page details the implementation of the in-dashboard AI chat assistant, covering its API endpoint, integration with the Groq SDK, and the data retrieval tools it uses to respond to user queries.
+The AI Assistant page provides professionals with a conversational interface to access key business insights—such as upcoming appointments, client no-show trends, and revenue summaries—without navigating multiple dashboard sections. Built on a function-calling LLM pipeline, it translates natural language queries into structured data retrieval, delivering accurate, context-aware responses grounded in real-time database records.
 
-## API Endpoint
+## Overview
 
-The AI assistant's logic is implemented in `src/app/api/ai/chat/route.ts`, a Next.js App Router API route that handles POST requests. It orchestrates authentication, authorization, AI model interaction via Groq, and execution of data-fetching tools.
+The assistant operates through a two-phase LLM interaction: first, the model decides which data tool to invoke based on the user’s query; then, after executing the relevant database query, it generates a final response. This architecture ensures factual consistency by preventing the model from hallucinating numbers. The system leverages `drizzle-orm` to query a schema with 10 tables—including `appointments`, `clients`, and `professionals`—and is protected by rate limiting and plan-based access control. Three core tools power the assistant: `get_stats`, `get_upcoming`, and `get_no_show_clients`, each mapped to specific analytical intents.
 
-### Authentication and Authorization
+The `/api/ai/chat` endpoint handles all interactions, enforcing authentication via `getUser()` and authorization through `canUseFeature()`, which restricts access to Pro and Premium plans. Rate limiting is applied per user ID using `getAiChatLimiter()`, allowing 20 requests per hour—configured in the `rateLimits` object under `aichat`. The LLM backend is Groq’s `llama-3.3-70b-versatile`, chosen for low-latency function calling.
 
-Access control is enforced at the start of the `POST` handler:
+## Design decisions
 
-- `getUser()` from `src/lib/api` retrieves the authenticated user from the session.
-- `getProfessional()` fetches the associated professional profile using the user ID.
-- If either check fails, the route returns a `401 Unauthorized` via `unauthorized()`.
-- Feature access is validated using `canUseFeature()` from `src/lib/plan-guard`, which checks the professional's current plan and trial status. Users without the required plan receive a `403 Forbidden` response.
+The system uses a **two-call LLM pattern** to separate tool selection from response generation. This avoids inlining raw data into the first prompt, preserving token budget and reducing cost. Tool responses are injected as `tool`-role messages, ensuring the final LLM pass can synthesize results without reprocessing the full context.
 
-### AI Model and Prompting
+Tool definitions are **intentionally narrow**, each serving a distinct query class. For example, `get_stats` handles aggregate trends, while `get_no_show_clients` is reserved for client-specific rankings. This prevents ambiguous tool routing and aligns with the system prompt’s explicit dispatch rules.
 
-The assistant uses the Groq SDK (`groq-sdk`) initialized with `process.env.GROQ_API_KEY`. The model used is `llama-3.3-70b-versatile`.
+Data fetching is **batched per time window**: `getStats()` retrieves all appointments from the last six months in one query, then computes monthly breakdowns in memory. This reduces database round-trips compared to one query per month, trading minimal memory overhead for significantly lower latency.
 
-A `SYSTEM_PROMPT` string defines the assistant's behavior:
-- Respond in Portuguese.
-- Use tools for data retrieval; never invent numbers.
-- Format financial values in BRL.
-- Apply specific formatting rules for "no-show rate" and "monthly summary" responses.
+## Potential improvements
 
-The assistant is equipped with three tools defined in the `TOOLS` array, each corresponding to a data-fetching function.
+The `getStats()` function computes monthly aggregates client-side, but **moving this to SQL** would improve performance. For example, using `date_trunc('month', starts_at)` in a `GROUP BY` clause (via Drizzle’s `sql` template) could shift the work to PostgreSQL, reducing data transfer and simplifying logic.
 
-## AI Tools and Data Retrieval
+The `get_no_show_clients()` query lacks a minimum appointment threshold, potentially surfacing clients with 1 session and 1 no-show. Adding a `HAVING count(*) >= 2` clause would make the ranking more meaningful by filtering out statistically insignificant cases.
 
-The assistant can invoke three tools to retrieve real data from the database using Drizzle ORM. All queries are scoped to the authenticated professional's `professionalId`.
+The system prompt mandates strict output formatting for no-show responses, but **there’s no runtime validation** of the final reply. A malformed LLM output could break UX expectations. Wrapping the second LLM call in a retry loop with a stricter `response_format` or post-hoc parsing would increase robustness.
 
-### `get_stats`
+## References
 
-Retrieves appointment statistics over the last six months.
-
-- **Function**: `getStats(professionalId, sessionPrice)`
-- **Query**: Selects all appointments from the last six months where `professionalId` matches.
-- **Processing**:
-  - Calculates global totals: completed appointments, no-shows, no-show rate, and revenue (in BRL).
-  - Breaks down data month-by-month, computing the same metrics per month.
-  - Returns both global and per-month summaries.
-- **Use case**: Triggered for queries about no-show rates, monthly summaries, revenue, or trends.
-
-### `get_upcoming`
-
-Fetches upcoming appointments for the next 7 days.
-
-- **Function**: `getUpcoming(professionalId)`
-- **Query**: Joins `appointments` and `clients` tables to get client names.
-- **Filters**: Appointments starting from now up to 7 days ahead.
-- **Order**: By `startsAt` ascending.
-- **Limit**: 20 results.
-- **Output**: Client name, date, end time, and status.
-- **Use case**: "What do I have scheduled this week?"
-
-### `get_no_show_clients`
-
-Ranks clients by no-show frequency over the last 6 months.
-
-- **Function**: `getNoShowClients(professionalId)`
-- **Query**: Groups appointments by client, counting total appointments and no-shows using SQL `filter` clauses.
-- **Filters**: Appointments from the last 6 months.
-- **Order**: By no-show count descending.
-- **Limit**: 10 clients.
-- **Post-processing**: Filters out clients with zero no-shows and computes individual no-show rates.
-- **Use case**: "Which clients miss the most appointments?"
-
-## Known Gaps
-
-The current implementation of authentication for API routes, including `src/app/api/ai/chat/route.ts`, relies on explicit calls to `getUser()` and `getProfessional()` within each route handler. This approach, while explicit, places the burden of authentication on every new route author. A more centralized authentication mechanism, such as a `middleware.ts` file, could reduce boilerplate and potential for oversight, as flagged by security audits.
-
-## Why this shape
-
-The design prioritizes factual accuracy by restricting the AI to a fixed set of tools that execute verified database queries. This prevents hallucination and ensures responses are grounded in real data. The use of Groq was selected for low-latency tool calling and response generation. By centralizing business logic in the API route and using Drizzle ORM for type-safe queries, the implementation maintains consistency with the rest of the App Router architecture. The absence of middleware keeps the control flow explicit and auditable, aligning with the project's pragmatic security model.
+- `src/app/api/ai/chat/route.ts`
+- `lib/db/schema.ts` (implicit via `appointments`, `clients`)
+- `lib/plan-guard.ts` (via `canUseFeature`)

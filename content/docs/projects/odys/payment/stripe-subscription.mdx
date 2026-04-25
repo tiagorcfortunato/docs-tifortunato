@@ -1,30 +1,51 @@
 ---
-title: Stripe Subscription
-description: "Stripe subscription flow internals"
+title: "Stripe Subscription Flow"
+description: "Internal implementation of Stripe subscription handling, including plan configuration and webhook events."
 ---
 
-# Stripe Subscription
-The Stripe subscription flow is a critical component of the application, enabling users to upgrade their plans and access additional features. This page delves into the internals of the Stripe subscription flow, exploring the structural picture, design decisions, and potential improvements.
+# Stripe Subscription Flow
+
+This document details the internal mechanics of the Stripe subscription system in odys, covering plan definitions, checkout integration, and webhook event handling. Understanding this flow is essential for maintaining billing integrity, supporting trial conversions, and ensuring reliable subscription state synchronization.
 
 ## Overview
-The application supports four plans: `free`, `basic`, `pro`, and `premium`, with prices of 0, 39, 79, and 149, respectively. The `stripeWebhookEvents` array contains three events: `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`. These events are crucial for managing the subscription lifecycle.
 
-The `src/lib/stripe/index.ts` file initializes a new Stripe instance with the `STRIPE_SECRET_KEY` environment variable. It also re-exports plan data from `src/lib/stripe/plans.ts`, which defines the `PLAN_FEATURES` array and the `PLANS` object. The `PLANS` object contains the plan details, including prices, price IDs, and features.
+The subscription system is built around four core components: defined pricing plans, Stripe Checkout session creation, Supabase authentication, and Drizzle ORM for database access. The platform offers four plans — `free`, `basic`, `pro`, and `premium` — priced at \$0, \$39, \$79, and \$149 respectively. Each paid plan maps to a Stripe Price ID via environment variables (`STRIPE_BASIC_PRICE_ID`, etc.), while the free plan enforces usage limits without requiring payment.
 
-## Stripe Subscription Flow
-The subscription flow begins when a user initiates a plan upgrade. The `src/app/api/stripe/checkout/route.ts` file handles the checkout process, creating a new Stripe checkout session with the selected plan's price ID. The `trialDaysLeft` function is used to determine if the user is still within their trial period, and if so, the `payment_method_collection` is set to `if_required`. This allows the user to complete the checkout process without entering their payment information if they are still within their trial period.
+Stripe webhooks listen for three critical events: `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted`. These ensure subscription state in the database stays in sync with Stripe’s records, though webhook handlers themselves are not included in the current code sample.
 
-The `stripe.checkout.sessions.create` method is used to create a new checkout session, passing in the plan's price ID, quantity, and other relevant details. The `success_url` and `cancel_url` are set to redirect the user to the dashboard after completing the checkout process.
+## Plan Configuration and Feature Matrix
 
-## Design Decisions
-The current code structure is designed to separate concerns, with each file responsible for a specific aspect of the subscription flow. The `src/lib/stripe/index.ts` file initializes the Stripe instance, while the `src/lib/stripe/plans.ts` file defines the plan data. The `src/app/api/stripe/checkout/route.ts` file handles the checkout process, creating a new Stripe checkout session and redirecting the user to the dashboard after completion.
+Plan metadata is centralized in `src/lib/stripe/plans.ts`, where both pricing and feature entitlements are declared. The `PLANS` object defines each tier’s label, price, Stripe priceId, and usage limits. Only the `free` plan enforces limits — capping clients at 10 and appointments at 20 per month. All paid plans grant unlimited access to core features.
 
-The use of environment variables, such as `STRIPE_SECRET_KEY`, allows for easy configuration and switching between different Stripe accounts. The `trialDaysLeft` function provides a flexible way to determine if a user is still within their trial period, enabling the application to adapt to different trial periods and plan configurations.
+The `PLAN_FEATURES` array drives the UI comparison table, listing capabilities like "Agendamentos recorrentes" and "Múltiplos profissionais" (the latter marked `comingSoon: true`). Each plan’s `features` array includes only the labels it supports, enabling a declarative approach to feature visibility.
 
-## Potential Improvements
-1. **Error handling**: The `src/app/api/stripe/checkout/route.ts` file catches errors and returns a generic error message. Consider adding more specific error handling, such as logging the error and returning a more informative error message to the user.
-2. **Plan validation**: The `src/app/api/stripe/checkout/route.ts` file checks if the selected plan is valid, but does not validate the plan's price ID. Consider adding additional validation to ensure the price ID is valid and matches the selected plan.
-3. **Stripe webhook event handling**: The application currently does not handle Stripe webhook events. Consider adding event handlers to manage the subscription lifecycle, such as updating the user's plan when a subscription is updated or deleted.
+## Checkout Session Creation
+
+The API route `src/app/api/stripe/checkout/route.ts` handles checkout session creation. It first verifies user authentication via Supabase and retrieves the associated `professional` record. If the selected plan is invalid or `free`, it returns an error.
+
+Notably, the `pro` plan supports trial continuation: if the professional has an active trial, the session is configured with `trial_end` and `payment_method_collection: "if_required"`, deferring payment collection. This logic avoids interrupting trial users while upgrading them to paid subscriptions seamlessly.
+
+The session includes metadata (`professionalId`, `plan`) for post-checkout processing and uses localized checkout (`pt-BR`) for Brazilian users.
+
+## Design decisions
+
+The use of environment variables for Stripe Price IDs enables environment-specific configuration without code changes. The `priceId` field in `src/lib/stripe/plans.ts` directly accesses `process.env` variables (e.g., `process.env.STRIPE_BASIC_PRICE_ID ?? null`) to configure Stripe Price IDs. If a `STRIPE_PRICE_ID` environment variable for a paid plan is not set, its `priceId` will be `null`, which will cause a runtime error when attempting to create a Stripe Checkout session for that plan.
+
+Feature flags are implemented via string matching against `PLAN_FEATURES`, reducing the need for boolean fields. This improves maintainability: adding a feature requires only appending to the list and updating plan entries.
+
+The decision to embed trial logic in the checkout route — rather than a separate service — reduces round trips but couples trial state to payment initiation.
+
+## Potential improvements
+
+1. **Centralize environment variable names**: `src/lib/stripe/plans.ts` directly references `process.env` variables (e.g., `process.env.STRIPE_BASIC_PRICE_ID`) for Stripe Price IDs. Define these keys in one place (e.g., a config object) to prevent typos and improve testability.
+
+2. **Validate Stripe Price IDs at startup**: Currently, `priceId` defaults to `null` if the env var is missing. This *will* cause a runtime error in Stripe API calls if a paid plan is selected without its corresponding `STRIPE_PRICE_ID` environment variable being set.
+
+3. **Abstract trial logic**: The trial check in `src/app/api/stripe/checkout/route.ts` is tightly scoped to the `pro` plan. Extract `trialDaysLeft` and trial session logic into a reusable service to support future trial policies across plans.
 
 ## References
-For a deeper dive into the code, refer to the following files: `src/lib/stripe/index.ts`, `src/lib/stripe/plans.ts`, and `src/app/api/stripe/checkout/route.ts`.
+
+- `src/lib/stripe/plans.ts`
+- `src/lib/stripe/index.ts`
+- `src/app/api/stripe/checkout/route.ts`
+- `src/lib/plan-guard.ts`

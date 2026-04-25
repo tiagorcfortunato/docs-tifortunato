@@ -1,67 +1,101 @@
 ---
-title: "Groq + Llama 3.3 AI"
-description: "Why Groq + Llama 3.3 70B, two-pass pattern"
+title: Groq Llama AI Layer
+description: Why Groq + Llama 3.3 70B, two-pass pattern
 ---
 
-# Groq + Llama 3.3 AI
+# Groq Llama AI Layer
 
-This page explains the rationale for using Groq with the Llama 3.3 70B model in the AI layer and details the two-pass pattern used for reliable tool calling in both the WhatsApp intake agent and the AI assistant.
+The AI layer within Odys is designed to enhance user interaction and provide valuable insights, leveraging the capabilities of large language models. This documentation delves into the architectural choices behind integrating Groq and the Llama 3.3 70B model, specifically highlighting the two-pass tool-calling pattern that underpins its functionality. This approach allows for robust, controlled, and context-aware AI interactions, serving both client-facing automation and internal professional analytics.
 
-## Groq + Llama 3.3 70B Selection
+## Overview
 
-The AI layer uses Groq's inference engine with the `llama-3.3-70b-versatile` model in two key components: the AI assistant (`src/app/api/ai/chat/route.ts`) and the WhatsApp intake agent (`src/lib/ai-intake.ts`). This choice is driven by performance and cost efficiency.
+The Odys AI layer is composed of two primary components, each tailored for distinct use cases but sharing a common underlying architecture:
 
-Groq delivers significantly faster inference—critical for back-to-back LLM calls—while being more cost-effective than GPT-4-class models. The model is invoked with the same `llama-3.3-70b-versatile` identifier in both files, confirming consistent usage across the AI surface.
+1.  **AI WhatsApp Intake Agent** (`src/lib/ai-intake.ts`): This agent automates client interactions via WhatsApp, primarily focusing on checking availability and creating appointments. It acts as a conversational interface for clients to schedule sessions with professionals.
+2.  **In-App AI Assistant** (`src/app/api/ai/chat/route.ts`): This component provides professionals with an interactive assistant within the Odys application. It offers insights into their business, such as appointment statistics, upcoming schedules, and client no-show rates.
 
-Although Llama 3.3 70B may have weaker instruction-following capabilities compared to larger proprietary models, this is mitigated by the narrow scope of available tools. For example:
-- In `src/lib/ai-intake.ts`, tools like `get_available_slots` and `book_appointment` are tightly scoped to scheduling logic.
-- In `src/app/api/ai/chat/route.ts`, tools such as `get_stats` and `get_no_show_clients` serve specific analytical queries.
+Both components utilize the `groq-sdk` to interface with the `llama-3.3-70b-versatile` model. A critical design choice across both implementations is the "two-pass" tool-calling pattern, which ensures that the LLM's decisions regarding tool use are carefully evaluated before generating a final response. The system interacts with a Drizzle ORM-backed PostgreSQL database, which includes 10 tables, notably `professionals`, `appointments`, `clients`, and `availability`, to retrieve and store relevant information. The `api/ai/chat` route is also protected by a rate limit of 20 requests per hour per user, managed by the `getAiChatLimiter`.
 
-The system prompt in each file enforces strict rules (e.g., "never invent numbers", "use tools to fetch data") to reduce hallucination risk, making the model’s limitations manageable within bounded domains.
+## The Two-Pass Tool-Calling Pattern
 
-## Two-Pass Tool Calling Pattern
+A cornerstone of the Odys AI layer is the "two-pass" tool-calling pattern. This pattern is employed in both the `handleIncomingMessage` function within `src/lib/ai-intake.ts` and the `POST` handler in `src/app/api/ai/chat/route.ts`. The rationale behind this approach is to enhance reliability and control over the LLM's behavior, especially when interacting with external tools that can modify data or trigger actions.
 
-Both AI implementations follow a two-pass pattern to separate tool decision from response generation, improving reliability and reducing incorrect tool usage.
+Here's how it works:
 
-### First Pass: Tool Decision
+1.  **First Pass: Tool Decision**: The LLM receives the user's message along with a set of predefined `TOOLS` and a `SYSTEM_PROMPT`. In this initial call, the LLM's primary task is not to generate a direct response, but to decide whether any of the available tools are relevant to the user's query. If a tool is deemed necessary, the LLM outputs a `tool_calls` object specifying the tool's name and its required arguments.
+2.  **Tool Execution**: If the first pass indicates a tool call, the application intercepts this. It then parses the tool's name and arguments, executes the corresponding backend function (e.g., `getAvailableSlots`, `bookAppointment`, `getStats`), and captures the result.
+3.  **Second Pass: Response Generation**: The original conversation history, the LLM's initial `tool_calls` message, and the *results* from the executed tool are all fed back to the LLM. In this second pass, the LLM's role is to synthesize a natural language response to the user, incorporating the information obtained from the tool's execution.
 
-The LLM receives the user message, system prompt, and tool definitions. Its sole task is to decide whether to invoke a tool and return a `function_call` object.
+This two-pass mechanism provides a crucial layer of control. It prevents the LLM from "hallucinating" tool results or making incorrect assumptions, as the actual tool execution happens outside the LLM's direct generation loop. It also allows for more complex logic, such as handling tool errors or refining arguments, before the final user-facing response is crafted.
 
-In `src/lib/ai-intake.ts`, this occurs via:
-```ts
-const first = await getGroq().chat.completions.create({
-  model: "llama-3.3-70b-versatile",
-  messages: llmMessages,
-  tools: TOOLS,
-  tool_choice: "auto",
-})
-```
+## Groq and Llama 3.3 70B Integration
 
-If `choice.tool_calls` is present, the system proceeds to execution.
+The choice of Groq as the LLM provider and Llama 3.3 70B as the model is a deliberate one, driven by performance and capability considerations. The `groq-sdk` is used to interact with the Groq API, which is known for its high inference speed. This speed is particularly beneficial for conversational agents like the WhatsApp intake, where low latency is critical for a natural user experience.
 
-### Second Pass: Response Generation
+The `llama-3.3-70b-versatile` model is selected for its balance of versatility and performance. A 70 billion parameter model offers significant reasoning capabilities, allowing it to understand complex user queries, accurately interpret tool descriptions, and generate coherent, contextually appropriate responses. This combination ensures that the AI layer can handle a wide range of interactions effectively, from scheduling appointments to providing detailed business analytics.
 
-Tool results are injected into a new message list with role `tool`, including `tool_call_id` and JSON-serialized result. A second LLM call generates the final natural language response.
+## AI WhatsApp Intake Agent (`src/lib/ai-intake.ts`)
 
-In `src/app/api/ai/chat/route.ts`, this is implemented as:
-```ts
-const second = await getGroq().chat.completions.create({
-  model: "llama-3.3-70b-versatile",
-  messages: toolMessages,
-})
-```
+The `ai-intake.ts` module is responsible for powering the WhatsApp conversational agent. Its core function, `handleIncomingMessage`, processes inbound WhatsApp messages, maintains conversation state, and orchestrates LLM interactions.
 
-This separation ensures:
-- Deterministic tool invocation before any user-facing text is generated.
-- Clear audit trail of inputs, decisions, and outputs.
-- Reduced risk of hallucinated or inconsistent responses based on unexecuted tool calls.
+### Tools and Their Purpose
 
-## Known Gaps
+The agent is equipped with three specific tools, defined in the `TOOLS` array, to manage client bookings:
 
-*   **Instruction Following**: Llama 3.3 70B is weaker than GPT-4-class models on complex, open-ended instruction following. This is mitigated by narrow tool scope and strict system prompts, but could limit future expansion into more nuanced AI behaviors without additional guardrails.
+*   `get_available_slots`: This tool is crucial for checking a professional's availability. It takes a `date` (in `YYYY-MM-DD` format) as input and returns a list of available time slots. The `getAvailableSlots` function queries the `professionals` table for session duration and the `availability` table for general rules, then cross-references with existing `appointments` to find open slots. It explicitly handles São Paulo's UTC-3 timezone using helper functions like `saoPauloDate` and `formatSaoPauloTime`.
+*   `book_appointment`: Designed to create a new appointment, this tool requires `date`, `time`, `client_name`, and `client_phone`. The `bookAppointment` function performs an atomic transaction using Drizzle ORM's `serializable` isolation level. This is vital to prevent race conditions where two users might try to book the same slot simultaneously. It also handles upserting client information into the `clients` table if a new client is detected and sends notifications (in-app, WhatsApp via `sendWhatsApp` with `msgBookingRequest` template, and email via `sendBookingRequestEmailToProfessional`) to the professional.
+*   `get_professional_info`: This tool retrieves essential details about the professional, such as their `name`, `profession`, `sessionDuration`, `sessionPrice`, and `schedule` based on `availability` rules. This allows the LLM to answer client questions about the professional's services.
 
-## Why This Shape
+### Conversation Management
 
-The combination of Groq and Llama 3.3 70B enables fast, low-cost inference, making the two-pass pattern economically viable. Each user interaction may trigger two LLM calls, which would be prohibitively expensive with slower, higher-cost providers.
+The `handleIncomingMessage` function uses `getConversation` and `saveConversation` to persist and retrieve conversation history for a given `senderPhone` and `professionalId`. This ensures that the LLM has context from previous turns, allowing for more natural and continuous dialogue. It also attempts to pre-fill `clientName` from the `clients` table if the phone number is recognized. A notable feature is the ability to seed the LLM with `outboundContext` if the inbound message is a reply to a recent transactional notification, helping the AI understand the user's intent regarding a specific appointment.
 
-The two-pass pattern enhances reliability by decoupling decision from response. This design allows the system to use a high-performance but less instruction-precise model like Llama 3.3 70B safely, as tool execution is validated before final output generation. The pattern is consistently applied across both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`, ensuring uniform behavior in user-facing and professional-facing AI interactions.
+### System Prompt
+
+The `buildSystemPrompt` function crafts a detailed `SYSTEM_PROMPT` that guides the LLM's behavior. It instructs the LLM to act as the professional's booking assistant, respond in Brazilian Portuguese, be sympathetic and concise, never invent schedules, and always use tools for availability and booking. It also includes rules for asking for missing information (date, client name) and handling out-of-scope questions.
+
+## In-App AI Assistant (`src/app/api/ai/chat/route.ts`)
+
+The `api/ai/chat/route.ts` file defines the API endpoint for the in-app AI assistant, providing professionals with data-driven insights.
+
+### Tools and Their Purpose
+
+This assistant is equipped with a different set of tools, tailored for business analytics:
+
+*   `get_stats`: This tool fetches comprehensive statistics for the last six months, including global and month-by-month breakdowns of total appointments, completed sessions, no-shows, no-show rates, and revenue. The `getStats` function queries the `appointments` table, filtering by `professionalId` and `startsAt` within the last six months, and then aggregates the data. It uses the `professional.sessionPrice` to calculate revenue.
+*   `get_upcoming`: This tool retrieves a list of appointments scheduled for the next seven days, including client names, dates, and statuses. The `getUpcoming` function joins `appointments` with `clients` to fetch the necessary details.
+*   `get_no_show_clients`: This tool identifies and ranks clients with the highest no-show rates over the past six months. The `getNoShowClients` function performs a grouped query on `appointments` and `clients`, counting total appointments and no-shows per client.
+
+### Access Control and Rate Limiting
+
+Before processing any AI chat request, the `POST` handler performs several checks:
+
+*   **Authentication**: It verifies the user's identity using `getUser` and ensures they are associated with a professional profile via `getProfessional`.
+*   **Rate Limiting**: To prevent abuse and manage resource consumption, the `getAiChatLimiter` applies a rate limit of 20 requests per hour per authenticated user. This is a crucial operational safeguard.
+*   **Feature Gating**: The `canUseFeature` utility checks if the professional's current `plan` (e.g., "Pro" or "Premium") allows access to the "assistant" feature, potentially considering `trialEndsAt`. This ensures that AI capabilities are aligned with subscription tiers.
+
+### System Prompt
+
+The `SYSTEM_PROMPT` for the in-app assistant is designed to guide the LLM in providing business insights. It instructs the LLM to act as the Odys assistant, respond in Portuguese, use tools for data retrieval, and format financial values in BRL. It also provides specific formatting guidelines for responses related to "Taxa de no-show" and "Resumo do mês," ensuring consistency and clarity in the generated reports.
+
+## Design Decisions
+
+1.  **Two-Pass Tool-Calling Pattern**: This pattern was chosen to enhance the reliability and safety of tool interactions. By separating the LLM's decision to call a tool from its final response generation, the system gains an opportunity to validate, execute, and process tool results before presenting them to the user. This reduces the risk of the LLM fabricating information or misinterpreting tool capabilities, which is a common challenge in single-pass tool-calling architectures.
+2.  **Groq and Llama 3.3 70B**: The selection of Groq as the inference engine and Llama 3.3 70B as the model was a trade-off balancing performance, cost, and model capability. Groq's specialized hardware offers exceptionally fast inference, which is critical for real-time conversational agents like the WhatsApp intake, where user experience is directly tied to response latency. Llama 3.3 70B provides a robust and versatile foundation for understanding complex queries and generating high-quality text, making it suitable for both client-facing and analytical tasks.
+3.  **Dedicated AI Agents for Distinct Use Cases**: Instead of a monolithic AI, Odys employs two separate AI agents (`ai-intake.ts` and `api/ai/chat/route.ts`). This modular design allows for highly specialized `SYSTEM_PROMPT`s and `TOOLS` tailored to each agent's specific domain (client booking vs. professional analytics). This separation improves the LLM's focus and accuracy for each task, as it's not burdened with irrelevant context or tools.
+4.  **Atomic Transaction for Booking**: The `bookAppointment` function in `src/lib/ai-intake.ts` uses a Drizzle ORM transaction with `isolationLevel: "serializable"`. This is a critical design choice to ensure data consistency and prevent race conditions. By wrapping the conflict check, client upsert, and appointment insertion in a serializable transaction, the system guarantees that if two concurrent requests attempt to book the same slot, only one will succeed, and the other will gracefully fail with a `SLOT_TAKEN` error.
+5.  **Explicit Timezone Handling**: The `src/lib/ai-intake.ts` module includes explicit timezone helper functions (`saoPauloDate`, `formatSaoPauloTime`, `formatSaoPauloDate`). This is essential for accurately managing appointment times and availability, especially given Brazil's abolition of DST. Without precise timezone management, scheduling conflicts or incorrect availability displays could arise.
+6.  **Rate Limiting and Feature Gating**: The `api/ai/chat/route.ts` implements rate limiting (`getAiChatLimiter`) and feature gating (`canUseFeature`). These are operational decisions to manage infrastructure costs associated with LLM usage and to align AI features with different subscription plans. Rate limiting prevents a single user from exhausting the Groq API budget, while feature gating ensures that advanced AI capabilities are part of the value proposition for higher-tier plans.
+
+## Potential Improvements
+
+1.  **Enhanced Tool Parameter Validation**: In `src/lib/ai-intake.ts`, the `getAvailableSlots` function performs a basic regex check for the `date` format. This could be expanded to include more robust validation, such as checking if the date is in the past or if it falls within a reasonable future range. Similarly, `bookAppointment` could validate `time` format more strictly. This would reduce the LLM's reliance on generating perfectly formatted inputs and allow for more graceful error handling for malformed requests.
+2.  **Asynchronous Notification Handling**: The `bookAppointment` function in `src/lib/ai-intake.ts` sends WhatsApp and email notifications synchronously after the appointment is created. While functional, this can introduce latency to the API response if external services are slow. Decoupling these notifications into an asynchronous queue (e.g., using a message broker or a dedicated background job system) would improve the responsiveness of the booking process and make it more resilient to transient issues with notification providers.
+3.  **Dynamic System Prompt Augmentation**: The `SYSTEM_PROMPT`s in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts` are static strings. For the WhatsApp agent, the `buildSystemPrompt` function already injects the professional's name and profession. This could be extended to dynamically include other relevant professional details (e.g., specific services offered, special instructions) from the `professionals` table, providing the LLM with richer context without needing to call `get_professional_info` explicitly for every interaction.
+4.  **More Granular Error Reporting from Tools**: Currently, tool implementations often return generic error messages like `{ error: "Profissional não encontrado" }` or `{ success: false, reason: "Este horário acabou de ser preenchido." }`. While the LLM can interpret these, providing more structured error codes or types (e.g., `{"errorCode": "PROFESSIONAL_NOT_FOUND"}`) would allow the LLM to generate more precise and helpful user-facing error messages, and also enable the application to log or react to specific error conditions programmatically.
+5.  **Conversation Summarization for Long Chats**: The `handleIncomingMessage` function in `src/lib/ai-intake.ts` appends all previous messages to `llmMessages`. For very long conversations, this can lead to increased token usage and potentially hit context window limits. Implementing a conversation summarization step (e.g., periodically summarizing older messages into a concise context string) could optimize token usage and maintain relevant context over extended interactions.
+
+## References
+
+*   `src/lib/ai-intake.ts`
+*   `src/app/api/ai/chat/route.ts`

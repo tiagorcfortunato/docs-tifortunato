@@ -1,78 +1,50 @@
 ---
-title: Appointment Actions
+title: "Appointment Actions API"
 description: "Appointment action endpoint: confirm/reject/cancel/paid/complete/no_show"
 ---
 
-# Appointment Actions
+# Appointment Actions API
 
-This document delves into the `/api/appointments/[id]` API route, a critical backend component responsible for managing the lifecycle of appointments within the odys system. This endpoint serves as the central hub for professionals and clients to interact with and update the status of scheduled appointments, covering actions such as confirmation, rejection, cancellation, marking as paid, completion, or noting a no-show. Understanding its design is key to grasping how appointment states are managed and communicated across the platform.
+This endpoint powers the core lifecycle management of appointments in the Odys platform, allowing professionals and clients to update the status of bookings through a single PATCH route. It handles confirmation, rejection, cancellation, payment capture, completion, and no-show marking—each triggering database updates and automated messaging. Confirmation, rejection, and client-initiated cancellations also trigger in-app notifications.
 
 ## Overview
 
-The `/api/appointments/[id]` route is a `PATCH` endpoint, designed to modify an existing appointment identified by its unique `id` parameter. Instead of having separate endpoints for each action, this single route accepts an `action` field in its request body, allowing for a flexible and consolidated approach to appointment state transitions.
+The `/api/appointments/[id]` route is one of 23 API endpoints in the system and the only one dedicated to mutating appointment states. It interacts primarily with the `appointments`, `professionals`, `clients`, and `notifications` tables—four of the 10 total database tables. The endpoint enforces strict role-based access: actions are permitted only if the authenticated user owns the professional profile or is the associated client. It also integrates with WhatsApp messaging (19 templates available system-wide) and email delivery for real-time communication.
 
-The core functionality revolves around updating records in the `appointments` table, which tracks 13 distinct attributes for each appointment, including its `status` and `paymentStatus`. Beyond simple database updates, this endpoint orchestrates a rich communication flow, leveraging the `professionals` and `clients` tables (each with 24 and 8 columns respectively) to retrieve contact details and user IDs. It also interacts with the `notifications` table (8 columns) to deliver in-app alerts and utilizes external services for WhatsApp and email messaging.
+### Error Handling
 
-## Endpoint Structure and Flow
+The endpoint provides granular error responses to guide API consumers:
 
-Upon receiving a `PATCH` request, the system first authenticates the user via `getUser()`. If no user is found, an `unauthorized()` response is immediately returned. The `id` of the appointment and the requested `action` are then extracted from the request.
+- `429 Too Many Requests`: Returned if the API rate limit is exceeded.
+- `401 Unauthorized`: If no authenticated user is found for the request.
+- `403 Forbidden`: For actions where the authenticated user lacks the necessary role (e.g., a client attempting a professional-only action, or an unauthorized user attempting to cancel).
+- `404 Not Found`: If the requested appointment ID does not correspond to an existing appointment.
+- `400 Bad Request`: For invalid requests such as an unknown `action` type, missing `professional` or `client` data associated with the appointment, or an attempt to `cancel` an appointment that is not in `pending_confirmation` or `confirmed` status.
+- `500 Server Error`: For unexpected server-side issues caught by the general error handler.
 
-The system proceeds to fetch the target `appointment` record, along with the associated `professional` and `client` details from their respective tables. This initial data retrieval is crucial for subsequent authorization checks and for populating dynamic messages. If any of these core records are missing, a `notFound()` or `badRequest()` error is returned.
+## State Transitions and Authorization
 
-A key design choice here is the determination of user roles: `isProfessional` and `isClient`. These boolean flags, derived by comparing the authenticated user's `id` with the `userId` fields in the `professionals` and `clients` tables, dictate what actions the user is permitted to perform.
+Each action modifies either `status` or `paymentStatus` (or both) in the `appointments` table, which has predefined defaults for these fields. The `ALLOWED_ACTIONS` set ensures only valid operations proceed, preventing silent failures from typos. Actions like `cancel` can be initiated by either party if the appointment is pending or confirmed, while `paid`, `complete`, and `no_show` are restricted to professionals. Specifically, `confirm` sets `status` to `confirmed` and `paymentStatus` to `authorized`, while `reject` sets `status` to `rejected` and `paymentStatus` to `refunded`.
 
-### Action Validation
+On confirmation, the system sends WhatsApp and email receipts and inserts a notification for the client; on rejection, it notifies the client via WhatsApp, email, and an in-app notification, and sends a WhatsApp rejection receipt to the professional. During confirmation, if the client is not a registered user, the WhatsApp message includes an invitation to register for the platform.
 
-Before processing any specific action, the system validates the requested `action` against a predefined `ALLOWED_ACTIONS` set, which includes `"confirm"`, `"reject"`, `"cancel"`, `"paid"`, `"complete"`, and `"no_show"`. This explicit allowlist prevents unexpected behavior from malformed requests. Critically, this validation occurs *after* the `isProfessional` and `isClient` checks. This ordering ensures that an unauthorized user attempting an unknown action receives a `forbidden()` response, rather than a `badRequest("Unknown action")`, which could inadvertently reveal the existence of an appointment.
+Cancellation flows differ based on initiator: clients trigger a two-way notification (to pro and themselves), while professionals only notify the client. This reflects an asymmetric responsibility model where client cancellations are treated as events needing acknowledgment by the professional.
 
-For all communication, the endpoint dynamically formats date and time strings (`dateStr`, `dateStrLong`, `timeStr`) from the `appointment.startsAt` timestamp, ensuring consistent and localized messaging.
+## Design decisions
 
-### Handling `cancel` Actions
+The endpoint consolidates multiple actions into a single PATCH handler to reduce API surface area and avoid route sprawl. Early ownership checks (`isProfessional`, `isClient`) streamline permission logic across branches. The use of `drizzle-orm` enables type-safe queries against the `appointments` schema, while `getUser()` and `getIp()` abstract authentication and rate limiting. The endpoint enforces API rate limiting using `getApiLimiter()` and returns a `429 Too Many Requests` response if the limit is exceeded. WhatsApp messages are fire-and-forget (`.catch(console.warn)`), prioritizing request completion over transient delivery failures.
 
-The `cancel` action is unique in that it can be initiated by either a client or a professional. The system first verifies that the current `appointment.status` is either `"pending_confirmation"` or `"confirmed"`, preventing cancellation of already completed or rejected appointments.
+## Potential improvements
 
-If a client cancels, the `appointments` table is updated to `status: "cancelled"`. The professional receives an in-app notification via the `notifications` table, detailing the cancellation. Both the professional and the client receive WhatsApp messages using the `msgCancelledByClientToPro` and `msgBookingCancelled` templates, respectively.
+1. **Duplicate WhatsApp logic**: The same `sendWhatsApp` call with `{ context }` appears in multiple branches (e.g., `confirm`, `cancel`). Extracting this into a reusable `notifyClient()` function in `lib/whatsapp` would reduce repetition and improve maintainability.
 
-If a professional cancels, the client receives a WhatsApp message using the `msgCancelledByProToClient` template. The system does not explicitly create an in-app notification for the client in this specific branch, relying solely on WhatsApp for this communication.
+2. **Email sending side effects**: Email functions like `sendBookingConfirmedEmailToClient` are called directly in the route handler. These should be decoupled via a queue or event system (e.g., using cron or MCP tools like `update_appointment_status`) to prevent delays during HTTP response.
 
-### Professional-Only Actions: `paid`, `complete`, `no_show`
-
-A distinct block of logic handles actions that only the professional associated with the appointment can perform: `paid`, `complete`, and `no_show`. An `isProfessional` check strictly enforces this authorization.
-
-*   **`paid`**: Updates `appointment.paymentStatus` to `"captured"`. Both client and professional receive WhatsApp messages (`msgPaymentConfirmedToClient`, `msgPaymentConfirmedToPro`).
-*   **`complete`**: Updates `appointment.status` to `"completed"`. Both client and professional receive WhatsApp messages (`msgAppointmentCompletedToClient`, `msgAppointmentCompletedToPro`).
-*   **`no_show`**: Updates `appointment.status` to `"no_show"`. Both client and professional receive WhatsApp messages (`msgNoShowToClient`, `msgNoShowToPro`).
-
-### Confirm / Reject Actions
-
-The final section of the handler deals with `confirm` and `reject` actions, which are also restricted to the professional. The `appointment.status` is updated to `"confirmed"` or `"rejected"`, and `appointment.paymentStatus` is set to `"authorized"` or `"refunded"` accordingly.
-
-If the client has a `userId` (meaning they are a registered user), an in-app notification is created in the `notifications` table, informing them of the confirmation or rejection.
-
-For `confirm` actions, the client receives a WhatsApp message (`msgBookingConfirmed`). If the client does not have a `userId`, an additional `msgRegistrationInvite` is appended to the WhatsApp message, encouraging them to register. The professional also receives a WhatsApp receipt (`msgBookingConfirmedReceipt`). If the client has an `email`, a confirmation email is sent via `sendBookingConfirmedEmailToClient`.
-
-For `reject` actions, the client receives a WhatsApp message (`msgBookingRejected`), and the professional receives a WhatsApp receipt (`msgBookingRejectedReceipt`). If the client has an `email`, a rejection email is sent via `sendBookingRejectedEmailToClient`.
-
-All external communication functions (`sendWhatsApp`, `sendBookingConfirmedEmailToClient`, `sendBookingRejectedEmailToClient`) are wrapped in `.catch(console.warn)` to prevent failures in external services from crashing the API route, though this only logs the error and doesn't implement retry logic.
-
-## Design Decisions
-
-1.  **Unified `PATCH` Endpoint for State Transitions**: The choice to use a single `PATCH /api/appointments/[id]` endpoint with an `action` parameter, rather than multiple distinct endpoints (e.g., `/confirm`, `/cancel`), centralizes appointment state management. This simplifies routing and ensures all state changes for a given appointment flow through a single, well-defined handler. The trade-off is a larger, more complex handler function with conditional logic, but it keeps the API surface area smaller.
-2.  **Explicit `ALLOWED_ACTIONS` Set**: Defining `ALLOWED_ACTIONS` as a `Set` provides efficient lookup and clear documentation of permissible operations. Placing this check after user ownership verification (`isProfessional`, `isClient`) is a deliberate security measure. It prevents an unauthorized user from probing for appointment existence by trying invalid actions and receiving a generic "Unknown action" error, instead ensuring they hit a `forbidden()` error first.
-3.  **Comprehensive Multi-Channel Communication**: The system employs a robust communication strategy, utilizing in-app `notifications`, WhatsApp messages, and email. This multi-channel approach ensures that critical updates reach users through their preferred or most immediate channels, enhancing user experience and reliability. The `notifications` table, with its 8 columns, serves as the persistent record for in-app alerts.
-4.  **Drizzle ORM for Database Interactions**: The use of `drizzle-orm` for all database operations (`db.select`, `db.update`, `db.insert`) provides a type-safe and expressive way to interact with the PostgreSQL database. This improves developer experience and reduces the likelihood of SQL injection vulnerabilities compared to raw SQL.
-5.  **Granular Authorization Logic**: The explicit `isProfessional` and `isClient` checks, derived from the `userId` columns in the `professionals` and `clients` tables, allow for fine-grained control over who can perform which actions. This is fundamental for maintaining data integrity and user roles within the application.
-
-## Potential Improvements
-
-1.  **Transaction Management for Atomic Operations**: The current implementation performs multiple `db.update` and `db.insert` operations sequentially within a single request (e.g., updating `appointments` status and then inserting into `notifications`). If any of these subsequent operations fail, the database could be left in an inconsistent state. Wrapping these related database modifications within a Drizzle transaction (e.g., `await db.transaction(async (tx) => { ... })`) in `src/app/api/appointments/[id]/route.ts` would ensure atomicity, meaning either all operations succeed or all are rolled back.
-2.  **Abstracting Communication Logic**: The `src/app/api/appointments/[id]/route.ts` file contains numerous direct calls to `sendWhatsApp` and `db.insert(notifications)`, often with similar patterns. This leads to some duplication and makes the handler harder to read and test. A dedicated `notificationService` or `messagingService` could be introduced to encapsulate this logic. For example, a function like `sendAppointmentUpdateNotifications(appointment, professional, client, action, senderRole)` could handle all relevant WhatsApp, email, and in-app notification dispatches, reducing the handler's complexity.
-3.  **Robust External Service Error Handling**: The current error handling for `sendWhatsApp` and email functions is limited to `.catch(console.warn)`. While this prevents crashes, it doesn't provide any retry mechanism, dead-letter queue, or more sophisticated logging for failed external communications. For critical messages, implementing a more resilient pattern (e.g., using a message queue, retries with exponential backoff, or dedicated error reporting) would improve the reliability of the system's external communications. This would involve modifying the `sendWhatsApp` and email helper functions in `src/lib/whatsapp.ts` and `src/lib/email.ts` respectively, and potentially how they are called in `src/app/api/appointments/[id]/route.ts`.
+3. **Hardcoded status strings**: Status values like `"confirmed"`, `"cancelled"`, etc., appear inline in conditionals (e.g., `["pending_confirmation", "confirmed"]`). These should be defined as constants or enum-like objects to prevent typos and enable centralized validation.
 
 ## References
 
-*   `src/app/api/appointments/[id]/route.ts`
-*   `src/lib/db/schema.ts`
-*   `src/lib/api.ts`
-*   `src/lib/whatsapp.ts`
-*   `src/lib/email.ts`
+- `src/app/api/appointments/[id]/route.ts`
+- `lib/db/schema.ts`
+- `lib/whatsapp.ts`
+- `lib/email.ts`
