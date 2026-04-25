@@ -39,6 +39,10 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: docs-sync-${{ inputs.project }}
+  cancel-in-progress: true
+
 jobs:
   sync:
     runs-on: ubuntu-latest

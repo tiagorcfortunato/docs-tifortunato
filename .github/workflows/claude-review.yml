@@ -1,0 +1,69 @@
+name: Claude reviews auto-sync PR
+
+# Triggers when an auto-sync PR is opened or updated. Claude reads the diff,
+# spot-checks claims, and posts a single review comment with a verdict.
+# Uses your Claude Max OAuth token (no API charges).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+jobs:
+  review:
+    # Only review auto-sync PRs (not human ones, not dependabot)
+    if: startsWith(github.head_ref, 'auto-sync/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 20
+
+      - name: Run Claude review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are reviewing an auto-generated docs PR on Tiago's docs site.
+            The PR contains MDX files regenerated from a source repo via an
+            audit-gated LLM pipeline. Most pages are usually correct, but the
+            LLM occasionally:
+
+            - invents features that don't exist in the source code
+            - uses banned marketing words (robust, seamless, powerful,
+              cutting-edge, scalable, leverage, ensures, guarantees, elegant,
+              comprehensive, sophisticated, underpins, boasts, meticulously)
+            - opens paragraphs with "This page details/describes/covers..."
+              which is forbidden self-referential prose
+            - hallucinates numbers (table counts, route counts, column counts)
+            - cites specific line numbers that don't exist
+
+            Your task:
+            1. Read the changed files in this PR (only `.mdx` under content/docs/).
+            2. Skim each file looking for the patterns above.
+            3. Cross-check any structural numbers against `facts/odys-facts.json`
+               in this same PR (it's the authoritative source).
+            4. Post ONE pull request review comment summarizing what you found,
+               using this format:
+
+               **Verdict:** APPROVE / REQUEST CHANGES / COMMENT
+
+               **Critical issues** (factual errors, broken MDX): bullet list
+                 with file path. Empty if none.
+
+               **Stylistic issues** (banned words, self-ref prose): bullet
+                 list with file path + line. Cap at top 10. Empty if none.
+
+               **Verified correct** (numbers cross-checked against facts.json):
+                 short list of confirmed facts.
+
+            5. If there are NO critical issues, end the comment with
+               `> ready to merge — stylistic issues are non-blocking`. Otherwise
+               end with `> needs a manual fix before merge`.
+
+            Be terse. Don't restate the PR. Don't praise. Don't apologize.
