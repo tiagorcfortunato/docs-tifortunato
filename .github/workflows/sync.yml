@@ -113,17 +113,39 @@ jobs:
             echo "body=Automated docs sync for ${{ inputs.project }}." >> $GITHUB_OUTPUT
           fi
 
-      - name: Open PR if docs changed
+      - name: Detect regenerated MDX
+        id: detect
         if: always()
+        run: |
+          if git diff --quiet -- "content/docs/projects/${{ inputs.project }}/" 2>/dev/null && \
+             git ls-files --others --exclude-standard --error-unmatch \
+               "content/docs/projects/${{ inputs.project }}/" >/dev/null 2>&1; then
+            # No changes (tracked or untracked) under content/docs
+            echo "has_mdx_changes=false" >> $GITHUB_OUTPUT
+          else
+            if [ -n "$(git status --porcelain -- content/docs/projects/${{ inputs.project }}/)" ]; then
+              echo "has_mdx_changes=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_mdx_changes=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Open PR if docs changed
+        if: always() && steps.detect.outputs.has_mdx_changes == 'true'
         uses: peter-evans/create-pull-request@v7
         with:
           token: ${{ secrets.DOCS_WRITE_TOKEN || secrets.GITHUB_TOKEN }}
           commit-message: "docs(${{ inputs.project }}): auto-sync from source changes"
           branch: auto-sync/${{ inputs.project }}
-          delete-branch: true
+          delete-branch: false
           title: "docs(${{ inputs.project }}): auto-sync"
           body: ${{ steps.summary.outputs.body }}
           add-paths: |
             content/docs/projects/${{ inputs.project }}/**
             facts/${{ inputs.project }}-facts.json
             scripts/.docs-sync-state.json
+
+      - name: No-op note
+        if: always() && steps.detect.outputs.has_mdx_changes != 'true'
+        run: |
+          echo "::notice::No MDX regenerated this run — leaving any open auto-sync PR untouched."
