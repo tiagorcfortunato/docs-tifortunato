@@ -99,18 +99,23 @@ jobs:
       - name: Read sync summary
         id: summary
         if: always()
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message || inputs.project }}
+          PROJECT: ${{ inputs.project }}
         run: |
+          # First line only — multi-line commit bodies break the heredoc output.
+          FIRST_LINE=$(printf '%s' "$COMMIT_MSG" | head -n1)
           if [ -f .sync-summary.md ]; then
             {
               echo 'body<<SYNCEOF'
               cat .sync-summary.md
               echo ''
               echo '---'
-              echo 'Triggered by: ${{ github.event.head_commit.message || inputs.project }}'
+              echo "Triggered by: $FIRST_LINE"
               echo 'SYNCEOF'
-            } >> $GITHUB_OUTPUT
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "body=Automated docs sync for ${{ inputs.project }}." >> $GITHUB_OUTPUT
+            echo "body=Automated docs sync for $PROJECT." >> "$GITHUB_OUTPUT"
           fi
 
       - name: Detect regenerated MDX
