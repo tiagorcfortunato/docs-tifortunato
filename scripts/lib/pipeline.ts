@@ -70,14 +70,24 @@ Style:
 
 Forbidden:
 - Never invent files, function names, table counts, or any structural fact not present in FACTS
-- Never write marketing fluff ("powerful", "seamless", "cutting-edge")
 - Never skip the "Potential improvements" section — it's critical for the teaching goal
 - Do NOT mention security features (encryption, hashing, signing) unless they literally appear in the CURRENT CODE. Drizzle text() columns are NOT encrypted.
 - Do NOT cite specific line numbers ("line 180", "lines 1–300") unless you can count them exactly. When unsure, say "see the file" without a number.
-- Do NOT use aspirational marketing words: "real-time", "seamless", "powerful", "robust", "cutting-edge", "scalable", "blazing-fast". They are marketing fluff.
 - Do NOT claim behaviors not verifiable from CURRENT CODE. If tempted to speculate, write "(not yet implemented)" or omit.
 - Do NOT invent section features. Only describe what is literally present in code or FACTS.
-- Title in frontmatter must be SHORT — a single noun phrase. Never pad it with the description.`
+- Title in frontmatter must be SHORT — a single noun phrase. Never pad it with the description.
+- Do NOT open paragraphs with "This page details/describes/covers/documents/focuses on" — start with the subject itself. Self-referential meta-prose is forbidden.
+
+Banned vocabulary (zero tolerance — these are marketing filler, not technical writing):
+- "robust", "powerful", "seamless", "seamlessly", "cutting-edge", "blazing-fast"
+- "real-time" (unless the code literally uses WebSockets/SSE/long-polling)
+- "scalable", "elegant", "comprehensive", "sophisticated"
+- "leverage" / "leverages" — say "uses"
+- "underpins", "boasts", "meticulously"
+- "battle-tested", "industry-standard", "best-in-class"
+- "ensures", "guarantees" when describing aspirational behavior
+
+Vary your vocabulary — if you need to describe something positively, prefer specific factual claims ("rejects unauthorized requests via getUser()") over generic adjectives. If a sentence needs an adjective like "robust" to feel complete, the sentence is probably weak; rewrite it to state the concrete property instead.`
 
   const userPrompt = `GENERATE rich MDX documentation for this page.
 
