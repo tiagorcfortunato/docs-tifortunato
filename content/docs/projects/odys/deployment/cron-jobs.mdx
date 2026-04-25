@@ -16,7 +16,7 @@ Currently, the system defines two distinct cron schedules:
 1.  **`/api/cron/reminders`**: Configured to run daily at `0 8 * * *` (8:00 AM UTC). This route is responsible for sending out various types of reminders.
 2.  **`/api/cron/whatsapp-watchdog`**: Scheduled to execute daily at `0 9 * * *` (9:00 AM UTC). While the specific implementation details for this route are not available, its name suggests a role in monitoring or managing WhatsApp message delivery or status.
 
-These cron jobs are implemented as standard Next.js API routes, just like the other 21 API routes present in the application, bringing the total to 23 API routes. This allows them to seamlessly integrate with the existing application logic, database access, and utility functions.
+These cron jobs are implemented as standard Next.js API routes — they are two of the 21 API routes in the application (the count already includes the two cron handlers). This lets them share the existing application logic, database access, and utility functions.
 
 ### The `/api/cron/reminders` Route
 
