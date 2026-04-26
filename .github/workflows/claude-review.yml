@@ -18,6 +18,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      id-token: write   # required by claude-code-action for OIDC auth
     steps:
       - name: Checkout PR
         uses: actions/checkout@v4
