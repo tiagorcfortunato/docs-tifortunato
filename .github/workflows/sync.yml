@@ -69,7 +69,9 @@ jobs:
           repository: ${{ steps.src.outputs.repo }}
           path: .source/${{ inputs.project }}
           ref: ${{ inputs.source_ref }}
-          fetch-depth: 30
+          # Full history — the state file may point at an old SHA if the user
+          # pushed many commits. Shallow clones break git log <oldSha>..HEAD.
+          fetch-depth: 0
 
       - name: Point config at checked-out source
         env:

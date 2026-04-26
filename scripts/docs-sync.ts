@@ -84,9 +84,21 @@ async function main() {
       const output = execSync(gitLogCmd, { cwd: project.repo_path, encoding: "utf-8" })
       changedFiles = [...new Set(output.split("\n").map(s => s.trim()).filter(Boolean))]
     } catch (err) {
-      console.error(`[sync] git log failed in ${project.repo_path}: ${(err as Error).message}`)
-      console.error(`[sync] Reset state: delete ${projectKey} entry from ${STATE_FILE}`)
-      process.exit(1)
+      // Most common cause: state SHA is no longer reachable (force-push, history
+      // rewrite, or fetch-depth too shallow). Don't abort the whole pipeline —
+      // fall back to processing the most recent 50 commits as if no state existed.
+      console.warn(`[sync] git log with state SHA failed (${(err as Error).message?.slice(0, 100)})`)
+      console.warn(`[sync] Falling back to last 50 commits.`)
+      try {
+        const output = execSync(`git log -n 50 --name-only --pretty=format:`, {
+          cwd: project.repo_path,
+          encoding: "utf-8",
+        })
+        changedFiles = [...new Set(output.split("\n").map(s => s.trim()).filter(Boolean))]
+      } catch (err2) {
+        console.error(`[sync] Fallback git log also failed: ${(err2 as Error).message}`)
+        process.exit(1)
+      }
     }
 
     console.log(`[sync] Project:      ${projectKey}`)
