@@ -2,7 +2,7 @@ import { loadMapping, getProject, getPage, resolveDocPath } from "./lib/mapping"
 import { writeFile } from "./lib/mdx"
 import { generatePage, auditPage, refinePage, Finding } from "./lib/pipeline"
 
-const MAX_REFINE_ITERATIONS = 3
+const MAX_REFINE_ITERATIONS = 1
 
 async function main() {
   const [, , projectKey, pagePath, ...flags] = process.argv

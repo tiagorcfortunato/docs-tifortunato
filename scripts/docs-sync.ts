@@ -5,7 +5,10 @@ import { writeFile } from "./lib/mdx"
 import { generatePage, auditPage, refinePage, Finding } from "./lib/pipeline"
 
 const STATE_FILE = "scripts/.docs-sync-state.json"
-const MAX_REFINE_ITERATIONS = 3
+// Lower budget mode: 1 audit pass per page, no refine loop. Cuts LLM calls per
+// page from ~5 (audit + refine + audit + refine + audit) down to ~1 (audit).
+// Pages still get labeled CLEAN/DRIFT in the summary; manual fixes happen in PR.
+const MAX_REFINE_ITERATIONS = 1
 
 type SyncState = Record<string, string>
 
