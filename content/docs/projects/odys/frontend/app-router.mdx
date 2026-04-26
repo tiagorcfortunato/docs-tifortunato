@@ -1,56 +1,66 @@
 ---
 title: App Router
-description: How Odys uses the Next.js App Router, including server components, route groups, and the absence of middleware.
+description: How Odys uses the Next.js App Router, including server components, dynamic routes, route groups, and the absence of middleware.
 ---
 
 # App Router
 
-Odys leverages the Next.js App Router to structure its frontend, embracing modern React features like Server Components and a file-system-based routing paradigm. This architecture allows for efficient data fetching, improved performance, and a clear separation of concerns between server-rendered and client-interactive parts of the application.
+The Odys frontend is built with Next.js, leveraging its App Router to structure the application and manage data fetching. This architecture allows for a highly performant and maintainable codebase by embracing server-first rendering and co-locating data logic with UI components.
 
 ## Overview
 
-The App Router organizes the application into a hierarchical structure where folders define routes and special files (`page.tsx`, `layout.tsx`, `loading.tsx`, etc.) define UI for those routes. Odys primarily uses `page.tsx` for route-specific content and `layout.tsx` for shared UI across segments. A key characteristic of Odys's App Router implementation is its heavy reliance on Server Components for initial data fetching and rendering, minimizing client-side JavaScript where possible. The application also employs route groups, such as `(auth)`, to logically organize routes without affecting the URL path. Notably, Odys does not currently use Next.js middleware, opting instead to handle authentication and authorization checks directly within Server Components or API routes.
+The App Router organizes the application around the `src/app` directory, where each folder typically represents a route segment. This structure enables features like server components, dynamic routes, and route groups, which are central to how Odys delivers its user experience.
 
-## Server Components
+The global layout and essential services are defined in `src/app/layout.tsx`. This root layout wraps the entire application, providing a consistent shell for all pages. It also defines static global metadata for the application, including title, description, Open Graph, and Twitter card. It's responsible for importing global CSS, setting up fonts like `Plus_Jakarta_Sans` and `Montserrat`, and integrating third-party analytics and monitoring tools such as `PostHogProvider`, `Analytics` from Vercel, and `SpeedInsights`. Additionally, it includes an inline script in the `<head>` to prevent a flash of unstyled content (FOUC) by applying the saved theme before the page renders. The `Toaster` component for notifications and a `CookieBanner` are also rendered here, ensuring they are available across the application.
 
-Server Components are fundamental to how Odys fetches and renders data. These components execute exclusively on the server, allowing direct database access and secure handling of sensitive logic without exposing it to the client.
+Dynamic content, such as individual professional profiles, is handled through dynamic routes. A prime example is `src/app/p/[slug]/page.tsx`, which serves as the public booking page for professionals. The `[slug]` segment indicates that this part of the URL is a dynamic parameter, allowing each professional to have a unique, SEO-friendly URL like `/p/john-doe`.
 
-Consider the `src/app/p/[slug]/page.tsx` file, which renders a professional's public booking page. This entire page is a Server Component. It performs several data fetching operations directly:
+While the project structure includes a route group `(auth)`, the corresponding `src/app/(auth)/layout.tsx` file is not currently present. This route group would typically encapsulate authentication-related pages, allowing them to share a specific layout or set of functionalities distinct from the main application.
 
-*   It queries the `professionals` table using Drizzle ORM (`db.select().from(professionals).where(eq(professionals.slug, slug)).limit(1)`) to retrieve the professional's details based on the `slug` parameter. This data is then used to populate the page's content, including the professional's name, profession, session details, and bio.
-*   The `generateMetadata` function, also a Server Component feature, fetches professional data to dynamically set the page's title, description, and Open Graph images, optimizing for SEO and social sharing.
-*   It interacts with Supabase (`createClient()`, `supabase.auth.getUser()`) to determine if the current visitor is logged in and, if so, whether they are the owner of the professional page (`user?.id === prof.userId`). This check influences the navigation links and the display of the `FollowButton`.
-*   If a logged-in user is not the owner, the page fetches their client data from the `clients` table (`db.select().from(clients).where(eq(clients.userId, user.id)).limit(1)`) to pre-fill the booking form, enhancing user experience.
-*   Related professionals are fetched from the `professionals` table based on the current professional's `profession`.
-*   Reviews for the professional are fetched by joining the `reviews` and `clients` tables (`db.select().from(reviews).innerJoin(clients, eq(reviews.clientId, clients.id)).where(eq(reviews.professionalId, prof.id))`) to display client names alongside their ratings and comments.
+Notably, the Odys application does not utilize Next.js middleware. Instead, authentication and authorization checks are integrated directly into server components or API routes, providing fine-grained control over data access at the point of consumption.
 
-This approach centralizes data fetching and rendering on the server, reducing the amount of client-side JavaScript and improving initial page load performance. Client-side interactivity, such as the `BookingWidget` and `FollowButton`, is then added using Client Components, which are explicitly marked with the `"use client"` directive (though not shown in the provided `page.tsx` code, these are typically imported from separate files).
+## Server Components and Data Fetching
 
-The root `src/app/layout.tsx` also functions as a Server Component, defining the global HTML structure, applying global CSS (`globals.css`), and integrating fonts (`Plus_Jakarta_Sans`, `Montserrat`). It also defines global `metadata` for the application, including default `title`, `description`, and Open Graph/Twitter card details. Additionally, it integrates global UI components such as `Toaster` for notifications and `CookieBanner` for consent management. For accessibility, a 'Skip to main content' link is included to assist keyboard and screen-reader users. It also includes third-party analytics and performance monitoring tools like Vercel Analytics and Speed Insights, and PostHog for product analytics, all rendered on the server. A small inline script is used with `dangerouslySetInnerHTML` to prevent a flash of unstyled content by applying the saved theme before the page renders.
+The App Router's server components are a cornerstone of Odys's frontend architecture. Pages like `src/app/p/[slug]/page.tsx` are server components by default, meaning they execute on the server before being sent to the client. This design choice offers significant advantages, particularly for data-intensive pages.
 
-## Route Groups
+In `src/app/p/[slug]/page.tsx`, the `BookingPage` component directly interacts with the database to fetch all necessary information for a professional's public profile. It uses Drizzle ORM to query the `professionals`, `clients`, and `reviews` tables. For instance, it retrieves the professional's details using `db.select().from(professionals).where(eq(professionals.slug, slug)).limit(1)`. This direct database access from the server component eliminates the need for client-side API calls for initial page loads, reducing latency and simplifying data flow.
 
-Odys uses route groups to organize parts of the application without affecting the URL structure. The primary example is the `(auth)` route group, which would typically contain routes related to user authentication, such as login, registration, and password recovery. The specific layout file `src/app/(auth)/layout.tsx` is currently missing from the codebase. The existence of the `(auth)` folder indicates an intention to group these routes logically, allowing for a dedicated layout or specific server-side logic to be applied to all routes within this group, such as redirecting unauthenticated users or providing a consistent authentication UI.
+The page also fetches related professionals based on the current professional's `profession`, and then calculates their average ratings and review counts using `getProStats`. This data is then passed down to client components like `ProfessionalCard` for rendering.
+
+Authentication status is also determined server-side using `createClient()` and `supabase.auth.getUser()`. This allows the page to detect if the visitor is the professional themselves (`isOwner`) or a logged-in client, enabling conditional rendering of UI elements like the "My dashboard" link or the `FollowButton`. If a client is logged in, their data is fetched from the `clients` table to pre-fill the `BookingWidget` form, enhancing user experience.
+
+## Dynamic Metadata
+
+The App Router's `generateMetadata` function is used in `src/app/p/[slug]/page.tsx` to create dynamic SEO metadata for each professional's page. This function runs on the server and allows the page's title, description, and Open Graph images to be tailored based on the specific professional's data fetched from the database.
+
+For example, the `title` is constructed using the professional's `name` and `profession` (e.g., "John Doe — Therapist | Odys"), and the `description` uses the professional's `bio` or a default message. If an `avatarUrl` is available, it's included in the Open Graph images, ensuring rich previews when shared on social media. This dynamic approach is crucial for discoverability and provides a more engaging experience for users encountering Odys links.
 
 ## Absence of Middleware
 
-Odys does not implement Next.js middleware. Instead, authentication and authorization checks are handled directly within the Server Components themselves or within API routes. For instance, in `src/app/p/[slug]/page.tsx`, the `supabase.auth.getUser()` call directly checks the user's session to determine `isOwner` status. This design choice simplifies the request lifecycle by avoiding an additional layer of processing that middleware would introduce. It means that each Server Component or API route is responsible for its own access control, fetching user data as needed.
+Odys does not implement Next.js middleware. Instead, authentication and authorization logic are handled directly within the server components and API routes. For instance, in `src/app/p/[slug]/page.tsx`, the `supabase.auth.getUser()` call is made within the `BookingPage` component itself to determine the user's session. Similarly, API routes like `/api/booking` or `/api/follows` would contain their own checks to ensure requests are authorized.
+
+This approach provides granular control over access at the component or route level. While middleware can offer a centralized point for global checks, the current strategy allows for specific authorization logic to be co-located with the data fetching and mutation operations it protects.
 
 ## Design Decisions
 
-The decision to heavily rely on Server Components for data fetching and rendering stems from a desire to maximize performance and simplify the data access layer. By fetching data directly from the database within `page.tsx` files, Odys avoids the need for a separate API layer for initial page loads, reducing network roundtrips and complexity. This also allows for direct, secure access to the Drizzle ORM and Supabase authentication utilities without exposing database credentials or sensitive logic to the client.
+The architectural choices in Odys reflect a strong preference for server-side rendering and data fetching, primarily driven by performance and developer experience.
 
-The use of route groups like `(auth)` is a structural choice aimed at improving code organization. It allows developers to group related routes and apply shared layouts or logic to them, even if a specific layout file for `(auth)` is not yet implemented. This promotes modularity and makes the project structure easier to navigate.
+The decision to use **server components** for pages like `src/app/p/[slug]/page.tsx` is rooted in the desire to minimize client-side JavaScript and improve initial page load times. By fetching data directly from the database using Drizzle ORM on the server, the application avoids the "waterfall" effect of client-side data fetching, where the client first downloads the page, then makes an API call, and then renders the data. This also simplifies the data flow, as server components can directly access backend resources without exposing database credentials to the client.
 
-The absence of Next.js middleware reflects a preference for a more direct approach to authentication and authorization. Rather than intercepting all requests at the edge, Odys performs these checks contextually within the Server Components or API routes that require them. This can simplify debugging and ensure that security logic is tightly coupled with the resources it protects, though it requires careful implementation in each relevant component.
+**Dynamic metadata generation** via `generateMetadata` is a deliberate choice to optimize for search engine visibility and social media sharing. For a platform like Odys, where individual professional profiles are key landing pages, having unique and descriptive metadata for each profile is paramount for organic discovery.
+
+The current approach of **not using Next.js middleware** suggests a preference for handling authentication and authorization closer to the data access layer. By performing `supabase.auth.getUser()` checks directly within server components or API routes, developers can ensure that data is only fetched or modified if the user is authorized for that specific operation, without the overhead of a global middleware layer that might not be necessary for every route. This can lead to simpler debugging and more explicit authorization logic for each endpoint.
 
 ## Potential Improvements
 
-1.  **Optimize Database Queries for Related Professionals**: In `src/app/p/[slug]/page.tsx`, the `allRelated` query fetches all professionals of a given `profession` from the `professionals` table. The filtering (`filter(p => p.slug !== slug && p.id !== prof.id)`) and slicing (`slice(0, 4)`) to get related professionals are performed in memory after fetching all results. This could be optimized by incorporating the filtering and limiting directly into the Drizzle ORM query, reducing the amount of data transferred from the database and processed on the server.
-2.  **Implement `(auth)` Route Group Layout**: The `(auth)` route group exists in the file structure, indicating an intention to group authentication-related routes. However, the `src/app/(auth)/layout.tsx` file is not found. Implementing this layout would provide a dedicated and consistent UI wrapper for all authentication pages (e.g., login, register), allowing for shared components, styling, or even pre-authentication checks specific to these routes, improving maintainability and user experience.
-3.  **Centralize User Role/Ownership Logic**: The `isOwner` check in `src/app/p/[slug]/page.tsx` is performed directly within the `BookingPage` component and then used for conditional rendering in multiple places. As the application grows, centralizing this logic into a reusable hook or a dedicated context provider could improve code readability, reduce duplication, and make it easier to manage user roles and permissions across different parts of the application.
+1.  **Implement `(auth)/layout.tsx` for Authentication Flow**: The `(auth)` route group is present in the file structure, but `src/app/(auth)/layout.tsx` is missing. Implementing this layout would allow for a consistent UI and shared logic (e.g., authentication checks, form wrappers) across all authentication-related pages (like login, register, password reset). This would centralize common elements and reduce duplication across individual auth pages.
+2.  **Centralize User Authentication Logic**: The `supabase.auth.getUser()` call is made directly within `src/app/p/[slug]/page.tsx`. While effective, if similar user checks are needed across many server components, this logic could be abstracted into a reusable server utility function or a custom hook. This would promote DRY principles and make it easier to update authentication logic consistently across the application.
+3.  **Optimize Related Professionals Query**: In `src/app/p/[slug]/page.tsx`, the `allRelated` query fetches all professionals with the same `profession` and then filters them in memory (`allRelated.filter(p => p.slug !== slug && p.id !== prof.id).slice(0, 4)`). While `slice(0, 4)` limits the final output, the initial query might fetch more data than strictly necessary if there are many professionals in the same category. Consider adding `limit` and `offset` to the Drizzle query itself, potentially combined with `not(eq(professionals.slug, slug))` to perform filtering at the database level, which could be more efficient for very large datasets.
 
 ## References
 
 *   `src/app/layout.tsx`
 *   `src/app/p/[slug]/page.tsx`
+*   `src/lib/db/schema.ts` (for Drizzle schema definitions)
+*   `src/lib/supabase/server.ts` (for `createClient` utility)
+---

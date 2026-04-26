@@ -1,5 +1,5 @@
 {
-  "extracted_at": "2026-04-25T08:56:22.808Z",
+  "extracted_at": "2026-04-26T06:13:32.142Z",
   "source_repo": "/home/runner/work/Odys/Odys/.source/odys",
   "schema": {
     "tableCount": 10,
@@ -7,7 +7,7 @@
       {
         "varName": "professionals",
         "sqlName": "professionals",
-        "columnCount": 24,
+        "columnCount": 32,
         "columns": [
           {
             "name": "id",
@@ -216,6 +216,86 @@
             "unique": false,
             "primaryKey": false,
             "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "serviceType",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "addressLine",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "neighborhood",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "city",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "state",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "postalCode",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "latitude",
+            "type": "doublePrecision",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "longitude",
+            "type": "doublePrecision",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
             "hasReference": false,
             "hasOnDeleteCascade": false
           },
@@ -1241,7 +1321,6 @@
     "drizzle": "^0.45.2",
     "supabase": "^2.100.1",
     "stripe": "^22.1.0",
-    "groqSdk": "^1.1.2",
     "depCount": 35,
     "devDepCount": 11
   },

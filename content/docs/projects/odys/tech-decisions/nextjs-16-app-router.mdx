@@ -5,62 +5,75 @@ description: Why Next.js 16 App Router over alternatives
 
 # Next.js 16 App Router
 
-Odys relies on Next.js `16.2.4` as its foundational web framework, specifically embracing the App Router paradigm. This architectural choice significantly shapes how data is fetched, rendered, and mutated across the application, influencing both developer experience and end-user performance. This document explores the rationale behind adopting the App Router, its implications for the Odys codebase, and areas for future refinement.
+Odys is built upon Next.js `16.2.4` and React `19.2.5`, embracing the App Router paradigm as its foundational framework. This architectural choice shapes how the application's user interface, data fetching, and API interactions are structured, aiming for a modern, performant, and maintainable web experience. This document explores the rationale behind this decision, its implications for the codebase, and areas for future refinement.
 
 ## Overview
 
-The Next.js App Router represents a fundamental shift in how web applications are built, moving towards a more integrated server-client model. Instead of strictly separating client-side React components from server-side API endpoints, the App Router allows for the co-location of server logic directly within React components. This enables developers to define server components that render on the server and server actions that execute server-side code directly from client components, blurring the traditional lines between frontend and backend.
+The App Router in Next.js provides a file-system based routing mechanism that supports both React Server Components and client components, allowing developers to choose the appropriate rendering environment for each part of the application. This hybrid approach is central to Odys, where server components handle data fetching and initial rendering, while client components manage interactive UI elements.
 
-For Odys, this means that interactions with its `10` Drizzle ORM-managed database tables—such as `professionals`, `appointments`, `clients`, and `messages`—can often occur directly within server components or via server actions, reducing the need for explicit API routes for every data operation. While Odys still maintains `23` distinct API routes for specific functionalities like `/api/booking`, `/api/follows`, and `/api/stripe/webhook`, the App Router provides an alternative, often simpler, path for data handling. Odys also utilizes `resend` for reliable email delivery, handling transactional emails and notifications. The framework also integrates seamlessly with security configurations, as seen in `next.config.ts`, where global `securityHeaders` are applied, including a Content Security Policy (CSP) designed to mitigate various web vulnerabilities.
+The application defines `23` distinct API routes, serving various functionalities from user account management (`/api/account`) and booking (`/api/booking`) to integrations with external services like Stripe (`/api/stripe/webhook`) and WhatsApp (`/api/whatsapp/webhook`). These routes are critical for handling client-side requests and server-to-server communications.
 
-## Server Components and Data Fetching
+Beyond standard API endpoints, Odys also incorporates `2` dedicated cron jobs, `/api/cron/reminders` and `/api/cron/whatsapp-watchdog`, scheduled to run daily at `0 8 * * *` and `0 9 * * *` respectively. These background tasks are essential for automating time-sensitive operations, such as sending appointment reminders or monitoring WhatsApp message delivery.
 
-A core tenet of the App Router is the introduction of Server Components. These components render exclusively on the server, allowing direct access to backend resources like databases or file systems without exposing sensitive credentials to the client. For Odys, this translates into a streamlined data fetching strategy. Instead of writing a separate API route to fetch a professional's details from the `professionals` table, a server component can directly query the database using Drizzle ORM. This approach reduces client-side JavaScript bundles, as the data fetching logic and initial rendering happen entirely on the server, sending only the resulting HTML to the browser. This improves initial page load times and perceived performance for users.
+The application's data layer interacts with a PostgreSQL database, managed through Drizzle ORM, which defines `10` tables including `professionals`, `clients`, `appointments`, and `messages`. This schema underpins all core functionalities, from scheduling to client communication.
 
-## Server Actions and Mutations
+## App Router Architecture
 
-Complementing Server Components are Server Actions, which provide a mechanism to execute server-side code directly from client components. This is particularly useful for handling form submissions and data mutations. For instance, when a user updates their profile or creates a new `clientNote`, a Server Action can directly interact with the `professionals` or `clientNotes` tables. This eliminates the need to define a separate API route and write client-side fetching logic (e.g., using `fetch` or `axios`) for every mutation. The App Router handles the network request and revalidation automatically, simplifying the development workflow and reducing boilerplate. While Odys has `23` API routes, many of which handle mutations (e.g., `POST /api/booking`, `PATCH /api/appointments/[id]`), Server Actions offer a more integrated alternative for new features or refactoring existing ones.
+The App Router's directory-based structure, where folders define routes and special files like `page.tsx` and `route.ts` define UI and API endpoints, offers a clear and intuitive organization. This contrasts with the older Pages Router, which primarily focused on client-side rendering with API routes in a separate `pages/api` directory.
 
-## Routing and Layouts
+A key advantage of the App Router is its deep integration with React Server Components. This allows Odys to fetch data directly within components on the server, reducing the amount of JavaScript sent to the client and improving initial page load performance. For instance, a page displaying a professional's profile can fetch all necessary data from the `professionals` table directly in a server component, rendering the complete HTML before it reaches the browser. This approach minimizes client-side hydration and the associated performance overhead.
 
-The App Router's file-system-based routing, where folders define routes and special files like `page.tsx` and `layout.tsx` define UI, provides a clear and intuitive structure. This colocation of routing, UI, and data logic within the same directory makes it easier to understand the application's structure and manage related files. Layouts allow for shared UI across multiple routes, ensuring consistency and reducing duplication.
+For interactive elements, client components are used. The framework automatically handles the boundary between server and client components, ensuring that only the necessary JavaScript is bundled and shipped to the browser. This separation of concerns helps in building a more efficient and responsive user interface.
 
-## Performance and Caching
+## API Routes and Rate Limiting
 
-Next.js, with the App Router, offers sophisticated caching mechanisms. This includes request memoization, which prevents duplicate data fetches within a single render pass, and a data cache that can store the results of `fetch` requests or database queries. These features are crucial for optimizing the performance of data-intensive applications like Odys, where information from tables like `appointments` or `messages` might be displayed across various parts of the application.
+Odys defines a comprehensive set of `23` API routes to manage its various operations. These routes are implemented as Next.js Route Handlers, residing within the `app/api` directory. Examples include `/api/booking` for managing appointments, `/api/messages` for handling client-professional communications, and `/api/stripe/checkout` for payment processing.
 
-## Security Headers
+To safeguard against abuse and ensure service stability, Odys implements rate limiting using `@upstash/ratelimit` and `@upstash/redis`. Six distinct rate limiters are configured:
+- `booking`: `5` requests per `10 m`
+- `api`: `60` requests per `1 m`
+- `onboarding`: `3` requests per `1 h`
+- `register`: `5` requests per `1 h`
+- `whatsapp`: `10` requests per `1 m`
+- `aichat`: `20` requests per `1 h`
 
-The `next.config.ts` file demonstrates a commitment to application security by defining a comprehensive set of `securityHeaders`. These headers, including `X-Frame-Options: DENY` to prevent clickjacking and `X-Content-Type-Options: nosniff` to mitigate MIME type sniffing attacks, are applied globally to all responses. The Content Security Policy (CSP), initially in `Content-Security-Policy-Report-Only` mode, is meticulously crafted to allow only trusted sources for scripts, styles, images, and other resources, covering services like Stripe, Supabase, Sentry, PostHog, and Vercel Analytics. This proactive approach helps protect users from various client-side attacks.
+These limits are applied to specific API endpoints, such as `/api/booking` and `/api/auth/register`, to prevent excessive requests from individual users or malicious actors. The `next.config.ts` also defines `images.remotePatterns` to allow image loading from `*.supabase.co` and `lh3.googleusercontent.com`, which are used for user avatars and other media.
 
-## Monitoring and Observability
-Odys integrates Sentry for robust error monitoring and performance insights, configured via `withSentryConfig` in `next.config.ts`. This setup includes `widenClientFileUpload` to upload a larger set of source maps for prettier stack traces, a `tunnelRoute` at `/monitoring` to route browser requests through a Next.js rewrite (circumventing ad-blockers), `automaticVercelMonitors` for automatic instrumentation of Vercel Cron Monitors, and `treeshake` options to reduce bundle size by removing Sentry debug logging.
+## Security Headers and Content Security Policy
 
-## Rate Limiting
-Odys implements rate limiting using `@upstash/ratelimit` backed by `@upstash/redis`. This helps protect backend resources from abuse and ensures fair usage across the application.
+The `next.config.ts` file plays a crucial role in defining application-wide security policies. A set of `securityHeaders` is applied to every response, including:
+- `X-Frame-Options: DENY`: Prevents clickjacking by disallowing the application from being embedded in iframes.
+- `X-Content-Type-Options: nosniff`: Mitigates MIME type sniffing vulnerabilities.
+- `Referrer-Policy: strict-origin-when-cross-origin`: Controls how much referrer information is sent with requests.
+- `Permissions-Policy`: Denies access to powerful browser APIs like `camera`, `microphone`, and `geolocation`, while explicitly allowing `payment` for Stripe.
+- `Strict-Transport-Security`: Enforces HTTPS for a long duration (`max-age=63072000`) to prevent man-in-the-middle attacks.
+- `X-DNS-Prefetch-Control: on`: Opts out of FLoC / Topics and interest-based tracking cohorts.
+
+A `Content-Security-Policy-Report-Only` header is also configured. This policy is initially set to report-only mode, meaning violations are logged without blocking content, allowing for safe testing and monitoring. The `csp` string defines a detailed allowlist for various resource types, including `default-src`, `script-src`, `style-src`, `img-src`, `font-src`, `connect-src`, `frame-src`, `object-src`, `base-uri`, `form-action`, and `frame-ancestors`. This policy explicitly permits necessary third-party domains such as `js.stripe.com`, `*.supabase.co`, `us.i.posthog.com`, `fonts.googleapis.com`, and `accounts.google.com`. The `script-src` currently includes `'unsafe-inline'` and `'unsafe-eval'` due to Next.js's internal requirements, a known trade-off.
 
 ## Design decisions
 
-The decision to adopt Next.js `16.2.4` with the App Router was driven by several key factors:
+The decision to adopt Next.js 16 with the App Router was driven by several key considerations:
 
-1.  **Performance Optimization**: The ability to render components entirely on the server and stream HTML to the client significantly improves initial page load performance and reduces the amount of JavaScript shipped to the browser. This is critical for a user-facing application like Odys, where a fast initial experience is paramount.
-2.  **Simplified Data Flow**: Server Components and Server Actions offer a more direct and unified way to interact with backend data. This reduces the mental overhead of managing separate API layers for every data operation, allowing developers to think more holistically about data fetching and mutations.
-3.  **Developer Experience**: The file-system-based routing and colocation of logic enhance the developer experience by making the codebase more organized and easier to navigate. The framework's conventions guide developers towards a consistent structure.
-4.  **Integrated Security**: Next.js provides a clear mechanism in `next.config.ts` to define and apply `securityHeaders` globally, centralizing security configurations and ensuring they are consistently enforced across the application.
+1.  **Performance and User Experience:** The App Router's emphasis on React Server Components allows for significant performance gains by rendering pages on the server and sending minimal JavaScript to the client. This reduces initial load times and improves the perceived responsiveness of the application, which is critical for a service like Odys that handles professional-client interactions. The ability to fetch data directly in server components simplifies the data flow and reduces the need for complex client-side data fetching libraries.
 
-However, this choice also comes with trade-offs:
+2.  **Developer Experience and Maintainability:** The file-system based routing and co-location of components, styles, and tests within the same directory structure (`app/`) promotes a clear and organized codebase. This structure makes it easier for developers to understand the application's layout and locate relevant files, contributing to long-term maintainability.
 
-*   **Learning Curve**: The App Router introduces a new mental model for distinguishing between Server and Client Components, which can require an adjustment period for developers accustomed to traditional React applications.
-*   **CSP Limitations**: As noted in `next.config.ts`, the current Next.js architecture unfortunately necessitates `'unsafe-inline'` and `'unsafe-eval'` in the `script-src` directive of the CSP. While the policy is in report-only mode, this is a known compromise that prevents a truly strict CSP posture for scripts.
-*   **Debugging Complexity**: Debugging server-side code within components can sometimes be more challenging than debugging traditional client-side code or dedicated API routes, requiring different tools and approaches.
+3.  **Unified Backend and Frontend:** Next.js's ability to host both the frontend and API routes within a single project streamlines development and deployment. This unified approach simplifies dependency management and allows for direct, type-safe data access between server components and the Drizzle ORM, reducing context switching.
+
+4.  **Security Posture:** The framework's support for custom `next.config.ts` headers was a significant factor in implementing a comprehensive set of security measures, including `X-Frame-Options` and `Content-Security-Policy-Report-Only`. Starting with a report-only CSP allows for careful monitoring of potential violations in a production environment without immediately breaking functionality, providing a controlled path to full enforcement. The trade-off here is the temporary use of `'unsafe-inline'` for `script-src` in the CSP, which is a known limitation with Next.js's current architecture.
 
 ## Potential improvements
 
-1.  **Strengthen Content Security Policy**: The `next.config.ts` explicitly mentions the need for `'unsafe-inline'` and `'unsafe-eval'` in the `script-src` due to Next.js's current architecture. As Next.js evolves, it would be beneficial to investigate if newer versions or alternative configurations allow for a nonce-based CSP or other mechanisms to remove these directives, thereby achieving a stricter and more secure `script-src` policy.
-2.  **Refactor API Routes to Server Actions**: With `23` existing API routes, there's an opportunity to evaluate if some of the mutation-focused routes, such as `/api/booking` (POST) or `/api/clients/notes` (POST), could be refactored into Server Actions. This would simplify the client-side interaction, reduce boilerplate, and potentially consolidate related logic directly within the components that trigger these actions.
-3.  **Implement Granular Caching and Revalidation**: The App Router offers powerful caching capabilities. For data that changes frequently, such as `appointments` or `messages`, exploring `revalidatePath` or `revalidateTag` could provide more granular control over data freshness. This would allow specific data segments to be revalidated only when necessary, optimizing performance without sacrificing data accuracy.
+While the current implementation provides a solid foundation, several areas offer opportunities for enhancement:
+
+1.  **Stricter Content Security Policy:** The `next.config.ts` file explicitly notes that `'unsafe-inline'` for `script-src` is "unfortunately required by Next.js today for inline bootstrap chunks." A concrete improvement would be to transition to a nonce-based CSP for `script-src` if Next.js or the application's build process evolves to support it, eliminating the need for `unsafe-inline` and further hardening the application against XSS attacks.
+
+2.  **Sentry Cron Monitor Integration for App Router:** The `next.config.ts` includes a `webpack.automaticVercelMonitors` option within the Sentry configuration, with a comment stating, "(Does not yet work with App Router route handlers.)". As the App Router matures, enabling automatic Sentry Cron Monitors for the `/api/cron/reminders` and `/api/cron/whatsapp-watchdog` route handlers would provide more comprehensive monitoring and alerting for these critical background tasks.
+
+3.  **Granular Rate Limiting for Professional Actions:** The existing `rateLimits` provide general protection for `api` and `booking` endpoints. However, the `professionals` table has `32` columns, indicating a rich set of configurable options. Implementing more granular rate limits for specific professional-facing actions, such as updating `sessionPrice` or `availability` settings, could prevent rapid, unintended changes or abuse, enhancing the stability and integrity of professional profiles.
 
 ## References
 
-*   `package.json`
-*   `next.config.ts`
+- `package.json`
+- `next.config.ts`
