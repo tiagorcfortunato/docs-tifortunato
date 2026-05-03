@@ -1,67 +1,43 @@
 ---
-title: Security Fixes
-description: "Addressing critical vulnerabilities and improving data integrity across key API routes."
+title: "Security Fixes"
+description: "C1, M4, plus new fixes (Zod onboarding, reserved-slug, unknown-action 400, landing fake social proof)"
 ---
 
-Security is a continuous journey, and the Odys platform is committed to refining its defenses against evolving threats. This document details recent enhancements to the application's security posture, focusing on critical fixes and improvements implemented across several core API routes. These changes bolster input validation, refine access control, prevent information disclosure, and safeguard against resource conflicts, contributing to a more resilient and trustworthy system.
+# Security Fixes
+
+This page details critical security and validation improvements across the Odys platform, addressing vulnerabilities identified in recent audits and hardening key user flows. These changes strengthen data integrity, prevent abuse, and ensure robust handling of user input across registration, onboarding, and appointment management.
 
 ## Overview
 
-The Odys application relies on a robust backend architecture, leveraging Next.js for API routes, Supabase for authentication and database services, and Drizzle ORM for type-safe database interactions. The system manages a total of 10 distinct database tables, including `professionals`, `clients`, `appointments`, and `notifications`, and exposes 23 API routes to handle various application functionalities. To maintain stability and prevent abuse, several endpoints are protected by rate limits, such as `booking`, `api`, `onboarding`, `register`, `whatsapp`, and `aichat`. The recent security updates focus on hardening these critical interaction points, ensuring that data flowing into and through the system is handled with greater scrutiny and that user actions are properly authorized.
+The platform consists of 11 core database tables, including `professionals`, `clients`, and `appointments`, backed by 23 API routes and governed by rate limits and Stripe webhooks. Recent fixes focus on securing high-risk endpoints—particularly `/api/auth/register`, `/api/onboarding`, and `/api/appointments/[id]`—by introducing strict Zod validation, slug reservation, and action whitelisting. These changes respond to findings like unvalidated OAuth `type` parameters and silent failure on unknown actions, ensuring the system fails securely and predictably.
 
-## Enhanced Input Validation with Zod
+## Input Validation with Zod
 
-A cornerstone of application security is rigorous input validation. The system now employs Zod, a TypeScript-first schema declaration and validation library, to ensure that incoming data conforms to expected structures and types. This prevents a wide array of vulnerabilities stemming from malformed or malicious input.
+All major user-facing endpoints now use Zod for schema validation, replacing ad-hoc checks. In `/api/auth/register/route.ts`, the `registerSchema` enforces email format and 8-character passwords, aligning with Supabase’s server-side rules. Invalid payloads return 400 with structured error details via `parsed.error.flatten().fieldErrors`. Similarly, `/api/onboarding/route.ts` uses `onboardingSchema` to validate professional details, including time format (`^\d{2}:\d{2}$`) for availability. This shift prevents malformed data from entering the system and gives users clear feedback.
 
-In `src/app/api/auth/register/route.ts`, the `registerSchema` object meticulously defines the requirements for new user registrations. It mandates a valid `email` format, a `password` with a minimum length of 8 characters (aligning with Supabase's default authentication requirements), and an optional `name` of at least 2 characters. Crucially, the `type` field is constrained to an enum of `["client", "professional"]`, preventing arbitrary values from being submitted. This explicit validation ensures that only well-formed registration requests proceed, significantly reducing the attack surface.
+## Reserved Slug Protection
 
-Similarly, the `src/app/api/onboarding/route.ts` endpoint, responsible for a professional's initial setup, now utilizes `onboardingSchema`. This schema validates essential professional details such as `name`, `profession`, `phone`, `bio`, `sessionDuration`, and `sessionPrice`. For instance, `sessionDuration` is checked to be a positive integer not exceeding 480 minutes, and `sessionPrice` must be a non-negative integer. Furthermore, the `availability` array, which defines a professional's working hours, is validated to contain at least one entry, with each entry's `dayOfWeek` constrained to 0-6 and `startTime`/`endTime` adhering to a `HH:MM` regex pattern. This comprehensive validation prevents the creation of invalid professional profiles and ensures data integrity from the outset.
+During onboarding, the `generateUniqueSlug` function in `/api/onboarding/route.ts` prevents URL collisions by checking against a `RESERVED_SLUGS` set containing 16 critical paths like `api`, `auth`, and `p`. If a professional’s name (e.g., "Admin") would produce a conflicting slug, the system appends a numeric suffix (e.g., "admin-2"). This ensures user profiles cannot shadow application routes, mitigating potential access confusion or spoofing.
 
-## Preventing Metadata Injection in Auth Callback
+## Action Whitelisting in Appointments
 
-A significant security enhancement addresses a potential vulnerability (internally identified as an L4 finding) related to the OAuth callback mechanism. Previously, the `type` query parameter in the `src/app/auth/callback/route.ts` route could be used to inject arbitrary JSON into a user's `user_metadata` within Supabase. This could potentially allow an attacker to craft a malicious callback URL to seed arbitrary, unauthorized data into a user's session metadata.
-
-To mitigate this, a `VALID_TYPES` `Set` has been introduced, explicitly listing the only accepted values for the `type` parameter: `"professional"`, `"client"`, and `"recovery"`. The `parseType` function now strictly checks if the incoming `type` value is present in this `Set`. Any value outside this predefined collection is simply ignored, preventing the injection of unauthorized or malformed data into the user's metadata. This ensures that the `user_metadata` remains clean and controlled, safeguarding the integrity of user profiles.
-
-## Safeguarding Professional Slugs
-
-The `src/app/api/onboarding/route.ts` route also incorporates a critical fix to prevent URL conflicts and potential route hijacking. Professionals on the platform are assigned unique, human-readable slugs (e.g., `/p/john-doe`) for their public profiles. Without proper safeguards, a malicious user could attempt to register a slug that conflicts with an existing application route (e.g., `/p/api` or `/p/dashboard`), potentially shadowing legitimate application pages or leading to unexpected behavior.
-
-The `RESERVED_SLUGS` `Set` now explicitly lists top-level application routes such as `"api"`, `"auth"`, `"dashboard"`, `"login"`, and `"register"`. The `generateUniqueSlug` function, responsible for creating unique slugs from a professional's name, first checks against this `RESERVED_SLUGS` list. If a generated slug conflicts with a reserved route or is empty after sanitization, the system automatically appends a numeric suffix (e.g., `user-2`, `api-2`) to ensure uniqueness and prevent collisions. This proactive measure protects the application's routing structure and ensures that all professional profile URLs are distinct and do not interfere with core functionalities.
-
-## Explicit Action Handling for Appointments
-
-The `src/app/api/appointments/[id]/route.ts` endpoint, which allows for patching appointment statuses, has been hardened to prevent ambiguous or unintended state changes. Previously, if an unknown `action` was sent in the request body (e.g., a typo like `"cancle"` instead of `"cancel"`), the request might have fallen through conditional logic, potentially leading to a silent rejection of the appointment.
-
-Now, an `ALLOWED_ACTIONS` `Set` explicitly defines the only permissible actions: `"confirm"`, `"reject"`, `"cancel"`, `"paid"`, `"complete"`, and `"no_show"`. The route handler first validates the incoming `action` against this `Set`. If an unknown action is provided, the system immediately responds with a `400` HTTP status code and an "Unknown action" error message. This explicit rejection prevents unexpected behavior and provides clear feedback to the client. Importantly, this check is performed *after* verifying user authorization (`isProfessional` or `isClient`), ensuring that unauthorized callers receive a `403` Forbidden response before any information about valid actions is disclosed.
-
-## Rate Limiting for Abuse Prevention
-
-To protect against various forms of abuse, including brute-force attacks and denial-of-service attempts, rate limiting has been strategically applied to several key API routes.
-
-The `src/app/api/auth/register/route.ts` endpoint utilizes `getRegisterLimiter`, configured to allow only 5 registration attempts per IP address within a 1-hour window. This significantly curtails automated account creation. Similarly, the `src/app/api/onboarding/route.ts` route is protected by `getOnboardingLimiter`, permitting 3 attempts per IP within a 1-hour window, preventing rapid creation of professional profiles. All other general API interactions, including the `src/app/api/appointments/[id]/route.ts` endpoint, are subject to `getApiLimiter`, which allows 60 requests per IP within a 1-minute window. These measures ensure fair usage and protect the system's resources from being overwhelmed by malicious or accidental high-volume requests.
+The `/api/appointments/[id]/route.ts` endpoint now enforces a strict `ALLOWED_ACTIONS` set (`confirm`, `reject`, `cancel`, etc.). Previously, typos like `action: "cancle"` would default to rejection due to loose conditionals. Now, an authorized user sending an unrecognized action triggers a 400 response, while unauthorized users receive a 403, avoiding information leakage. This change ensures only intended state transitions occur and makes API behavior explicit.
 
 ## Design decisions
 
-The security enhancements reflect a deliberate strategy to build a more resilient application through layered defenses and explicit controls.
-
-*   **Layered Validation**: The choice to integrate Zod for runtime validation, in addition to Drizzle's schema definitions and Supabase's built-in authentication, creates a multi-layered validation approach. This ensures that data is checked at multiple points, from the API boundary to the database, catching issues early and preventing invalid data from propagating.
-*   **Explicit Allow-listing**: Rather than attempting to block known bad inputs, the design favors explicit allow-listing for critical parameters like `type` in the auth callback and `action` in appointment updates. This approach is inherently more secure, as anything not explicitly permitted is denied, reducing the risk of unforeseen bypasses.
-*   **Developer Experience vs. Production Security**: The `src/app/api/auth/register/route.ts` route demonstrates a pragmatic trade-off. In development environments, the `admin.createUser` function is used with `email_confirm: true` to bypass email verification, accelerating the testing cycle. In production, however, the standard `signUp()` flow is used, which triggers email verification, maintaining the necessary security posture for live users. This balances development velocity with production-grade security.
-*   **Granular Authorization**: The `src/app/api/appointments/[id]/route.ts` handler exemplifies granular authorization by checking `isProfessional` and `isClient` to determine who can perform specific actions. This ensures that only users with the appropriate role and ownership can modify sensitive resources, preventing unauthorized state changes.
-*   **Early Exit for Errors**: A consistent pattern across these routes is to return error responses (e.g., `unauthorized()`, `forbidden()`, `badRequest()`, `tooManyRequests()`) as early as possible in the request lifecycle. This minimizes processing for invalid requests and prevents potential information leakage by failing fast.
+The code prioritizes defense in depth: Zod validation runs early, rate limits apply per-IP, and database operations use parameterized queries via Drizzle. The `RESERVED_SLUGS` list is hardcoded for simplicity and speed, avoiding DB lookups during onboarding. Action whitelisting is placed after authentication checks to prevent distinguishing between invalid actions and unauthorized access. Using `Set` for `ALLOWED_ACTIONS` and `VALID_TYPES` ensures O(1) lookups, critical in high-frequency paths.
 
 ## Potential improvements
 
-While these fixes significantly enhance the application's security, there are always opportunities for further refinement:
+1. **Centralize Zod schemas** — The `onboardingSchema` in `/api/onboarding/route.ts` duplicates validation logic that could be shared with the frontend. Extracting it to `lib/zod/schemas.ts` would ensure consistency and reduce drift.
 
-1.  **Centralized API Input Validation**: Currently, Zod schemas like `registerSchema` in `src/app/api/auth/register/route.ts` and `onboardingSchema` in `src/app/api/onboarding/route.ts` are defined directly within their respective route files. Extracting these schemas into a shared `validation` or `schema` directory and potentially implementing a validation middleware could reduce boilerplate, improve consistency across API routes, and make it easier to audit all input validation logic in one place.
-2.  **More Granular Rate Limiting for Specific Actions**: The `src/app/api/appointments/[id]/route.ts` endpoint currently uses a general `getApiLimiter`. While useful, specific, high-impact actions within this route (e.g., `cancel` or `confirm`) might benefit from their own, more restrictive rate limits. This could prevent rapid, repeated state changes on a single appointment, which might be indicative of abuse or an attempt to disrupt service.
-3.  **Comprehensive Audit Logging for Critical Actions**: The `logger.error` function is used for error conditions, but explicit audit logging for successful critical actions (e.g., a professional successfully onboarding, an appointment status changing to "confirmed" or "cancelled") is not explicitly shown. Implementing a dedicated audit logging mechanism for these events, perhaps using a separate `auditLogger` instance, would provide an invaluable trail for security investigations and compliance, detailing who did what, when, and to which resource.
+2. **Enhance slug uniqueness** — `generateUniqueSlug` in `/api/onboarding/route.ts` uses a linear suffix (`-2`, `-3`), which could be slow under high contention. Consider using a random suffix or UUID fragment for better performance.
+
+3. **Log invalid actions** — In `/api/appointments/[id]/route.ts`, unknown actions return 400 but aren’t logged. Adding a `logger.warn("unknown_action", { action, appointmentId: id, userId: user.id })` would help detect abuse patterns.
 
 ## References
 
-*   `src/app/api/auth/register/route.ts`
-*   `src/app/auth/callback/route.ts`
-*   `src/app/api/onboarding/route.ts`
-*   `src/app/api/appointments/[id]/route.ts`
+- `src/app/api/auth/register/route.ts`
+- `src/app/auth/callback/route.ts`
+- `src/app/api/onboarding/route.ts`
+- `src/app/api/appointments/[id]/route.ts`

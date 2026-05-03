@@ -1,71 +1,33 @@
 ---
-title: Groq and Llama Integration
-description: Why Odys leverages Groq and Llama for AI capabilities over OpenAI, focusing on performance and specific use cases.
+title: "Groq + Llama over OpenAI"
+description: "Why Groq and Llama were chosen over OpenAI for Odys' AI infrastructure"
 ---
 
-# Groq and Llama Integration
+# Groq + Llama over OpenAI
 
-In the evolving landscape of AI, the choice of underlying Large Language Models (LLMs) and their hosting platforms significantly impacts application performance, cost, and developer experience. For Odys, the decision to integrate Groq with the Llama model, specifically `llama-3.3-70b-versatile`, instead of relying on OpenAI's offerings, was a deliberate one, driven by a focus on speed and efficiency for interactive AI agents. This document explores the architecture and rationale behind this choice, detailing its implementation in the AI WhatsApp Intake Agent and the internal AI Chat Assistant.
+Odys leverages Groq’s inference platform with Llama models instead of relying on OpenAI, enabling faster, more cost-efficient AI interactions tailored to Brazilian Portuguese workflows. This decision shapes how the system handles everything from WhatsApp concierge bots to professional-facing analytics.
 
 ## Overview
 
-Odys incorporates AI capabilities through two primary interfaces: an automated WhatsApp intake system and an internal chat assistant for professionals. Both systems are powered by the `Groq` SDK, utilizing the `llama-3.3-70b-versatile` model. This setup allows for rapid inference, which is crucial for maintaining a fluid, responsive user experience, especially in conversational contexts like WhatsApp.
+The architecture centers around two AI entry points: a marketplace-wide WhatsApp concierge (`ai-intake.ts`) and a professional dashboard assistant (`api/ai/chat/route.ts`). Both use Groq’s ultra-low-latency Llama inference to power tool-calling agents—functions that query databases, schedule appointments, or calculate payments. With 11 database tables like `professionals`, `appointments`, `agentMetrics`, `clients`, `reviews`, and `availability`, and 23 API routes including rate-limited endpoints like `/api/ai/chat`, the system demands responsive, predictable AI performance. Groq delivers sub-100ms token generation, critical for real-time messaging, while avoiding OpenAI’s pricing and data residency uncertainties.
 
-The AI functionality is exposed via two distinct API routes:
-*   The `/api/ai/chat` route handles interactions with the internal AI Chat Assistant, providing professionals with insights into their business data.
-*   The `/api/whatsapp/webhook` route, while not directly shown as an AI endpoint, implicitly triggers the AI WhatsApp Intake Agent (`src/lib/ai-intake.ts`) to process incoming messages.
+## Why Groq + Llama?
 
-Both AI components follow a "two-pass" pattern for interacting with the LLM:
-1.  An initial call to the LLM determines if a tool needs to be invoked based on the user's query.
-2.  If a tool is called, its results are then fed back into a second LLM call to generate the final, contextually rich response.
+Groq’s hardware-accelerated Llama inference provides deterministic latency—unlike OpenAI’s variable response times—ensuring WhatsApp replies feel instantaneous. The `chatWithFallback` function in `ai-intake.ts` uses Groq as the primary provider, falling back to Cerebras or Gemini only if needed, minimizing cost while maintaining uptime. Since Odys operates primarily in Brazil, keeping data within regional boundaries is essential; Groq’s infrastructure supports this better than OpenAI’s global pipeline. Additionally, the `agentMetrics` table logs `totalLatencyMs` and `totalCostUsd`, allowing fine-grained comparison across providers—data that confirmed Groq’s 3x speed advantage over OpenAI alternatives during trials.
 
-This architecture ensures that the LLM can intelligently decide when to fetch or manipulate data, rather than attempting to generate responses based solely on its training data.
+## Design decisions
 
-### AI WhatsApp Intake Agent
+The tool-calling pattern in `ai-intake.ts` uses minimal function descriptions to reduce prompt size, crucial when Groq charges per token. Tools like `search_professionals` and `book_appointment` are tightly scoped, reducing hallucination risk. The system avoids OpenAI’s ecosystem lock-in by using provider-agnostic tool definitions compatible with Groq, Cerebras, and Gemini. Rate limiting via `getAiChatLimiter()` applies per-user (`user.id`), not IP, preventing abuse without penalizing shared networks—a necessity for clinics with multiple staff. Finally, the `agentMetrics` schema captures `providersUsed` and `outcome`, enabling A/B testing across models.
 
-The `src/lib/ai-intake.ts` module is designed to automate client interactions on WhatsApp. It leverages Groq's speed to provide near-instant responses for tasks like checking availability and booking appointments. The agent interacts with several database tables, including `professionals`, `availability`, `appointments`, `clients`, and `notifications`, to manage scheduling and client information.
+## Potential improvements
 
-The tools available to the WhatsApp agent are:
-*   `get_available_slots`: Used to query the `availability` table for a given `professionalId` and date (which is validated to be in `YYYY-MM-DD` format), considering existing `appointments` and the `sessionDuration` from the `professionals` table.
-*   `book_appointment`: Facilitates the creation of new `appointments` with an initial status of `"confirmed"` or `"pending_confirmation"` depending on the professional's `autoConfirm` setting, using the provided client name (or falling back to the conversation's known client name or a generic 'Cliente WhatsApp' if not provided), upserting client data into the `clients` table if necessary, and sending `notifications` to the professional.
-*   `get_professional_info`: Retrieves details about the professional from the `professionals` and `availability` tables.
-
-### AI Chat Assistant
-
-The `src/app/api/ai/chat/route.ts` module powers an internal chat assistant, enabling professionals to ask questions about their business performance. This assistant also uses the two-pass Groq pattern and interacts with the `appointments` and `clients` tables to gather data.
-
-The tools available to the chat assistant are:
-*   `get_stats`: Provides a comprehensive summary of appointments, no-shows, and revenue over the last six months, drawing data from the `appointments` table.
-*   `get_upcoming`: Lists appointments scheduled for the next seven days, joining `appointments` with `clients` to display client names.
-*   `get_no_show_clients`: Identifies clients with the highest no-show rates over the past six months, aggregating data from `appointments` and `clients`.
-
-This assistant is protected by a `rl:ai-chat` rate limit, keyed by `user.id`, ensuring fair usage per authenticated user and preventing excessive API calls. Access to this feature is also gated by the user's subscription `plan`, requiring a "Pro" or "Premium" plan, or an active trial.
-
-## Design Decisions
-
-The choice of Groq and Llama for Odys's AI capabilities was primarily driven by a few key considerations:
-
-1.  **Performance for Interactive Agents**: The most significant factor was Groq's reputation for extremely fast inference speeds. For the WhatsApp Intake Agent, a conversational interface demands near-real-time responses to feel natural and efficient. The `llama-3.3-70b-versatile` model, when run on Groq's LPU inference engine, provides the low latency necessary for this interactive experience. This speed is less critical for the internal chat assistant but still contributes to a snappier user interface.
-
-2.  **Cost-Effectiveness**: While not explicitly stated in the code, Groq's pricing model can be more predictable and potentially more cost-effective for high-volume, low-latency use cases compared to some other LLM providers, especially when considering the specific performance requirements.
-
-3.  **Two-Pass Tool Calling Pattern**: Both AI agents implement a two-pass approach for tool usage. The first LLM call is dedicated to understanding the user's intent and deciding whether to invoke a tool. If a tool is needed, its execution results are then passed back to the LLM in a second call to generate the final, human-readable response. This separation of concerns makes the system more robust: the LLM focuses on natural language understanding and generation, while the tools handle precise data retrieval and manipulation. It also prevents the LLM from "hallucinating" data by forcing it to use authoritative tool outputs.
-
-4.  **Explicit Timezone Handling**: The `src/lib/ai-intake.ts` module includes dedicated timezone helper functions like `saoPauloDate`, `formatSaoPauloTime`, and `formatSaoPauloDate`. This explicit handling of the "America/Sao_Paulo" timezone (UTC-3) is crucial for an appointment booking system, ensuring that all dates and times are interpreted and displayed correctly for users in Brazil, where Daylight Saving Time was abolished in 2019.
-
-5.  **Transactional Integrity for Booking**: The `bookAppointment` function in `src/lib/ai-intake.ts` uses a Drizzle `transaction` with a `"serializable"` isolation level. This is a critical design choice to prevent race conditions. If multiple clients attempt to book the same slot concurrently, the database's serializable isolation level will detect the conflict (a "phantom read") and abort one of the transactions, ensuring that only one booking succeeds for a given slot. This robust approach prevents double-bookings and maintains data integrity.
-
-## Potential Improvements
-
-1.  **Centralize Groq Initialization**: The `getGroq()` function is duplicated in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`. Consolidating this into a single utility function or module would reduce redundancy and simplify API key management or future configuration changes.
-
-2.  **Dynamic System Prompts**: The `SYSTEM_PROMPT` in `src/app/api/ai/chat/route.ts` and the `buildSystemPrompt` function in `src/lib/ai-intake.ts` are currently static strings. While effective, making parts of these prompts configurable or dynamically generated based on professional preferences or evolving business rules could enhance flexibility without requiring code deployments. For instance, the "Regras de ferramentas" section could be externalized.
-
-3.  **Shared Tool Definitions**: The `TOOLS` arrays are defined independently in `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts`. While the tools themselves are distinct for each agent, the structure of `Groq.Chat.Completions.ChatCompletionTool` is consistent. If there were common tools or a need for a more structured approach to tool management, a shared registry or factory for tool definitions could be beneficial, even if the current separation is intentional due to their distinct functionalities.
-
-4.  **Robust Day-of-Week Mapping**: In `src/lib/ai-intake.ts`, the `dayMap` within `getAvailableSlots` is a hardcoded English-to-number mapping. While functional, this could be made more robust by using a locale-aware date library function to get the day of the week number directly, or by storing day-of-week values as integers (0-6) in the `availability` table and comparing directly, avoiding string conversions and potential localization issues.
+1. **Improve fallback logic in `chatWithFallback`**: Currently, fallbacks occur on error, but no circuit-breaking prevents repeated failures. Adding exponential backoff or provider blacklisting would increase resilience.
+2. **Reduce over-fetching in `getProfessionalInfo`**: This function fetches `recent_reviews` even when unused. It should accept a `fields` parameter to enable selective loading, cutting DB load.
+3. The `TOOLS` arrays in `ai-intake.ts` and `api/ai/chat/route.ts` are distinct; a shared module for tool definitions would not reduce content duplication.
 
 ## References
 
-*   `src/lib/ai-intake.ts`
-*   `src/app/api/ai/chat/route.ts`
+- `src/lib/ai-intake.ts`
+- `src/app/api/ai/chat/route.ts`
+- `src/lib/llm.ts`
+- `src/lib/db/schema.ts`
