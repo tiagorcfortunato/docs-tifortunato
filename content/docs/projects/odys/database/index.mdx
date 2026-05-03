@@ -1,74 +1,34 @@
 ---
-title: Database
-description: "Database overview: Drizzle on Supabase Postgres"
+title: "Database Overview"
+description: "Drizzle on Supabase Postgres"
 ---
 
-# Database
+# Database Overview
 
-The `odys` application relies on a robust and well-structured database to manage its core business logic, from professional profiles and client bookings to messaging and notifications. This document delves into the database architecture, explaining the choices made for its implementation using Drizzle ORM with a Supabase-hosted PostgreSQL backend. Understanding this foundation is crucial for anyone looking to extend or maintain the application's data layer.
+This page provides a structural and operational overview of the Odys application’s database, built with Drizzle ORM on Supabase Postgres. It covers the schema design, key relationships, and how data models support core features like booking, messaging, and AI agent telemetry.
 
 ## Overview
 
-At its heart, `odys` leverages a PostgreSQL database, managed by Supabase, and interacts with it through the Drizzle ORM. This combination provides a powerful, type-safe, and developer-friendly experience for data operations. The database schema, defined declaratively in `src/lib/db/schema.ts`, consists of 10 distinct tables, each designed to encapsulate a specific domain entity within the application.
+The database consists of **11 tables** that model professionals, clients, appointments, and interactions. At its core, `professionals` acts as the central entity, with tables like `appointments`, `clients`, and `availability` referencing it via foreign keys with `ON DELETE CASCADE`. This ensures data integrity when a professional account is removed. The schema supports both online and in-person services, with geolocation fields and address components stored directly on `professionals`. Financial workflows are handled through Stripe and Pix, with fields like `stripeCustomerId`, `paymentType`, and `pixKey` enabling flexible payment routing. Recurring appointments, client notes, reviews, and notifications are all modeled as first-class entities, reflecting the app’s focus on long-term client relationships.
 
-The connection to the database is established in `src/lib/db/index.ts`, where the `postgres` client is initialized and then wrapped by Drizzle. For schema migrations and type generation, Drizzle Kit is configured via `drizzle.config.ts`, pointing to the schema definition and specifying the PostgreSQL dialect.
+The `agentMetrics` table stands out as a telemetry sink for the WhatsApp AI intake agent, capturing cost, latency, and outcome per conversation turn. This enables observability into AI performance without blocking user interactions. Supabase auth is integrated via `userId` fields in `professionals`, `clients`, and `follows`, linking app data to authenticated users.
 
-The core entities revolve around `professionals`, `clients`, and `appointments`, forming the backbone of the booking and service provision system. Supporting these are tables for `availability`, `clientNotes`, `recurringSchedules`, `messages`, `follows`, `reviews`, and `notifications`, each playing a vital role in the application's functionality.
+## Design decisions
 
-### Schema Deep Dive
+The schema uses **Drizzle ORM** for type safety and maintainable migrations. All primary keys are `uuid` with `defaultRandom()`, avoiding predictable IDs. Timestamps use `defaultNow()` for consistency. Indexes are strategically placed on foreign keys (`professionalId`, `clientId`) and query-heavy fields like `appointments.startsAt` and `status`. A partial unique index on `appointments(professionalId, startsAt)` prevents double-booking by rejecting overlapping active appointments at the database level, even under high concurrency.
 
-Let's explore the key tables and their relationships:
+The `recurringSchedules` table decouples recurrence logic from `appointments`, allowing dynamic generation of instances while preserving historical data. The `messages` table enforces a one-message-at-a-time constraint via application logic, not schema, giving flexibility in UX design. Notifications are generic, with `type` and `recipientType` enabling broad use across professionals and clients.
 
-*   **`professionals`**: This is the central table for service providers, containing 24 columns. It stores essential information like `name`, `phone`, `email`, and `profession`. Crucially, it links to the Supabase authentication system via `userId` (a `text` column, which is unique), and provides a unique `slug` for public profile URLs. Financial aspects are covered by `sessionDuration`, `sessionPrice`, `plan` (defaulting to "free"), `paymentType` (defaulting to "upfront"), `paymentPercentage` (defaulting to 100), and integration with Stripe (`stripeCustomerId`, `stripeSubscriptionId`) and Pix (`pixKeyType`, `pixKey`). Other fields include `bio`, `avatarUrl`, `trialEndsAt`, and `welcomeMessage`. Operational settings like `autoConfirm` and `active` status are also present, alongside standard `createdAt` and `updatedAt` timestamps.
+## Potential improvements
 
-*   **`availability`**: This table defines when a `professional` is available for bookings. It links to `professionals` via `professionalId` with an `onDelete: "cascade"` rule, meaning if a professional is removed, their availability slots are automatically deleted. It captures `dayOfWeek` (an `integer` from 0 for Sunday to 6 for Saturday), `startTime`, and `endTime` as `text` fields. An index on `professionalId` ensures efficient lookups.
+1. **Add `updatedAt` trigger for `appointments`** — The `appointments` table lacks an `updatedAt` column, unlike most others. Adding it and using a trigger (or Drizzle middleware) would help track status changes, useful for audit and analytics. See `src/lib/db/schema.ts`.
 
-*   **`clients`**: Represents the individuals booking services. It has 8 columns, including a nullable `userId` (also `text`), allowing clients to book without necessarily having a full Supabase account. It links to `professionals` via `professionalId` with `onDelete: "cascade"`. Key client details like `name`, `phone`, `email`, and `avatarUrl` are stored here. Indexes on `professionalId` and `userId` facilitate quick access.
+2. **Normalize `paymentType` and `status` enums** — Currently, values like `"upfront"` or `"pending_confirmation"` are magic strings. Defining a `payment_type` or `appointment_status` enum type in Postgres would prevent invalid states and improve query clarity. See `professionals.paymentType` and `appointments.status`.
 
-*   **`clientNotes`**: This table provides a private space for professionals to record notes about their clients. It links to both `professionals` and `clients` with `onDelete: "cascade"` rules, ensuring notes are cleaned up if either the professional or client is deleted. The `content` is stored as `text`.
-
-*   **`recurringSchedules`**: Manages recurring appointments, such as weekly therapy sessions. It links to `professionals` and `clients` with `onDelete: "cascade"`. It defines the `frequency` (e.g., "weekly", "biweekly", "twice_weekly"), `dayOfWeek`, `secondDayOfWeek` (for twice-weekly schedules), and `time` as `text`. The `active` boolean controls whether the schedule is currently in effect.
-
-*   **`appointments`**: This is the core booking table, tracking individual sessions. It has 13 columns and links to `professionals` and `clients` with `onDelete: "cascade"`. It also has a nullable reference to `recurringSchedules.id`, but notably, without an `onDelete: "cascade"` rule, meaning a recurring schedule can be deleted without affecting past or future individual appointments generated from it. It stores `startsAt` and `endsAt` as `timestamp` values, along with `status` (defaulting to "pending_confirmation") and `paymentStatus` (defaulting to "none"). Stripe payment intent IDs (`stripePaymentIntentId`) are stored here, as are flags for `reminderSent24h` and `reminderSent1h`. An optional `notes` field is also available. Multiple indexes are defined on `professionalId`, `clientId`, `startsAt`, and `status` to optimize common queries.
-
-*   **`messages`**: Facilitates communication between professionals and clients. It links to `professionals` and `clients` with `onDelete: "cascade"`. It records the `sender` ("professional" or "client"), `type` (defaulting to "text"), `content`, and optionally a `fileUrl`. A `readAt` timestamp tracks when a message was viewed. A composite index on `professionalId` and `clientId` supports efficient message retrieval for specific conversations.
-
-*   **`follows`**: Tracks when a client (identified by `userId`) follows a `professional`. It links to `professionals` with `onDelete: "cascade"`. Indexes on `professionalId` and `userId` are present.
-
-*   **`reviews`**: Stores client feedback after an appointment. It links to `professionals`, `clients`, and `appointments` with `onDelete: "cascade"`. The `appointmentId` is unique, ensuring only one review per appointment. It captures a `rating` (an `integer` from 1-5) and an optional `comment`. An index on `professionalId` helps aggregate reviews for a professional.
-
-*   **`notifications`**: A generic system for sending notifications to users. It uses `recipientId` (a `text` field, likely a Supabase user ID) and `recipientType` ("professional" or "client") to target notifications. It includes `type`, `title`, `body`, and a `read` status (defaulting to `false`). An index on `recipientId` allows for quick retrieval of a user's notifications.
-
-## Design Decisions
-
-The database schema and its interaction layer reflect several deliberate design choices aimed at balancing development speed, data integrity, and application performance.
-
-1.  **Drizzle ORM for Type Safety and Developer Experience**: The decision to use Drizzle ORM was primarily driven by the desire for strong type safety throughout the data layer. Drizzle allows defining the schema in TypeScript, which then generates types for queries and results, significantly reducing runtime errors and improving developer confidence. Its SQL-like query builder syntax also offers a familiar and intuitive way to interact with the database, abstracting away raw SQL while retaining control over query optimization.
-
-2.  **Supabase Postgres for Managed Backend**: Hosting the PostgreSQL database on Supabase simplifies infrastructure management. Supabase provides a fully managed Postgres instance, handling backups, scaling, and security, allowing the `odys` team to focus on application features rather than database operations. Its integrated authentication system also complements the `userId` columns found in tables like `professionals`, `clients`, `follows`, and `notifications`.
-
-3.  **UUID Primary Keys**: All tables utilize `uuid` for their primary keys, generated with `defaultRandom()`. This choice offers several advantages: it avoids sequential IDs that could be guessed, provides globally unique identifiers, and is well-suited for distributed systems where ID generation might occur across multiple services without central coordination.
-
-4.  **`onDelete: "cascade"` for Referential Integrity**: Many foreign key relationships, such as `professionalId` in `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews`, are configured with `onDelete: "cascade"`. This is a pragmatic choice to maintain referential integrity and simplify data cleanup. When a parent record (e.g., a `professional`) is deleted, all associated child records (e.g., their `availability` slots, `clients`, `appointments`) are automatically removed by the database. This prevents orphaned records and ensures data consistency. The notable exception is `recurringScheduleId` in `appointments`, which does not cascade, allowing individual appointments to persist even if their recurring schedule is removed. This suggests a design where individual appointments are considered distinct events, even if initially generated by a recurring rule.
-
-5.  **Flexible `text` Types for Enums and Time**: Several columns, such as `professionals.profession`, `professionals.plan`, `professionals.paymentType`, `professionals.pixKeyType`, `recurringSchedules.frequency`, `appointments.status`, `messages.sender`, `messages.type`, `notifications.recipientType`, and `notifications.type`, are defined as `text` rather than PostgreSQL enum types. While this offers flexibility for adding new categories without schema migrations, it shifts the responsibility for data validation to the application layer. Similarly, `availability.startTime`, `availability.endTime`, and `recurringSchedules.time` are stored as `text` (e.g., "09:00"). This simplifies storage and retrieval but means the database doesn't enforce time format or validity, relying on application logic for correct parsing and manipulation.
-
-6.  **Default Values for Consistency**: Many columns are assigned default values, such as `defaultRandom()` for UUIDs, `defaultNow()` for `createdAt` and `updatedAt` timestamps, and specific literal defaults for fields like `sessionDuration` (50 minutes), `sessionPrice` (0 cents), `plan` ("free"), `paymentType` ("upfront"), `autoConfirm` (`false`), `active` (`true`), `recurringSchedules.active` (`true`), `appointments.status` ("pending_confirmation"), `appointments.paymentStatus` ("none"), `appointments.reminderSent24h` (`false`), `appointments.reminderSent1h` (`false`), `messages.type` ("text"), and `notifications.read` (`false`). These defaults ensure that new records have sensible initial values, reducing the burden on application code to explicitly set every field and promoting data consistency.
-
-## Potential Improvements
-
-While the current database design is functional and well-structured, several areas could be enhanced to improve data integrity, type safety, and query capabilities.
-
-1.  **Introduce Drizzle Enum Types for Categorical Data**: Many columns like `professionals.profession`, `professionals.plan`, `professionals.paymentType`, `professionals.pixKeyType`, `recurringSchedules.frequency`, `appointments.status`, `appointments.paymentStatus`, `messages.sender`, `messages.type`, `notifications.recipientType`, and `notifications.type` currently use `text` columns to store categorical values. While flexible, this approach lacks database-level validation. Migrating these to Drizzle's `pgEnum` types would enforce valid values at the database level, preventing invalid data entry and improving type safety in the application. For example, `professionals.profession` could be an enum of `('psychologist', 'personal_trainer', 'nutritionist')`.
-
-2.  **Align `userId` Types with Supabase `uuid`**: The `userId` column in `professionals`, `clients`, `follows`, and `notifications.recipientId` is defined as `text`. Supabase's `auth.users` table typically uses `uuid` for its primary key. While `text` can store UUID strings, using Drizzle's `uuid` type for these columns in `src/lib/db/schema.ts` would provide stronger type enforcement and better reflect the underlying data type from Supabase, potentially enabling more direct foreign key relationships or clearer integration points if Drizzle were to support cross-database FKs or custom type mappings.
-
-3.  **Utilize Native Time Types for `startTime`/`endTime`**: The `availability.startTime`, `availability.endTime`, and `recurringSchedules.time` columns are currently stored as `text`. PostgreSQL offers native `time` or `interval` types that are specifically designed for storing time-of-day values. Using these native types would allow the database to enforce valid time formats, enable more efficient time-based queries (e.g., finding overlaps), and simplify time arithmetic directly within SQL, reducing the need for application-level parsing and validation.
-
-4.  **Implement Composite Unique Constraints for Relationships**: For tables like `follows`, a user should only be able to follow a professional once. Currently, this is likely enforced at the application level. Adding a composite unique constraint on `follows` for `(userId, professionalId)` would enforce this uniqueness directly in the database, preventing duplicate entries and ensuring data integrity even if application-level checks are bypassed or have bugs. Similarly, `availability` could benefit from a unique constraint on `(professionalId, dayOfWeek, startTime, endTime)` to prevent overlapping or duplicate availability slots.
+3. **Index `clients(phone)` for WhatsApp lookups** — The app frequently resolves clients by phone (e.g., WhatsApp messages). Adding an index on `clients.phone` would speed up `get_customer_by_phone`. Currently, only `professional_id_idx` and `user_id_idx` exist. See `src/lib/db/schema.ts`.
 
 ## References
 
-*   `src/lib/db/index.ts`
-*   `src/lib/db/schema.ts`
-*   `drizzle.config.ts`
+- `src/lib/db/schema.ts`
+- `src/lib/db/index.ts`
+- `drizzle.config.ts`

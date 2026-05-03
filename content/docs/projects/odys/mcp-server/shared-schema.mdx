@@ -1,59 +1,30 @@
 ---
-title: Shared Drizzle Schema
-description: Shared Drizzle schema via relative import, tsconfig include
+title: "Shared Schema"
+description: "Shared Drizzle schema via relative import, tsconfig include"
 ---
 
-# Shared Drizzle Schema
+# Shared Schema
 
-In the odys application, the database schema is a foundational element, defining the structure of all persistent data. This document delves into the Drizzle ORM schema, located at `src/lib/db/schema.ts`, and explains how it is shared and utilized across different parts of the application, specifically focusing on its integration within the `mcp-server` module. Understanding this shared schema is crucial for comprehending how data is modeled, stored, and accessed consistently throughout the system.
+The shared Drizzle schema is the central source of truth for database structure across both the main application and the MCP server. By exposing the same `schema.ts` file from `src/lib/db/`, both services interact with the database using identical type definitions and table configurations, ensuring consistency and reducing duplication.
 
 ## Overview
 
-The core of odys's data model is encapsulated in a single Drizzle schema file, `src/lib/db/schema.ts`. This file serves as the single source of truth for the database structure, defining a total of 10 tables that represent the various entities and relationships within the application. These tables cover essential domains such as `professionals`, `clients`, `appointments`, `messages`, and `notifications`, among others.
+The schema defines **11 tables**: `professionals`, `clients`, `appointments`, `availability`, `messages`, `reviews`, `clientNotes`, `recurringSchedules`, `follows`, `notifications`, and `agentMetrics`. These tables are used by both the Next.js frontend API routes and the MCP server to query and mutate data. The MCP server imports the schema via a relative path (`../../src/lib/db/schema.js`) and references it in its `tsconfig.json`'s `include` array, allowing TypeScript to resolve the types without duplication. This setup enables the MCP tools—such as `get_appointments_today` and `update_appointment_status`—to safely interact with the same database structure as the main app.
 
-The `mcp-server` module, responsible for various backend operations, connects to the PostgreSQL database and interacts with this schema. The database connection logic, found in `mcp-server/src/db.ts`, imports the shared schema using a relative path. To ensure that TypeScript correctly understands the types and structure defined in this shared file, the `mcp-server/tsconfig.json` configuration explicitly includes the schema file in its compilation scope. This setup ensures that both the database interaction layer and any other parts of the application that need to understand the data model operate with a consistent and type-safe view of the database.
+## Design decisions
 
-## Schema Definition
+The schema uses `uuid` primary keys with `defaultRandom()` for distributed safety, and leverages PostgreSQL-specific features like `ON DELETE CASCADE` on foreign keys to maintain referential integrity. Indexes are strategically placed on high-query fields like `professionalId`, `startsAt`, and `status`. The `appointments` table includes a partial unique index to prevent double-booking by rejecting overlapping slots with non-terminal statuses. Timestamps use `defaultNow()` for consistency, and nullable fields are used for truly optional data, such as `email`, `bio`, conditional foreign keys, and telemetry fields. The `agentMetrics` table captures telemetry from AI agent interactions, using `numeric` types for cost precision and arrays for `providersUsed`.
 
-The `src/lib/db/schema.ts` file leverages Drizzle ORM to define the database tables. Each table is declared using `pgTable`, specifying its SQL name and a set of columns.
+## Potential improvements
 
-For instance, the `professionals` table, central to the application, defines 24 columns. It includes fundamental details like `id` (a `uuid` primary key with a default random value), `userId` (a `text` column, unique and not nullable, likely referencing an external authentication system like Supabase), `name`, `slug` (a unique identifier for public profiles), `phone`, `email`, and `profession`. Beyond basic contact information, it captures business-specific attributes such as `sessionDuration` and `sessionPrice` (both `integer`s with default values), `plan` (a `text` column defaulting to "free"), and `paymentType`. It also includes fields for payment integration with Pix (`pixKeyType`, `pixKey`) and Stripe (`stripeCustomerId`, `stripeSubscriptionId`), along with operational flags like `autoConfirm` and `active`. Timestamp columns `createdAt` and `updatedAt` are standard for tracking record lifecycle.
+1. **Move schema import to a package alias** — Instead of using a relative path (`../src/lib/db/schema.ts`), configure a path alias (e.g., `@odys/db`) in both `tsconfig.json` files. This would decouple the MCP server from the physical location of the schema and reduce refactoring risk.
 
-While many foreign key relationships are defined with `onDelete: "cascade"` (e.g., `availability.professionalId`, `clients.professionalId`, `appointments.clientId`), ensuring automatic cleanup of dependent records, it's important to note exceptions. For instance, the `appointments.recurringScheduleId` column references `recurringSchedules.id` without an explicit `onDelete` action. This means that if a `recurringSchedule` is deleted, associated `appointments` will not be automatically deleted; instead, their `recurringScheduleId` will be set to `null`.
+2. **Add foreign key validation in `recurringSchedules`** — The `recurringSchedules` table references `clients` and `professionals`, but does not validate that the `clientId` belongs to the associated `professionalId`. Adding a composite foreign key or application-level check would prevent inconsistent data.
 
-Several tables also define indexes to optimize query performance. For example, `availability` has an index on `professionalId`, `clients` on `professionalId` and `userId`, and `appointments` on `professionalId`, `clientId`, `startsAt`, and `status`. These indexes are critical for speeding up common lookup and filtering operations.
-
-## Database Connection in `mcp-server`
-
-The `mcp-server/src/db.ts` file is responsible for establishing the database connection for the `mcp-server` module. It uses `postgres-js` as the underlying PostgreSQL client and `drizzle-orm/postgres-js` for the ORM layer.
-
-Before connecting, it loads environment variables using `dotenv`. It prioritizes `.env.local` for local development overrides, then falls back to `.env`. A critical check ensures that `DATABASE_URL` is defined, exiting the process if it's missing, which highlights the absolute necessity of this configuration for the server to function.
-
-The shared schema is imported via a relative path: `import * as schema from "../../src/lib/db/schema.js"`. This import brings all the table definitions into the `schema` object. The `drizzle` function then initializes the ORM client, passing the `postgres` client and the imported `schema` object. This `db` instance is then exported, making it available for all database operations within the `mcp-server` module.
-
-## TypeScript Configuration for Shared Schema
-
-The `mcp-server/tsconfig.json` file plays a vital role in ensuring that TypeScript correctly processes the shared Drizzle schema. While `mcp-server` has its own `src` directory, the schema file `src/lib/db/schema.ts` resides outside this immediate scope, at the repository root level.
-
-To make TypeScript aware of this file and include it in the compilation and type-checking process for `mcp-server`, the `tsconfig.json` explicitly lists it in the `include` array: `"../src/lib/db/schema.ts"`. Without this explicit inclusion, TypeScript might not resolve the types correctly when `mcp-server/src/db.ts` attempts to import the schema, leading to potential type errors or a lack of type safety. This configuration ensures that the `mcp-server` module benefits from the full type inference and validation provided by Drizzle and TypeScript for the entire database schema.
-
-## Design Decisions
-
-The current structure reflects several deliberate design choices:
-
-1.  **Centralized Schema Definition**: Placing the entire Drizzle schema in a single file, `src/lib/db/schema.ts`, establishes a single source of truth for the database structure. This reduces redundancy and ensures consistency across any part of the application that interacts with the database, preventing schema drift.
-2.  **Relative Path Import**: The `mcp-server/src/db.ts` file uses a relative path (`../../src/lib/db/schema.js`) to import the schema. This approach avoids the need for complex path aliases or monorepo-specific package configurations for this particular shared utility. It's a straightforward way to access a file located higher up in the directory hierarchy.
-3.  **Explicit `tsconfig.json` Inclusion**: The decision to explicitly include `../src/lib/db/schema.ts` in `mcp-server/tsconfig.json`'s `include` array is a pragmatic one. It directly addresses the challenge of type-checking files outside a module's default source root, ensuring that the `mcp-server`'s TypeScript compiler correctly understands the schema's types without requiring broader, potentially less performant, `include` patterns.
-4.  **`onDelete: "cascade"` for Relationships**: The widespread use of `onDelete: "cascade"` on foreign keys (e.g., `availability.professionalId`, `clients.professionalId`, `appointments.clientId`) simplifies application logic by offloading referential integrity and cleanup to the database. This is a powerful feature for maintaining data consistency, especially in a system where parent entities (like `professionals`) are frequently managed.
-
-## Potential Improvements
-
-1.  **Introduce Path Aliases for Shared Modules**: The relative import `../../src/lib/db/schema.js` in `mcp-server/src/db.ts` can become brittle if the file structure changes. Introducing a path alias (e.g., `@/lib/db/schema`) configured in the root `tsconfig.json` and consumed by `mcp-server/tsconfig.json` would make imports more robust and readable.
-2.  **Schema Modularity with Domain-Specific Files**: With 10 tables, the `src/lib/db/schema.ts` file is quite large. Breaking it down into smaller, domain-specific files (e.g., `src/lib/db/professionals.ts`, `src/lib/db/appointments.ts`, `src/lib/db/clients.ts`) and then re-exporting them from a central `src/lib/db/schema.ts` would improve organization and maintainability. This would make it easier to navigate and manage individual table definitions.
-3.  **Leverage Drizzle `pgEnum` for Type Safety**: Many `text` columns, such as `professionals.profession`, `professionals.plan`, `appointments.status`, `messages.sender`, and `notifications.type`, represent a fixed set of values. Using Drizzle's `pgEnum` feature would enforce these constraints at the database level and provide stronger type safety in TypeScript, preventing invalid string values from being inserted. For example, `professionals.profession` could be `pgEnum("profession_enum", ["psychologist", "personal_trainer", "nutritionist"])`.
+3. **Enforce `dayOfWeek` constraints in `availability`** — The `dayOfWeek` column accepts integers 0–6, but there is no database-level constraint to enforce this range. Adding a `check` constraint (e.g., `check(sql`${t.dayOfWeek} >= 0 and ${t.dayOfWeek} <= 6`)`) would prevent invalid values at the schema level.
 
 ## References
 
-*   `src/lib/db/schema.ts`
-*   `mcp-server/src/db.ts`
-*   `mcp-server/tsconfig.json`
+- `src/lib/db/schema.ts`
+- `mcp-server/src/db.ts`
+- `mcp-server/tsconfig.json`

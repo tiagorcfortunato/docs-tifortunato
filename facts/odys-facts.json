@@ -1,13 +1,13 @@
 {
-  "extracted_at": "2026-04-25T08:56:22.808Z",
+  "extracted_at": "2026-05-03T07:15:14.269Z",
   "source_repo": "/home/runner/work/Odys/Odys/.source/odys",
   "schema": {
-    "tableCount": 10,
+    "tableCount": 11,
     "tables": [
       {
         "varName": "professionals",
         "sqlName": "professionals",
-        "columnCount": 24,
+        "columnCount": 32,
         "columns": [
           {
             "name": "id",
@@ -216,6 +216,86 @@
             "unique": false,
             "primaryKey": false,
             "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "serviceType",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "addressLine",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "neighborhood",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "city",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "state",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "postalCode",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "latitude",
+            "type": "doublePrecision",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "longitude",
+            "type": "doublePrecision",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
             "hasReference": false,
             "hasOnDeleteCascade": false
           },
@@ -1003,6 +1083,133 @@
             "hasOnDeleteCascade": false
           }
         ]
+      },
+      {
+        "varName": "agentMetrics",
+        "sqlName": "agent_metrics",
+        "columnCount": 12,
+        "columns": [
+          {
+            "name": "id",
+            "type": "uuid",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": true,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "traceId",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "conversationPhone",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "promptVersion",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "promptHash",
+            "type": "text",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "totalCostUsd",
+            "type": "numeric",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "totalCostBrl",
+            "type": "numeric",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "totalLatencyMs",
+            "type": "integer",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "toolCallCount",
+            "type": "integer",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "providersUsed",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "outcome",
+            "type": "text",
+            "nullable": true,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          },
+          {
+            "name": "createdAt",
+            "type": "timestamp",
+            "nullable": false,
+            "unique": false,
+            "primaryKey": false,
+            "hasDefault": true,
+            "hasReference": false,
+            "hasOnDeleteCascade": false
+          }
+        ]
       }
     ]
   },
@@ -1241,9 +1448,8 @@
     "drizzle": "^0.45.2",
     "supabase": "^2.100.1",
     "stripe": "^22.1.0",
-    "groqSdk": "^1.1.2",
     "depCount": 35,
-    "devDepCount": 11
+    "devDepCount": 12
   },
   "whatsapp": {
     "messageTemplateCount": 19,

@@ -1,36 +1,69 @@
 ---
-title: "AI Assistant"
-description: "In-dashboard AI chat"
+title: Dashboard Assistant
+description: Explaining the in-dashboard AI chat functionality for professionals.
 ---
 
-# AI Assistant
+# Dashboard Assistant
 
-The AI Assistant page provides professionals with a conversational interface to access key business insights—such as upcoming appointments, client no-show trends, and revenue summaries—without navigating multiple dashboard sections. Built on a function-calling LLM pipeline, it translates natural language queries into structured data retrieval, delivering accurate, context-aware responses grounded in real-time database records.
+The dashboard assistant provides an interactive AI chat interface for professionals, enabling them to query their business data using natural language. This feature aims to simplify access to key metrics, upcoming appointments, and client insights, making it easier for professionals to manage their practice without needing to navigate complex reports.
 
 ## Overview
 
-The assistant operates through a two-phase LLM interaction: first, the model decides which data tool to invoke based on the user’s query; then, after executing the relevant database query, it generates a final response. This architecture ensures factual consistency by preventing the model from hallucinating numbers. The system leverages `drizzle-orm` to query a schema with 10 tables—including `appointments`, `clients`, and `professionals`—and is protected by rate limiting and plan-based access control. Three core tools power the assistant: `get_stats`, `get_upcoming`, and `get_no_show_clients`, each mapped to specific analytical intents.
+The core of the dashboard assistant resides in the `/api/ai/chat` API route, which acts as the gateway for all AI interactions. This route is responsible for authenticating the user, enforcing feature access based on their subscription plan, applying rate limits to manage resource consumption, and orchestrating the conversation with the underlying Large Language Model (LLM). The LLM, powered by `chatWithFallback`, uses a set of predefined tools to fetch specific data from the Drizzle ORM-backed PostgreSQL database, allowing it to answer questions about appointments, clients, and revenue.
 
-The `/api/ai/chat` endpoint handles all interactions, enforcing authentication via `getUser()` and authorization through `canUseFeature()`, which restricts access to Pro and Premium plans. Rate limiting is applied per user ID using `getAiChatLimiter()`, allowing 20 requests per hour—configured in the `rateLimits` object under `aichat`. The LLM backend is Groq’s `llama-3.3-70b-versatile`, chosen for low-latency function calling.
+The system is designed to handle a two-step interaction: first, the LLM determines if a tool is needed to answer the user's query; if so, it executes the tool and then uses the tool's output to formulate a final, natural language response.
+
+## API Route: `/api/ai/chat`
+
+The `src/app/api/ai/chat/route.ts` file defines the `POST` endpoint that processes user messages. Upon receiving a request, it performs several critical checks before engaging the AI:
+
+1.  **Authentication and Authorization**: The route first verifies the user's identity using `getUser()`. If no user is found, an `unauthorized()` response is returned. It then retrieves the `professional` profile associated with the user's ID. This `professional` object is crucial for accessing plan details and `sessionPrice`, which are used in subsequent steps.
+2.  **Rate Limiting**: The `getAiChatLimiter()` applies a rate limit per authenticated user ID; specific values are configured externally. This limit is applied per authenticated user ID, ensuring that individual professionals cannot exhaust the AI budget for others. If the limit is exceeded, a `tooManyRequests()` response is issued.
+3.  **Feature Gating**: The `canUseFeature()` function checks if the professional's `plan` (e.g., "Pro" or "Premium") or `trialEndsAt` date allows access to the "assistant" feature. If not, a `forbidden()` response informs the user about the plan requirement.
+4.  **Input Validation**: The incoming request body is expected to contain an array of `messages`. The route validates that `userMessages` is indeed an array and not empty, returning a `badRequest()` if the input is invalid.
+
+### AI Interaction Flow
+
+Once all preliminary checks pass, the system constructs the initial set of messages for the LLM:
+
+*   **System Prompt**: A `SYSTEM_PROMPT` is prepended to guide the AI's behavior. This prompt instructs the AI to act as the Odys assistant, focus on appointments, clients, and revenue, respond in Portuguese, and explicitly use tools for data retrieval. It also defines specific formatting rules for "no-show rate" and "monthly summary" responses, ensuring consistency and clarity.
+*   **User Messages**: The `userMessages` from the request body are appended, preserving the conversation history.
+
+The interaction with the LLM proceeds in two phases:
+
+1.  **Tool Selection**: The `chatWithFallback()` function is called with the initial messages and a list of `TOOLS`. The `tool_choice: "auto"` setting allows the LLM to decide whether to respond directly or invoke one or more tools based on the user's query.
+2.  **Tool Execution and Final Response**:
+    *   If the LLM's `first` response includes `tool_calls`, the system iterates through them.
+    *   For each `function` tool call, it executes the corresponding local function:
+        *   `get_stats`: Fetches global and month-by-month statistics for the last 6 months, including total appointments, completed sessions, no-shows, no-show rates, and revenue. It uses the `professional.sessionPrice` to calculate revenue.
+        *   `get_upcoming`: Retrieves appointments scheduled for the next 8 days (today plus the next 7), including client names, start times, end times, and status.
+        *   `get_no_show_clients`: Identifies and ranks clients with the highest no-show rates over the 6 months prior to the current month, providing individual no-show counts and rates.
+    *   The results from these tool executions are then added back to the `toolMessages` array as `role: "tool"` messages.
+    *   Finally, `chatWithFallback()` is called a `second` time with the augmented `toolMessages`. This allows the LLM to synthesize the tool outputs into a coherent, natural language answer for the user.
+
+All database interactions within the tool functions (`getStats`, `getUpcoming`, `getNoShowClients`) are performed using Drizzle ORM, querying the `appointments` and `clients` tables. Date manipulations are handled by `date-fns` functions like `startOfMonth`, `endOfMonth`, `subMonths`, `addDays`, `startOfDay`, and `endOfDay`.
 
 ## Design decisions
 
-The system uses a **two-call LLM pattern** to separate tool selection from response generation. This avoids inlining raw data into the first prompt, preserving token budget and reducing cost. Tool responses are injected as `tool`-role messages, ensuring the final LLM pass can synthesize results without reprocessing the full context.
+The design of the dashboard assistant reflects several deliberate choices aimed at balancing functionality, performance, and cost management:
 
-Tool definitions are **intentionally narrow**, each serving a distinct query class. For example, `get_stats` handles aggregate trends, while `get_no_show_clients` is reserved for client-specific rankings. This prevents ambiguous tool routing and aligns with the system prompt’s explicit dispatch rules.
-
-Data fetching is **batched per time window**: `getStats()` retrieves all appointments from the last six months in one query, then computes monthly breakdowns in memory. This reduces database round-trips compared to one query per month, trading minimal memory overhead for significantly lower latency.
+*   **Two-Step LLM Interaction**: The decision to use a two-step LLM call (tool selection followed by final response generation) is a common pattern for agentic systems. This approach allows the LLM to first understand the user's intent and determine if external data is required, then, after executing the necessary tools, it can generate a more accurate and contextually relevant response. This separation of concerns simplifies prompt engineering for the final response, as the LLM is provided with concrete data rather than needing to infer it.
+*   **Explicit Tool Definitions**: The `TOOLS` array explicitly defines the capabilities of the AI. This structured approach ensures that the AI only attempts to perform actions for which it has a defined and implemented function. The detailed `description` for each tool is crucial for guiding the LLM's `tool_choice` mechanism, making it more reliable in selecting the correct tool for a given query.
+*   **Hardcoded Date Ranges for Tools**: Tools like `getStats` use a 6-month window (including current month), `getNoShowClients` uses 6 months prior to current, and `getUpcoming` uses an 8-day window. This simplifies the initial implementation by avoiding the complexity of natural language date parsing and dynamic query construction within the LLM. It provides a predictable scope for data retrieval, which is often sufficient for common dashboard queries.
+*   **User-Specific Rate Limiting**: Implementing rate limiting based on `user.id` rather than IP address (`getAiChatLimiter().limit(user.id)`) is a pragmatic choice. In environments where multiple users might share an IP (e.g., office networks, mobile carriers), IP-based limiting could unfairly penalize legitimate users. User-specific limits ensure that each professional's AI usage is tracked and constrained independently, preventing a single user from impacting others or incurring excessive costs.
+*   **Drizzle ORM for Data Access**: Using Drizzle ORM for all database queries within the tool functions provides type safety and a consistent, programmatic interface for interacting with the PostgreSQL database. This reduces the likelihood of SQL injection vulnerabilities and makes the data access layer easier to maintain and test.
 
 ## Potential improvements
 
-The `getStats()` function computes monthly aggregates client-side, but **moving this to SQL** would improve performance. For example, using `date_trunc('month', starts_at)` in a `GROUP BY` clause (via Drizzle’s `sql` template) could shift the work to PostgreSQL, reducing data transfer and simplifying logic.
-
-The `get_no_show_clients()` query lacks a minimum appointment threshold, potentially surfacing clients with 1 session and 1 no-show. Adding a `HAVING count(*) >= 2` clause would make the ranking more meaningful by filtering out statistically insignificant cases.
-
-The system prompt mandates strict output formatting for no-show responses, but **there’s no runtime validation** of the final reply. A malformed LLM output could break UX expectations. Wrapping the second LLM call in a retry loop with a stricter `response_format` or post-hoc parsing would increase robustness.
+1.  **Dynamic Date Range Parameters for Tools**: The `getStats`, `getUpcoming`, and `getNoShowClients` functions currently operate on fixed date windows (e.g., 6 months, 7 days). Introducing `parameters` to the `TOOLS` definitions, such as `startDate` and `endDate`, would allow the LLM to dynamically specify these ranges based on user queries (e.g., "Show me stats for last quarter" or "Upcoming appointments next month"). This would require modifying the `TOOLS` array to include these parameters and updating the corresponding `getStats`, `getUpcoming`, and `getNoShowClients` functions to accept and use them in their Drizzle queries.
+2.  **Granular Database Queries for `getStats`**: The `getStats` function currently fetches *all* appointments for the last six months in a single query (`allApts`) and then filters them in memory to build the `perMonth` breakdown. While this reduces the number of database round trips, for a very large number of appointments, the in-memory filtering could become less efficient. Consider optimizing the `perMonth` calculation by performing more granular Drizzle queries for each month, or using Drizzle's aggregation capabilities with `GROUP BY` clauses to calculate monthly statistics directly in the database.
+3.  **Integration with `agentMetrics` for Cost and Latency Tracking**: The `agentMetrics` table (not shown in provided code) is designed to track `totalCostUsd`, `totalLatencyMs`, and `toolCallCount`. The current `POST` handler in `src/app/api/ai/chat/route.ts` does not write to this table. Integrating a mechanism to log the cost, latency, and tool usage of each AI interaction to the `agentMetrics` table would provide valuable operational insights, enabling better cost management and performance monitoring for the AI assistant.
+4.  **Enhanced Error Handling for Tool Execution**: The `else { result = { error: "Ferramenta desconhecida" } }` block in the tool execution loop provides a generic error. More specific error handling, logging, and potentially retries for tool failures (e.g., database connection issues, malformed tool outputs) would make the system more resilient. The `serverError("ai/chat", err)` catch-all is good, but finer-grained error reporting from within tool functions could improve debugging.
 
 ## References
 
-- `src/app/api/ai/chat/route.ts`
-- `lib/db/schema.ts` (implicit via `appointments`, `clients`)
-- `lib/plan-guard.ts` (via `canUseFeature`)
+*   `src/app/api/ai/chat/route.ts`
+*   `src/lib/db/schema.ts` (for `appointments`, `clients`, `professionals` tables)
+*   `src/lib/llm.ts` (for `chatWithFallback`)
+*   `src/lib/ratelimit.ts` (for `getAiChatLimiter`)
+*   `src/lib/plan-guard.ts` (for `canUseFeature`)
