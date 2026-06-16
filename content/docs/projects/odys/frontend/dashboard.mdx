@@ -1,79 +1,87 @@
 ---
 title: Dashboard
-description: The professional dashboard provides an overview of appointments, clients, and plan status, with a persistent sidebar for navigation.
+description: The professional dashboard, featuring a dynamic sidebar, sub-routes, and appointment management actions.
 ---
 
 # Dashboard
 
-The professional dashboard serves as the central hub for professionals using Odys, offering a consolidated view of their daily operations and key metrics. This page, primarily rendered by `src/app/dashboard/page.tsx`, is complemented by a persistent navigation sidebar defined in `src/app/dashboard/sidebar.tsx`, all wrapped within a layout component, `src/app/dashboard/layout.tsx`, which handles authentication and initial data loading.
+The professional dashboard serves as the central hub for professionals using Odys, providing an at-a-glance overview of their practice and direct access to key functionalities. This page, located at `src/app/dashboard/page.tsx`, is the primary entry point after a professional logs in, presenting a summary of appointments, client statistics, and profile completeness. It is carefully structured with a persistent sidebar (`src/app/dashboard/sidebar.tsx`) managed by the dashboard layout (`src/app/dashboard/layout.tsx`), ensuring a consistent navigation experience across all dashboard sub-routes.
 
 ## Overview
 
-The dashboard experience is structured around three core components:
-
-1.  **`src/app/dashboard/layout.tsx`**: This is the root layout for all routes under `/dashboard`. It's responsible for authenticating the user, fetching the professional's profile, and rendering the `Sidebar` and the main content (`children`).
-2.  **`src/app/dashboard/sidebar.tsx`**: A client-side component that provides persistent navigation across dashboard sub-routes. It displays the professional's name, current plan, and trial status, dynamically adjusting available navigation links based on the active plan.
-3.  **`src/app/dashboard/page.tsx`**: The main dashboard content page, which is a server component. It fetches and displays today's and upcoming appointments, client counts, and revenue, along with various informational banners related to trial status and plan limits.
-
-Together, these files create a cohesive and interactive environment for professionals to manage their practice within the Odys platform.
+The dashboard's architecture is built upon Next.js's App Router, leveraging server components for efficient data fetching and client components for interactive UI elements. The `src/app/dashboard/layout.tsx` file acts as the root for all dashboard routes, handling initial user authentication and fetching core professional data. This data is then passed to the `Sidebar` component, which provides navigation and displays professional details. The main content area, rendered by `src/app/dashboard/page.tsx`, dynamically fetches and displays a wealth of information, including today's and upcoming appointments, client statistics, and reputation metrics.
 
 ## Dashboard Layout
 
-The `src/app/dashboard/layout.tsx` file acts as the entry point for the entire dashboard section. As an `async` server component, its primary responsibility is to establish the user's authenticated context before rendering any child routes. It uses `createClient` from `@/lib/supabase/server` to interact with Supabase for authentication. If no user is found, it immediately redirects to `/login`, ensuring that only authenticated users can access the dashboard.
+The `src/app/dashboard/layout.tsx` file is a server component, making it ideal for handling authentication and initial data loading before any client-side rendering occurs. Upon a request to any `/dashboard` route, this layout first attempts to retrieve the authenticated user's session using `createClient` from `@/lib/supabase/server`. If no user is found, the request is immediately redirected to `/login`.
 
-Once a user is authenticated, the layout proceeds to fetch the corresponding professional's profile from the `professionals` table using Drizzle ORM. This is a critical step, as the entire dashboard experience is tailored to the professional's specific data. If a professional profile does not exist for the authenticated user (e.g., a new user who hasn't completed onboarding), the layout redirects them to `/onboarding`. This ensures a smooth first-time user experience, guiding them to set up their profile.
+Once authenticated, the layout queries the `professionals` table in the Drizzle ORM database to fetch the current professional's profile, identified by `user.id`. If a professional profile does not exist (e.g., for a newly registered user), the user is redirected to the `/onboarding` flow. This ensures that only registered professionals with complete profiles can access the dashboard.
 
-The fetched `professional` data, including their `name`, `slug`, `plan`, and `trialEndsAt`, is then passed as props to the `Sidebar` component. This strategy centralizes the initial data fetching for the professional's identity, making it available to the navigation. Note that `src/app/dashboard/page.tsx` currently performs its own fetch for the professional, leading to redundant queries. The layout also includes `PostHogIdentify`, which is likely used for analytics, associating the user's ID with their activity within the dashboard. The main content of the dashboard, represented by `{children}`, is rendered within a scrollable container, allowing sub-routes to display their specific content.
+The fetched professional data, specifically `name`, `slug`, `plan`, and `trialEndsAt`, is then passed as props to the `Sidebar` component. This allows the sidebar to display personalized information and adapt its navigation based on the professional's subscription plan and trial status. The layout also includes a `PostHogIdentify` component, which is used to associate the user's activity with their `userId` for analytics purposes. The main content of the dashboard, represented by `{children}`, is rendered within a flexible container that allows for vertical scrolling, accommodating various screen sizes and content lengths.
 
-## Sidebar Navigation
+## Dashboard Page
 
-The `src/app/dashboard/sidebar.tsx` component provides the primary navigation for the professional dashboard. Declared with `"use client"`, it manages its own state for mobile responsiveness, allowing the sidebar to toggle between a hidden and visible drawer on smaller screens.
+The `src/app/dashboard/page.tsx` file is also a server component, responsible for fetching and rendering the core dashboard content. It performs several database queries concurrently using `Promise.all` to gather all necessary data for the dashboard view:
 
-The sidebar dynamically renders navigation links based on the professional's active plan. A `NAV` array defines the structure of the navigation, including `href`, `label`, and an `icon` for each link. Crucially, some navigation items are marked with `proOnly: true`, indicating they are exclusive to paid plans. The `trialDaysLeft` and `effectivePlan` utility functions from `@/lib/plan-guard` are used to determine the professional's current plan status, including whether they are on a trial. If a `proOnly` feature is accessed by a user on the "free" plan (or a trial that has ended), the link is rendered as "locked" and redirects to the `/dashboard/plans` page, encouraging an upgrade.
+*   **Professional Profile**: It re-fetches the professional's profile from the `professionals` table, similar to the layout, to access all 32 columns, including `sessionPrice` for revenue calculation and various profile fields for completeness checks.
+*   **Appointments**: It retrieves today's appointments and upcoming appointments from the `appointments` table, joining with the `clients` table to display client names and phone numbers. These queries filter appointments based on `professionalId` and `startsAt` timestamps, using `gte` and `lte` for today's appointments and `gt` for upcoming ones.
+*   **Statistics**:
+    *   `totalClients`: A count of all clients associated with the professional from the `clients` table.
+    *   `monthlyAppointments`: A count of appointments scheduled within the current month.
+    *   `reviewStats`: Aggregated average `rating` and total `count` of reviews from the `reviews` table.
+    *   `recentReviews`: The three most recent reviews, including `rating`, `comment`, `createdAt`, and the `clientName` (joined from `clients`).
+    *   `availabilityCount`: A count of entries in the `availability` table, used to determine profile completeness.
 
-The sidebar also displays the professional's initials, full name, and their current plan (e.g., "Free", "Pro", "Premium"), with distinct `PLAN_COLOR` and `PLAN_LABEL` mappings for visual clarity. A logout button, which uses `createClient` from `@/lib/supabase/client` to sign out the user and redirect them to `/login`, is also prominently featured. The component includes `NotificationBell` and `ThemeToggle` components, providing quick access to notifications and theme switching.
+Based on this data, the page calculates several derived states, such as `daysLeft` in a trial, the `effectivePlan`, and flags for `isNearClientLimit`, `isAtClientLimit`, `isNearMonthlyLimit`, `isAtMonthlyLimit`. It also determines `profileGaps` using the `findProfileGaps` utility, which checks for missing essential professional profile information.
 
-## Dashboard Page Content
+The UI is highly conditional, displaying various banners and sections based on the professional's status:
 
-The `src/app/dashboard/page.tsx` component renders the main content area of the dashboard. As an `async` server component, it performs several data fetches to populate the dashboard with relevant information. It first authenticates the user and fetches the professional's profile, similar to the layout, redirecting if the user is not authenticated or lacks a professional profile.
+*   **Welcome Card**: Shown only when `totalClients` is 0, guiding new professionals to share their public booking link.
+*   **Plan Limit Banners**: Alerts are displayed if the professional is nearing or has reached their plan's limits for clients or monthly appointments, prompting an upgrade. The `PLANS` object from `@/lib/stripe` defines these limits for `free`, `basic`, `pro`, and `premium` plans.
+*   **Trial Banners**: The page displays a banner to invite free users to start a Pro trial, and another banner informs professionals about their active Pro trial, showing `daysLeft` and encouraging subscription.
+*   **Profile Completeness Banner**: Appears if `profileGaps` exist and the professional has at least one client, nudging them to complete their profile.
+*   **Greeting and Stats**: Displays a personalized greeting and key metrics like today's appointments, pending confirmations, and total clients.
+*   **Reputation Section**: If `reviewCount` is greater than 0, it shows the average rating and recent client comments, linking to the professional's public profile.
+*   **Appointment Lists**: Separate sections for "Agenda de hoje" (Today's appointments) and "Próximos agendamentos" (Upcoming appointments). Each appointment displays time, client name, phone, and status. The `STATUS_LABEL` object maps appointment statuses to human-readable labels and Tailwind CSS classes for visual distinction.
+*   **Appointment Actions**: For `pending_confirmation` or `confirmed` appointments, the `AppointmentActions` component is rendered, allowing professionals to manage the appointment status.
+*   **Revenue**: If `revenue` for today's captured payments is greater than 0, it displays the total.
 
-The page then queries the database for:
-*   **Today's Appointments**: Using `getToday()` to define the start and end of the current day, it fetches appointments for the logged-in professional, joining with the `clients` table to display client names and phones.
-*   **Upcoming Appointments**: It fetches up to 20 future appointments, ordered by `startsAt`, providing a glimpse into the professional's schedule beyond the current day.
-*   **Total Clients**: A count of all clients associated with the professional.
-*   **Monthly Appointments**: A count of appointments scheduled within the current month.
+Utility functions like `getToday`, `formatTime`, and `formatCurrency` are used to format dates, times, and monetary values for display.
 
-These fetched data points are used to display various informational banners and statistics:
-*   **`WelcomeCard`**: Shown only when `totalClients` is 0, this card provides a first-run experience, guiding new professionals to share their public booking page.
-*   **Plan Limit Banners**: The page calculates `isAtClientLimit`, `isNearClientLimit`, `isAtMonthlyLimit`, and `isNearMonthlyLimit` based on the professional's `plan` and the `PLANS` configuration from `@/lib/stripe`. These banners alert professionals when they are approaching or have reached their plan's limits for clients or monthly appointments, prompting them to upgrade.
-*   **Trial Banners**: The page displays two types of trial-related banners. A `TrialBanner` component is shown to free plan users who have not yet started a trial, encouraging them to opt-in. If the professional is on an active trial (`trialEndsAt` is set), a separate banner displays the `daysLeft` calculated by `trialDaysLeft` from `@/lib/plan-guard`, encouraging subscription.
-*   **Key Statistics**: A grid displays the number of appointments today, pending confirmations, and total clients.
-*   **Appointment Lists**: Both "Agenda de hoje" and "Próximos agendamentos" sections list appointments, showing time, client name, phone, and status. The `STATUS_LABEL` object provides consistent styling and text for different appointment statuses.
-*   **`AppointmentActions`**: For `pending_confirmation` or `confirmed` appointments, this component allows professionals to change the appointment status directly from the dashboard.
-*   **Revenue**: If `todayAppointments` include any `captured` payments, the total `professional.sessionPrice` for those appointments is summed and displayed as "Receita de hoje" using `formatCurrency`.
+## Dashboard Sidebar
 
-Utility functions like `getToday`, `formatTime`, and `formatCurrency` are defined locally to format dates, times, and monetary values for display.
+The `src/app/dashboard/sidebar.tsx` is a client component, indicated by `"use client"`. This choice is necessary because it uses React hooks like `useState` for managing mobile menu state and Next.js hooks like `usePathname` and `useRouter` for navigation and client-side redirects (e.g., after logout).
+
+The sidebar receives `professionalName`, `professionalSlug`, `plan`, and `trialEndsAt` as props from the `DashboardLayout`. It uses these to:
+
+*   Display the professional's initials and current plan status (e.g., "Pro (trial)"). The `PLAN_LABEL` and `PLAN_COLOR` objects provide localized names and styling for each plan.
+*   Render a trial banner if `daysLeft` is not null, similar to the main dashboard page, but tailored for the sidebar's compact space.
+*   Populate the navigation (`NAV` array), which includes links to `/dashboard`, `/dashboard/clients`, `/dashboard/messages`, `/dashboard/reports`, `/dashboard/assistant`, `/dashboard/plans`, and `/dashboard/settings`.
+*   Crucially, some navigation items are marked `proOnly`. If the `activePlan` is "free", these links are visually "locked" and redirect to the `/dashboard/plans` page when clicked, encouraging an upgrade.
+*   Provide links to the professional's public page (`/p/[slug]`) and a "Client Mode" (`/c`).
+*   Offer a logout button that calls `supabase.auth.signOut()` and redirects the user to `/login`.
+*   Integrate `ThemeToggle` for dark/light mode switching and `NotificationBell` for alerts.
+
+The sidebar implements a responsive design, appearing as a fixed sidebar on desktop (`md:flex`) and transforming into a mobile drawer (`fixed top-0 left-0 z-50`) that can be toggled open and closed on smaller screens.
 
 ## Design decisions
 
-The architecture of the dashboard reflects several deliberate design choices:
+The dashboard's design reflects a clear separation of concerns between server and client components, a common pattern in Next.js applications.
 
-*   **Server Components for Initial Data**: Both `src/app/dashboard/layout.tsx` and `src/app/dashboard/page.tsx` are server components. This allows for direct, secure database access using Drizzle ORM and Supabase's server client (`createClient` from `@/lib/supabase/server`) without exposing database credentials to the client. Fetching data on the server reduces the amount of JavaScript shipped to the client and can improve initial page load performance. The trade-off is that subsequent data updates (e.g., after an `AppointmentActions` interaction) might require a full page refresh or a separate API call.
-*   **Centralized Professional Profile Fetching**: The `professional` object is fetched once in `src/app/dashboard/layout.tsx` and passed to the `Sidebar`. However, `src/app/dashboard/page.tsx` also performs an identical database query for the professional's details, resulting in redundant database calls. This is noted as a potential improvement.
-*   **Client-Side Interactivity for Sidebar**: The `src/app/dashboard/sidebar.tsx` is a client component (`"use client"`). This choice enables interactive features like the mobile drawer state management and the client-side logout functionality. While it introduces client-side JavaScript, the benefits of a responsive and interactive navigation outweigh the minimal overhead for this specific component.
-*   **Modular UI Components**: Components like `AppointmentActions`, `TrialBanner`, and `WelcomeCard` are extracted into separate files. This promotes reusability, improves code organization, and makes the main `page.tsx` more readable by abstracting away specific UI logic.
-*   **Drizzle ORM for Database Interactions**: The use of Drizzle ORM (`@/lib/db`) provides a type-safe and expressive way to interact with the PostgreSQL database. This reduces the likelihood of SQL injection vulnerabilities and type-related errors, enhancing developer experience and code maintainability.
-*   **Plan and Trial Logic Encapsulation**: The `trialDaysLeft` and `effectivePlan` functions are placed in `@/lib/plan-guard`. This centralizes the business logic related to subscription plans and trials, ensuring consistent application across the dashboard (e.g., in `page.tsx` for banners and `sidebar.tsx` for navigation locks).
+*   **Server-Side Data Fetching**: Both `layout.tsx` and `page.tsx` are server components, fetching data directly from the database using Drizzle ORM. This decision keeps sensitive database queries and business logic (like plan limit calculations or profile completeness checks) on the server, preventing them from being exposed to the client. It also reduces the JavaScript bundle size sent to the browser, improving initial page load performance. The use of `Promise.all` for concurrent queries in `page.tsx` is a deliberate choice to minimize the total data fetching time, as many independent pieces of information are required to render the dashboard.
+*   **Client-Side Interactivity**: The `sidebar.tsx` component is marked `"use client"` because it requires client-side state management (`useState`) for its mobile drawer functionality and client-side routing hooks (`usePathname`, `useRouter`) for active link highlighting and navigation. This allows for a dynamic and responsive navigation experience without forcing the entire dashboard to be a client component.
+*   **Drizzle ORM for Type Safety and Efficiency**: The application uses Drizzle ORM for database interactions. This provides type safety for queries and results, reducing runtime errors. The direct use of Drizzle's `eq`, `and`, `gte`, `lte`, `count`, `gt`, `desc`, and `sql` functions allows for expressive and efficient SQL queries, directly mapping to the underlying database schema with 11 tables, including `professionals`, `appointments`, `clients`, and `reviews`.
+*   **Conditional UI for Guided Experience**: The extensive use of conditional rendering for banners (welcome, trial, plan limits, profile gaps) and content sections (reputation, upcoming appointments, revenue) is a design choice to provide a highly tailored and guided user experience. New users see onboarding nudges, users on trials are encouraged to subscribe, and users nearing plan limits are prompted to upgrade. This proactive communication helps users understand their status and available actions.
 
 ## Potential improvements
 
-1.  **Optimize Professional Data Fetching**: The `professional` data is fetched in `src/app/dashboard/layout.tsx` to pass to the `Sidebar`, but `src/app/dashboard/page.tsx` also performs an identical database query to retrieve the professional's details. This results in redundant database calls. The `professional` object could be fetched once in the layout and then passed down to `page.tsx` as a prop, or a React Context could be used to make the professional data available to all child components without re-fetching.
-2.  **Centralize Appointment Status Labels**: The `STATUS_LABEL` object, which maps appointment statuses to their display text and Tailwind CSS classes, is currently defined directly within `src/app/dashboard/page.tsx`. If other parts of the application (e.g., a dedicated appointments page, client view) also need to display appointment statuses, this object would likely be duplicated. Moving `STATUS_LABEL` to a shared utility file (e.g., `src/lib/constants/appointments.ts`) would promote consistency and easier maintenance.
-3.  **Client-Side Appointment Updates**: When a professional uses the `AppointmentActions` component to change an appointment's status (e.g., confirm or reject), the current server component architecture means the page would typically need a full refresh to reflect the change. Implementing a client-side data revalidation strategy (e.g., using `router.refresh()` from Next.js, or a data fetching library like SWR or React Query) after an action would provide a more fluid user experience by updating only the relevant parts of the UI without a full page reload.
+1.  **Optimize Redundant Data Fetching**: The `professional` data is fetched independently in both `src/app/dashboard/layout.tsx` and `src/app/dashboard/page.tsx`. While Next.js might de-duplicate some requests, passing the `professional` object as a prop from the layout to its children (`page.tsx`) would explicitly ensure the data is fetched only once at the layout level. This would reduce database load and potentially improve the performance of the dashboard page.
+2.  **Centralize UI Text and Internationalization**: Many strings in `src/app/dashboard/page.tsx` and `src/app/dashboard/sidebar.tsx` are hardcoded in Portuguese (`pt-BR`), such as "Olá", "agendamentos", "Clientes", "Sair", and the date/currency formatting. Introducing an internationalization (i18n) library and centralizing these texts would make the application adaptable to multiple languages and locales without modifying component code. This would also simplify text updates and ensure consistency.
+3.  **Refine `AppointmentActions` Logic**: The `AppointmentActions` component in `src/app/dashboard/page.tsx` is conditionally rendered for `pending_confirmation` or `confirmed` appointments. While the component itself is client-side, the actual status updates likely involve API calls. Explicitly defining and documenting the API routes (e.g., `/api/appointments/[id]` with a `PATCH` method) that `AppointmentActions` interacts with would clarify the data flow and allow for more granular control over permissions and validation for appointment status changes.
+4.  **Implement Loading Skeletons**: For a data-rich page like the dashboard, the initial load or subsequent data refreshes can take time. Introducing loading skeletons for the various sections (stats, appointments, reviews) in `src/app/dashboard/page.tsx` would provide a better user experience by indicating that content is being loaded, rather than presenting a blank screen or abrupt content pop-ins.
 
 ## References
 
 *   `src/app/dashboard/page.tsx`
 *   `src/app/dashboard/sidebar.tsx`
 *   `src/app/dashboard/layout.tsx`
----

@@ -5,125 +5,68 @@ description: "AI layer overview: Groq, tool-calling, two agents"
 
 # AI Layer
 
-The AI layer in Odys represents a significant step towards automating and enhancing interactions for both professionals and their clients. At its core, this layer leverages the power of large language models (LLMs) from Groq, specifically the `llama-3.3-70b-versatile` model, to understand natural language, execute predefined tools, and generate intelligent responses. This document delves into the architecture, design choices, and operational specifics of the two primary AI agents: the client-facing WhatsApp Intake Agent and the professional-facing Dashboard Assistant.
+The AI layer in Odys introduces intelligent agents to streamline interactions for both clients and professionals. This system is built around the concept of tool-calling, allowing large language models (LLMs) to interact with the application's backend services and database to retrieve or manipulate data. The current implementation features two distinct agents, each tailored to a specific user persona and set of tasks, powered by a flexible LLM provider chain that includes Groq, Cerebras, and Gemini via the `chatWithFallback` utility.
 
 ## Overview
 
-Odys employs a dual-agent strategy for its AI capabilities, each tailored to a distinct user persona and set of tasks. Both agents share a common foundation: they utilize Groq's LLM for natural language processing and tool-calling, and they follow a two-pass interaction pattern with the LLM to ensure robust and controlled execution of actions.
+Odys employs two primary AI agents, each serving a distinct purpose and audience:
 
-The first agent, implemented in `src/lib/ai-intake.ts`, acts as an automated WhatsApp assistant for clients. Its primary role is to handle inbound messages, understand client requests related to scheduling, check professional availability, and book appointments. This agent is designed to streamline the booking process, making it as natural and conversational as possible.
+1.  **WhatsApp Concierge (`ai-intake.ts`)**: This agent acts as a public-facing assistant, handling inbound WhatsApp messages on the main Odys corporate number. Its core function is to help clients discover professionals across the entire marketplace, browse their schedules, and book appointments. It operates with a broader scope, facilitating client-to-professional matching and booking.
+2.  **Professional Assistant (`src/app/api/ai/chat/route.ts`)**: This agent is an internal tool for professionals, accessible via the `/api/ai/chat` endpoint. It provides professionals with insights into their own business, such as appointment statistics, client no-show rates, and upcoming schedules. Its scope is limited to the data of the authenticated professional.
 
-The second agent, found in `src/app/api/ai/chat/route.ts`, serves as an internal assistant for professionals within the Odys dashboard. This agent provides data-driven insights, answering questions about appointments, client behavior, and revenue. It empowers professionals to quickly grasp key metrics and trends without manually navigating reports.
+Both agents utilize an OpenAI-compatible tool-calling interface, allowing them to execute predefined functions to interact with the Odys database and external services. This architecture enables the LLM to perform complex, multi-step operations by chaining tool calls and generating natural language responses based on the results.
 
-Both agents interact with the Odys database, managed by Drizzle ORM, to fetch and update information across various tables such as `professionals`, `availability`, `appointments`, and `clients`. This integration allows the AI to perform real-world actions and retrieve up-to-date data, making it a truly functional component of the platform.
+## WhatsApp Concierge (`src/lib/ai-intake.ts`)
 
-## AI WhatsApp Intake Agent (`src/lib/ai-intake.ts`)
+The `ai-intake.ts` module defines the Odys WhatsApp Concierge, a sophisticated agent designed to guide clients through the process of finding and booking appointments with professionals. This agent manages a conversation state machine, transitioning between discovery (when no professional is selected) and a focused mode (when a professional is chosen).
 
-This agent is the conversational interface for clients interacting with professionals via WhatsApp. Its main goal is to facilitate appointment bookings and provide information about the professional's schedule.
+The agent's capabilities are exposed through a set of nine distinct tools, each with a specific function:
 
-### Core Functionality
+*   `search_professionals`: This tool is fundamental for client discovery. It queries the `professionals` table, allowing searches by `profession`, `city`, `name`, and `service_type` (online, in-person, or both). It incorporates a ranking system using `getProStats` and `rankScore` to prioritize results based on average rating, review count, completed appointments, and plan tier. For location-based searches, it can use `geocodeCity` to find a city's centroid and `distanceKm` to penalize distant professionals, even offering `findNearestProfessionals` as a fallback if no local matches are found.
+*   `list_professions`: This tool dynamically lists only those professions that have at least one active professional registered in the `professionals` table, preventing the AI from suggesting unavailable services.
+*   `select_professional`: This tool allows the AI to "focus" the conversation on a specific professional by setting their `professional_id` in the conversation state.
+*   `get_professional_info`: Once a professional is selected, this tool fetches detailed information from the `professionals` table, including their `bio`, `addressLine`, `sessionDuration`, `sessionPrice`, and `serviceType`. It also retrieves `availability` rules, `reviews` (joining with `clients` for client names), and `getProStats` for social proof.
+*   `get_available_slots`: This critical tool calculates actual available appointment slots for a given `professionalId` and `date`. It considers the professional's `availability` rules and existing `appointments` to prevent conflicts. If no slots are found for the requested date, it proactively searches for alternatives in the next seven days.
+*   `book_appointment`: This tool handles the core booking logic. It creates a new entry in the `appointments` table, linking it to a `professionalId` and a `clientId` (creating a new client in the `clients` table if necessary). It includes checks for past dates, duplicate bookings, and concurrent slot filling using Drizzle's transaction capabilities with `serializable` isolation. Upon successful booking, it triggers notifications via WhatsApp (`sendWhatsApp` using templates like `msgBookingConfirmed` or `msgBookingRequest`) and email (`sendBookingRequestEmailToProfessional`), and generates `notifications` records. It also computes `payment_policy` and `pix_payload` if applicable.
+*   `list_my_appointments`: This tool retrieves future appointments for the current client.
+*   `cancel_appointment`: This tool updates the status of an existing appointment in the `appointments` table.
+*   `reschedule_appointment`: This tool allows modifying an existing appointment's date and time, typically after `get_available_slots` has been used to find new suitable times.
 
-The `handleIncomingMessage` function orchestrates the entire interaction. When a client sends a message, this function:
+The agent employs a "two-pass tool-calling" mechanism: the LLM first decides if a tool is needed, and if so, executes it. The results are then fed back into the LLM's context for a second pass, allowing it to generate a coherent, informed final reply. This approach helps the AI to reason over tool outputs before formulating a user-facing message.
 
-1.  **Loads Professional Data**: It first retrieves the `professional`'s details from the `professionals` table, which are crucial for building the system prompt and understanding session parameters like `sessionDuration`.
-2.  **Manages Conversation State**: It uses `getConversation` and `saveConversation` to maintain a persistent chat history and context for each client-professional pair. This allows the LLM to remember previous turns and client details like `clientName`.
-3.  **Contextualizes Messages**: Beyond the raw chat history, it enriches the LLM's understanding by:
-    *   Injecting known `clientName` and `senderPhone`.
-    *   Crucially, if the incoming message is a reply to a recent transactional notification (e.g., a reminder or confirmation), it fetches details of the referenced `appointmentId` from the `appointments` table and adds this context to the LLM's system prompt. This helps the LLM correctly interpret replies like "preciso remarcar" in relation to a specific booking.
-4.  **Two-Pass LLM Interaction**:
-    *   **First Pass**: A call to Groq's `llama-3.3-70b-versatile` model is made with the system prompt, conversation history, and a set of `TOOLS`. The LLM decides whether to invoke any of these tools based on the user's query.
-    *   **Tool Execution**: If the LLM suggests tool calls, the agent executes the corresponding JavaScript functions:
-        *   `get_available_slots`: Queries the `availability` table to find open slots for a given date, considering the professional's `sessionDuration`, existing `appointments` (excluding those with `rejected` or `cancelled` status), and ensuring only future slots are returned.
-        *   `book_appointment`: Creates a new entry in the `appointments` table, setting its initial `status` to `confirmed` if the professional has `autoConfirm` enabled, otherwise to `pending_confirmation`. This critical function includes an atomic transaction to prevent race conditions, ensuring that two concurrent booking attempts for the same slot do not succeed by checking against existing appointments (excluding those with `rejected` or `cancelled` status). It also handles client upsertion into the `clients` table and triggers notifications (in-app, WhatsApp via `sendWhatsApp`, and email via `sendBookingRequestEmailToProfessional`) to the professional. If the client's name is not explicitly provided by the LLM or found in the conversation history, it defaults to 'Cliente WhatsApp' during client upsertion.
-        *   `get_professional_info`: Retrieves details like `name`, `profession`, `sessionDuration`, `sessionPrice` (in BRL), and `schedule` from the `professionals` and `availability` tables.
-    *   **Second Pass**: The results from the tool executions are fed back to the LLM, which then generates the final, human-readable response to the client.
+## Professional Assistant (`src/app/api/ai/chat/route.ts`)
 
-### System Prompt Directives
+The `src/app/api/ai/chat/route.ts` file defines the API endpoint for the Professional Assistant. This agent is designed to provide professionals with quick access to their business data through a conversational interface. It is secured by `getUser` and `getProfessional` checks, ensuring that only authenticated professionals can access their specific data. Access to this feature is also gated by the `canUseFeature` utility, requiring a "Pro" or "Premium" plan.
 
-The `buildSystemPrompt` function defines specific directives for the LLM to ensure consistent and appropriate interactions:
+This agent uses a more focused set of three tools:
 
-- Always respond in Brazilian Portuguese, in a friendly and concise manner.
-- Never invent schedules; always use the `get_available_slots` tool to verify availability.
-- If the client does not provide a date or name, ask for it before confirming an appointment.
-- After confirming an appointment, inform the client of the date, time, and professional's name.
-- For out-of-scope questions (e.g., pricing, complaints), politely direct the client to the website or to contact the professional directly.
-- Use emojis sparingly (max 1-2 per message) and be direct, with a maximum of 3 follow-up messages before suggesting the website.
-- Never mention being an AI or virtual assistant.
+*   `get_stats`: This tool retrieves comprehensive statistics for the professional over the last six months. It queries the `appointments` table to calculate global and month-by-month summaries of total appointments, completed sessions, no-shows, no-show rates, and estimated revenue based on the professional's `sessionPrice`.
+*   `get_upcoming`: This tool fetches a list of appointments scheduled for the next seven days, joining `appointments` with `clients` to display client names.
+*   `get_no_show_clients`: This tool identifies clients with the highest number of no-shows over the past six months, querying `appointments` and `clients` to provide a ranking with individual no-show rates.
 
-### Timezone Handling
+A rate limit (`aichat` with `20` requests per `1 h`) is applied per authenticated user (`user.id`) to prevent abuse and manage LLM costs. Similar to the Concierge, this agent also uses a two-pass tool-calling approach to ensure that tool results are properly integrated into the final response.
 
-A notable detail is the explicit handling of timezones. Brazil abolished DST in 2019, meaning São Paulo is consistently UTC-3. Functions like `saoPauloDate`, `formatSaoPauloTime`, and `formatSaoPauloDate` ensure that all date and time calculations and displays are accurate for the "America/Sao_Paulo" timezone, preventing common scheduling errors.
+## Design decisions
 
-## AI Professional Assistant (`src/app/api/ai/chat/route.ts`)
+The architecture of the AI layer reflects several deliberate design choices:
 
-This API route powers the AI chat assistant available to professionals within the Odys application. It's designed to answer data-related queries about their business performance.
+*   **Separation of Concerns**: Two distinct agents (`ai-intake.ts` and `src/app/api/ai/chat/route.ts`) were created to serve different user types (clients vs. professionals) and use cases (discovery/booking vs. business analytics). This separation allows each agent to have a highly specialized prompt, toolset, and data access patterns, reducing complexity and improving the relevance of responses for each persona.
+*   **Two-Pass Tool-Calling**: Both agents implement a two-pass tool-calling mechanism. The LLM first generates a tool call, and only after the tool's output is available does it generate the final user-facing response. This design choice provides the LLM with the full context of the tool's execution, including any errors or specific data, before formulating its reply. This helps prevent "hallucinations" about tool results and allows for more nuanced, data-driven conversations.
+*   **Terse Tool Descriptions**: The `description` fields for the tools are intentionally kept short (e.g., "Busca pros. SEMPRE antes de listar."). This is a token-saving optimization. The expectation is that the main system prompt provides the detailed instructions and examples for when and how to use each tool, making the verbose descriptions in the tool schema redundant and costly on every LLM call.
+*   **Flexible LLM Provider Chain**: The use of `chatWithFallback` in `src/lib/llm` allows the system to dynamically switch between different LLM providers (Groq, Cerebras, Gemini). This provides resilience and cost optimization, ensuring that conversations can continue even if one provider experiences issues or if a more cost-effective option is available for certain types of requests.
+*   **Database Interaction via Drizzle**: All database operations within the tools are performed using Drizzle ORM. This provides type safety and a consistent interface for interacting with the PostgreSQL database, abstracting raw SQL queries and improving developer experience. The use of `serializable` isolation for `bookAppointment` transactions is a critical choice to prevent race conditions during concurrent booking attempts.
 
-### Core Functionality
+## Potential improvements
 
-The `POST` handler for `/api/ai/chat` performs several crucial steps:
-
-1.  **Authentication and Authorization**: It verifies the `user`'s identity and ensures they are a `professional`.
-2.  **Rate Limiting**: To manage resource consumption and prevent abuse, a `getAiChatLimiter` is applied per authenticated `user.id`, allowing 20 requests per hour.
-3.  **Plan Guarding**: It checks if the professional's `plan` (e.g., "Pro" or "Premium") and `trialEndsAt` date permit access to the AI assistant feature using `canUseFeature`.
-4.  **Two-Pass LLM Interaction**: Similar to the intake agent, it uses a two-pass approach with Groq:
-    *   **First Pass**: The LLM receives a `SYSTEM_PROMPT` tailored for business insights and the user's chat history. It then decides if any of its defined `TOOLS` are relevant.
-    *   **Tool Execution**: The agent executes the chosen tool functions:
-        *   `get_stats`: Gathers comprehensive statistics for the last six months, including total appointments, completed sessions, no-shows, no-show rates (calculated only from `confirmed`, `completed`, `no_show`, and `cancelled` appointments), and revenue. It queries the `appointments` table and calculates metrics per month and globally.
-        *   `get_upcoming`: Fetches appointments scheduled for the current day and the next seven days (totaling up to eight days), joining `appointments` with `clients` to display client names.
-        *   `get_no_show_clients`: Identifies and ranks clients with the highest number of no-shows over the past seven months, querying `appointments` and `clients` and using SQL aggregation.
-    *   **Second Pass**: The LLM processes the tool results and generates a concise, formatted response for the professional.
-
-### System Prompt Directives
-
-The `SYSTEM_PROMPT` constant defines specific directives and formatting instructions for the LLM to ensure accurate and consistent business insights:
-
-- Respond in Portuguese, using tools to fetch data and never inventing numbers. Format monetary values in BRL.
-- Specific tool usage guidance: use `get_stats` for 'no-show rate' or 'monthly summary'; use `get_no_show_clients` for 'which clients miss most'.
-- When responding about no-show rates, follow a specific format: global rate, month-by-month list (total appointments, no-shows, rate), and a short 1-2 sentence trend analysis.
-- When responding about monthly summaries, detail the current month and compare it to the previous one, always including all available months for no-show rate queries.
-
-## Design Decisions
-
-### Two-Pass LLM Interaction Pattern
-
-Both AI agents employ a two-pass interaction with the Groq LLM. The first pass allows the LLM to analyze the user's request and determine if a tool needs to be called. If so, the tool's arguments are extracted. The second pass then takes the results of the tool execution and uses them to formulate a final, coherent response. This pattern is chosen for several reasons:
-
-*   **Reliability**: It separates the "thinking" (tool selection) from the "acting" (tool execution) and "explaining" (response generation). This makes the system more robust, as tool execution errors can be handled before the final response is crafted.
-*   **Control**: It gives the application explicit control over tool execution. The application can validate tool arguments, handle errors, and inject additional context before the LLM generates its final output.
-*   **Cost Efficiency**: While it involves two API calls to the LLM, the first call is often shorter, and the second call is highly focused on generating a response based on concrete data, potentially leading to more precise and less "hallucinated" outputs.
-
-### Dedicated Agents for Different Personas
-
-The decision to create two distinct AI agents (`ai-intake.ts` for clients and `api/ai/chat/route.ts` for professionals) reflects a clear separation of concerns. Each agent has its own `SYSTEM_PROMPT` and `TOOLS` tailored to the specific needs and context of its user persona. This allows for:
-
-*   **Focused Prompts**: System prompts can be highly specific, guiding the LLM to behave appropriately for a client-facing conversational agent versus a data-analysis assistant.
-*   **Relevant Tools**: Each agent only exposes the tools necessary for its domain, reducing the complexity for the LLM and improving its ability to select the correct function.
-*   **Security and Access Control**: The professional assistant includes `canUseFeature` checks and `getAiChatLimiter` to enforce business rules and resource limits, which are not relevant for the client intake agent.
-
-### Groq as the LLM Provider
-
-Groq was chosen as the LLM provider, specifically using the `llama-3.3-70b-versatile` model. This choice likely prioritizes:
-
-*   **Performance**: Groq is known for its high inference speed, which is critical for conversational agents like the WhatsApp intake, where quick responses enhance user experience.
-*   **Cost-Effectiveness**: While not explicitly stated, Groq's pricing model can be competitive for high-volume inference compared to other providers.
-
-### Atomic Database Transactions for Booking
-
-The `bookAppointment` function in `ai-intake.ts` uses a Drizzle ORM transaction with `isolationLevel: "serializable"`. This is a crucial design decision to ensure data integrity, especially when multiple clients might attempt to book the same slot concurrently.
-
-*   **Concurrency Control**: A serializable transaction guarantees that concurrent transactions behave as if they were executed sequentially. If two booking attempts target the same slot, one will proceed, and the other will be aborted by Postgres with a `40001` SQLSTATE (serialization failure), which is then caught and translated into a user-friendly "Este horário acabou de ser preenchido" message. This prevents double-bookings and maintains the consistency of the `appointments` table.
-
-## Potential Improvements
-
-1.  **Enhanced Appointment Management in `ai-intake.ts`**: The `ai-intake.ts` agent currently focuses solely on *creating* appointments. Given the `outboundContext` mechanism that seeds the LLM with information about existing appointments (e.g., for reminders), it would be beneficial to introduce tools for *modifying* existing appointments. For instance, a `reschedule_appointment` or `cancel_appointment` tool could allow clients to manage their bookings directly through WhatsApp, reducing manual intervention by the professional. This would leverage the existing context about `appointmentId` more fully.
-
-2.  **Dynamic Tool Registration and Management**: The `TOOLS` arrays in both `src/lib/ai-intake.ts` and `src/app/api/ai/chat/route.ts` are hardcoded. As the system grows and more tools are added, managing these definitions can become cumbersome. A more dynamic approach, perhaps by defining tools in a central registry or using a decorator pattern, could simplify maintenance and allow for easier scaling of AI capabilities. This would also make it easier to enable/disable tools based on professional plans or other business logic.
-
-3.  **Refined Error Handling and User Feedback in `ai-intake.ts`**: When the `professional` is not found in `handleIncomingMessage`, the function returns a generic "Desculpe, não consegui processar sua mensagem." While functional, this message could be more informative or guide the user to alternative contact methods. Similarly, specific tool errors (e.g., `getAvailableSlots` returning "Data inválida") could be surfaced to the user in a more structured way, perhaps with suggestions for correction, rather than relying solely on the LLM's interpretation.
-
-4.  **Centralized Timezone Utility**: The timezone helper functions (`saoPauloDate`, `formatSaoPauloTime`, `formatSaoPauloDate`) are defined directly within `src/lib/ai-intake.ts`. While functional, a more centralized and reusable timezone utility (e.g., in `src/lib/date-utils.ts`) could prevent duplication and ensure consistent timezone handling across the entire application, especially if other parts of Odys need to interact with São Paulo-specific times.
+1.  **Optimizing `getAvailableSlots` Database Calls**: In `src/lib/ai-intake.ts`, the `getAvailableSlots` function, when finding no slots for a requested date, iterates through the next seven days, calling `computeSlotsForDate` for each. Each `computeSlotsForDate` call then re-queries the `availability` table for the professional's rules. To reduce database load, the professional's `availability` rules could be fetched once at the beginning of `getAvailableSlots` and then passed as an argument to `computeSlotsForDate` for each date calculation.
+2.  **Database-level Aggregation in `getStats`**: The `getStats` function in `src/app/api/ai/chat/route.ts` fetches all appointments for the last six months and then performs in-memory filtering and aggregation to build per-month summaries. For professionals with a high volume of appointments, or if the reporting period were to be extended, this could become inefficient. Drizzle's SQL aggregation functions could be used to perform the monthly grouping and counting directly within the database query, offloading computation to the database and reducing the amount of data transferred.
+3.  **Robust Notification Delivery**: The `bookAppointment` function in `src/lib/ai-intake.ts` sends WhatsApp messages and emails using `sendWhatsApp` and `sendBookingRequestEmailToProfessional` with `.catch()` blocks for error logging. While this logs failures, it does not guarantee delivery or provide retry mechanisms. For critical notifications, integrating a dedicated message queue or a more robust notification service could ensure higher reliability and better error handling, such as automatic retries or dead-letter queues.
 
 ## References
 
 *   `src/lib/ai-intake.ts`
 *   `src/app/api/ai/chat/route.ts`
+*   `src/lib/llm.ts`
+*   `src/lib/db/schema.ts` (for table definitions)
+*   `src/lib/ratelimit.ts` (for `aichat` rate limiting)
+*   `src/lib/plan-guard.ts` (for feature access control)

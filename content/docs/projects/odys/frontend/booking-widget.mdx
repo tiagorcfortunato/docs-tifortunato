@@ -1,39 +1,74 @@
 ---
-title: "Booking Widget Internals"
-description: "3-step state machine, react-hook-form, slot computation"
+title: Booking Widget
+description: The client-side booking widget, covering its 3-step state machine, form handling with react-hook-form, and dynamic slot computation.
 ---
 
-# Booking Widget Internals
+# Booking Widget
 
-The booking widget is the core client-facing component for scheduling appointments in Odys. It orchestrates user interaction, form validation, time slot generation, and backend communication—all within a streamlined, three-step flow. Understanding its internals reveals how Odys balances usability, performance, and spam resistance in a real-world scheduling context.
+The `BookingWidget` component, located at `src/app/p/[slug]/booking-widget.tsx`, serves as the primary interface for clients to schedule appointments with professionals. This interactive client-side component orchestrates a multi-step booking process, dynamically calculating available time slots and collecting client information before submitting a booking request to the backend. It is a critical piece of the user experience, directly impacting how clients interact with a professional's public profile page, rendered by `src/app/p/[slug]/page.tsx`.
 
 ## Overview
 
-The widget is a React Client Component powered by `react-hook-form` and `zod` for form management and validation. It integrates with a backend API (`/api/booking`) to fetch availability and submit bookings, leveraging the `availability`, `professionals`, and `appointments` database tables. The state machine drives the UX through three phases: picking a date and time, entering client details, and displaying success. Slot computation happens client-side using rules derived from the `availability` table and existing `appointments`, ensuring real-time responsiveness.
+The booking widget is a React client component, indicated by the `"use client"` directive, allowing it to manage interactive state and handle user input. It operates through a three-step state machine: `pick` (date and time selection), `form` (client information input), and `success` (booking confirmation). The widget relies on several external libraries for its functionality, including `react-hook-form` for robust form management and validation, `zod` for schema definition, and `date-fns` for date and time manipulation.
 
-## State Machine and User Flow
+Data for the widget is sourced from various Drizzle ORM tables, primarily the `professionals` table for details like `sessionDuration`, `sessionPrice`, and payment configuration, and the `availability` table for the professional's general working hours. When a client selects a date, the widget fetches specific availability rules and existing appointments via the `/api/booking` API route to compute the actual bookable slots. Upon successful submission, a new entry is intended for the `appointments` table, linking the professional and client.
 
-The widget uses a simple but effective state machine with three states: `"pick"`, `"form"`, and `"success"`. This pattern keeps the UI focused and reduces cognitive load. The transition from date selection to form submission is gated by `selectedDate` and `selectedSlot`, ensuring data integrity before proceeding. The success screen not only confirms the booking but also conditionally renders a Pix QR code for immediate payment, based on `paymentType` and `pixKey`—a key feature for Brazil’s financial landscape.
+## Booking Flow State Machine
 
-## Slot Generation and Availability Logic
+The `BookingWidget` manages its user interface through a simple, explicit state machine, controlled by the `step` state variable, which can be `"pick"`, `"form"`, or `"success"`. This sequential flow guides the user through the booking process logically.
 
-Slot computation is handled by `generateSlots` in `src/lib/slots.ts`, a pure function that takes a date, availability rules, existing appointments, and session duration. It generates time slots in `HH:mm` format, skipping those in the past or conflicting with existing appointments. The logic respects `sessionDuration` from the `professionals` table and uses `availability.startTime` and `endTime` to define the working window. This client-side approach reduces server load and enables instant feedback when users navigate the calendar. Additionally, the calendar UI itself prevents selection of past dates via the `disabled` prop (`src/app/p/[slug]/booking-widget.tsx:204`), ensuring users cannot even attempt to pick a historical day.
+1.  **`pick` (Date and Time Selection)**: This initial step presents a calendar (`Calendar` component) for date selection and dynamically displays available time slots for the chosen day.
+    *   When a date is selected, an `useEffect` hook triggers a fetch request to `/api/booking?slug={slug}&date={dateStr}`. This API call retrieves the professional's `availability` rules (from the `availability` table) and any `existingAppointments` (from the `appointments` table) for that specific day.
+    *   The fetched data is then passed to the `generateSlots` utility function, which calculates and returns a list of available time slots, considering the professional's `sessionDuration` (from the `professionals` table).
+    *   Slots are visually grouped into "Manhã" (Morning), "Tarde" (Afternoon), and "Noite" (Evening) for better readability using the `groupSlots` helper.
+    *   Users select a `selectedSlot`, and a "Continuar" button appears, transitioning the `step` to `"form"`.
+
+2.  **`form` (Client Information Input)**: Once a date and time are chosen, the widget transitions to collect client details.
+    *   This step uses `react-hook-form` with `zodResolver` to manage a form based on the `clientSchema`. This schema defines fields for `name`, `phone`, `email`, and a hidden `website` field.
+    *   The `website` field acts as a honeypot, a common spam prevention technique. It is visually hidden and inaccessible to legitimate users but might be filled by automated bots. Any non-empty value in this field on the server-side indicates a spam submission, which is then silently dropped.
+    *   Default values for `name`, `phone`, and `email` can be pre-filled if the user is logged in and their client data is available from the `clients` table, passed down from `src/app/p/[slug]/page.tsx`.
+    *   Upon submission, the `onSubmit` function sends a POST request to `/api/booking` with the professional's `slug`, the calculated `startsAt` timestamp, and the client's entered data.
+    *   A successful booking triggers a `posthog.capture("booking_created")` event for analytics and transitions the `step` to `"success"`.
+
+3.  **`success` (Booking Confirmation)**: The final step confirms the booking request.
+    *   It displays a success message, reiterating the professional's name, selected date, and time.
+    *   If the `paymentType` (from the `professionals` table) is not "after" and a `pixKey` is available, a `PixQR` component is rendered, showing the amount calculated based on `sessionPrice` and `paymentPercentage`.
+    *   For unauthenticated users, the widget offers options to create a free client account or log in, with the registration link (`/register`) pre-filled with the submitted client data (`name`, `email`, `phone`) to streamline the onboarding process. Logged-in users are directed to their appointments dashboard.
+
+## Slot Generation Logic
+
+The core logic for determining available booking times resides in the `generateSlots` function within `src/lib/slots.ts`. This function is crucial for ensuring that clients can only book valid, non-conflicting appointments.
+
+The function takes four parameters: the `date` selected by the user, a list of `AvailabilityRule` objects (representing the professional's general working hours, typically fetched from the `availability` table), a list of `ExistingAppointment` objects (representing already booked slots from the `appointments` table), and the `sessionDuration` (from the `professionals` table).
+
+It first identifies the relevant `AvailabilityRule` for the given `date`'s `dayOfWeek`. If no rule exists, no slots are generated. It then iterates through potential `current` start times, incrementing by `sessionDuration`. For each potential slot, it performs several checks:
+
+1.  **End Time Check**: Ensures the `slotEnd` does not extend beyond the professional's `endTime` for the day.
+2.  **Past Time Check**: Skips any slots that are in the past relative to the current time (`now`).
+3.  **Conflict Check**: Iterates through `existingAppointments` to determine if the `current` slot overlaps with any already booked appointments. An overlap occurs if the proposed slot starts before an existing appointment ends AND ends after an existing appointment starts.
+
+Only slots that pass all these checks are added to the `slots` array, which is then returned and displayed in the widget.
 
 ## Design Decisions
 
-The use of a honeypot field (`website`) in the form is a lightweight anti-bot measure—simple yet effective. By positioning it off-screen and dropping submissions server-side if filled, it avoids CAPTCHA friction. The two-column layout on larger screens (`grid-cols-1 md:grid-cols-2`) prioritizes the calendar and slots, aligning with user goals. Grouping slots into morning, afternoon, and evening improves scannability, even though it’s not required by the data model.
+The design of the `BookingWidget` reflects several deliberate choices aimed at user experience, data integrity, and maintainability:
+
+*   **Client-Side Interactivity**: The use of `"use client"` allows for a highly interactive booking experience, with immediate feedback on date selection, slot availability, and form validation. This approach offloads UI logic from the server, providing a snappier feel.
+*   **Explicit State Machine**: The `step` state variable provides a clear, manageable way to control the multi-stage booking process. This makes the component's flow easy to understand and debug, preventing complex conditional rendering logic from becoming unwieldy.
+*   **`react-hook-form` and Zod for Forms**: This combination was chosen for its performance benefits (minimal re-renders), developer experience (simplified form state management), and robust validation capabilities. Zod's schema-based validation ensures that client input conforms to expected types and constraints, providing immediate feedback to the user and reducing invalid data submissions.
+*   **Honeypot for Spam Prevention**: The `website` field is a pragmatic, low-cost solution to filter out basic spam bots without requiring complex CAPTCHAs or other intrusive measures that could degrade the user experience.
+*   **Dedicated Slot Generation Utility**: Encapsulating the slot calculation logic in `generateSlots` promotes reusability and testability. It separates the complex business logic of determining availability from the UI rendering, making both parts easier to manage.
+*   **`date-fns` for Date Manipulation**: This library was selected for its comprehensive, immutable, and tree-shakable date utility functions, which are essential for accurate time slot calculations and formatting across different locales.
 
 ## Potential Improvements
 
-1. **`BookingWidget` — Avoid re-fetching slots on every render**: The `useEffect` in `BookingWidget` correctly fetches slots when `selectedDate` changes. While `slug` and `sessionDuration` are static props and included in the dependency array, they do not cause unnecessary re-execution of the effect.
-
-2. **`generateSlots` — Cache or memoize results**: Since `generateSlots` is called on every date change and performs array filtering and date math, it could benefit from memoization, especially on low-end devices. Caching by `date.toISOString()` and `sessionDuration` would prevent recomputation when users toggle back and forth.
-
-3. **`SlotButton` — Accessibility enhancement**: The time buttons lack `aria-pressed` or role attributes. Adding `aria-pressed={selected}` would improve screen reader experience, making it clear which slot is selected without relying solely on visual cues.
+1.  **Pre-fetch Slots for Multiple Days**: Currently, slots for a selected date are fetched only *after* the user picks a day. To reduce perceived loading times, the `useEffect` hook in `src/app/p/[slug]/booking-widget.tsx` could be enhanced to pre-fetch slots for the initial visible calendar days (e.g., the current week or month) when the component first mounts. This would make the slot selection feel more instantaneous.
+2.  **Timezone Awareness**: The `generateSlots` function in `src/lib/slots.ts` and the `startsAt` calculation in `onSubmit` in `src/app/p/[slug]/booking-widget.tsx` rely on `Date` objects, which are inherently tied to the client's local timezone. For a global application, this can lead to discrepancies if the professional and client are in different timezones. Implementing explicit timezone handling (e.g., storing all times in UTC and converting for display based on professional's configured timezone) would prevent potential booking errors.
+3.  **Enhanced Error Handling and User Feedback**: The `onSubmit` function in `src/app/p/[slug]/booking-widget.tsx` uses a generic `toast.error("Erro ao realizar agendamento. Tente novamente.")` for any API failure. Providing more specific error messages from the backend (e.g., "Slot already taken," "Professional unavailable") would give users clearer guidance and improve their experience when issues arise.
+4.  **Accessibility for Slot Selection**: While the `SlotButton` component is clickable, further accessibility enhancements could be made. For instance, using `aria-live` regions to announce slot loading status or providing keyboard navigation for the time slots would improve usability for users relying on assistive technologies.
 
 ## References
 
-- `src/app/p/[slug]/booking-widget.tsx`
-- `src/app/p/[slug]/page.tsx`
-- `src/lib/slots.ts`
-- `src/lib/db/schema.ts` (for `availability`, `appointments`, `professionals`)
+*   `src/app/p/[slug]/booking-widget.tsx`
+*   `src/app/p/[slug]/page.tsx`
+*   `src/lib/slots.ts`
