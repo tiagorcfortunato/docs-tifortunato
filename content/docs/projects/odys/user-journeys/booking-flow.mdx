@@ -1,81 +1,101 @@
 ---
 title: Booking Flow
-description: The customer journey from discovering a professional to confirming an appointment, including slot selection, data submission, and conflict resolution.
+description: Deep dive into the customer booking journey, from landing on a professional's page to selecting a slot, submitting a booking request, and receiving confirmation.
 ---
 
-The booking flow is a core interaction within Odys, enabling customers to discover and schedule appointments with professionals. This process is designed to be intuitive for the client while providing professionals with the necessary tools to manage their schedules efficiently. It encompasses the initial display of a professional's profile, the interactive selection of an available time slot, the submission of client details, and the server-side logic that validates and records the appointment.
+# Booking Flow
+
+The booking flow is the core interaction for customers seeking to schedule services with professionals. It encompasses the entire journey from a customer discovering a professional's public profile to successfully requesting or confirming an appointment. This process is designed to be intuitive for the customer while providing professionals with the necessary tools to manage their schedules and client relationships.
 
 ## Overview
 
-The customer booking journey begins on a public profile page, typically accessed via a unique slug, such as `/p/[slug]`. This page, rendered by `src/app/p/[slug]/page.tsx`, serves as the entry point, displaying the professional's details, reviews, and an interactive `BookingWidget`.
+The booking flow is orchestrated across several key components:
 
-The `BookingWidget`, a client-side component, orchestrates the slot selection process. It communicates with the `/api/booking` API route to fetch real-time availability and existing appointments for a given professional and date. Once a slot is chosen and client details are provided, the widget dispatches a `POST` request to the same `/api/booking` endpoint. This server-side handler then performs critical validations, including rate limiting, plan limit checks, and an atomic conflict check, before attempting to create or update client records and insert the new appointment into the database.
+*   **`src/app/p/[slug]/page.tsx`**: This Next.js Server Component renders the public profile page for a professional, identified by their unique `slug`. It fetches the professional's details, reviews, and related professionals, setting the stage for the booking experience.
+*   **`src/app/p/[slug]/booking-widget.tsx`**: A Client Component embedded within the professional's page, this widget handles the interactive elements of the booking process, including date and time selection, and client information submission.
+*   **`src/app/api/booking/route.ts`**: This API route serves two primary functions:
+    *   **GET requests**: Provide the `BookingWidget` with the professional's availability rules and existing appointments for a given date, enabling the client-side generation of available time slots.
+    *   **POST requests**: Process new booking submissions, performing validation, conflict checks, client upserts, and initiating notifications.
+*   **`src/lib/slots.ts`**: A utility function that takes availability rules and existing appointments to compute the actual bookable time slots for a specific day.
 
-Upon successful booking, the system triggers various notifications—WhatsApp messages, emails, and in-app notifications—to both the client and the professional, ensuring all parties are informed. The `appointments` table, with its 13 columns, is central to storing these scheduled sessions, tracking their `status` and `paymentStatus`.
+The database schema plays a central role, with the `professionals` table storing core professional data, `availability` defining their working hours, `appointments` tracking scheduled sessions, and `clients` managing customer information. The `notifications` table is used to alert professionals about new booking requests.
 
-## Professional Profile and Initial Display
+## Professional Profile Page
 
-A customer first encounters a professional through their dedicated public page, handled by `src/app/p/[slug]/page.tsx`. This page dynamically fetches the professional's information from the `professionals` table, which contains 24 columns, including `name`, `profession`, `bio`, `avatarUrl`, `sessionDuration`, and `sessionPrice`. The `slug` column, being unique, is used to identify the specific professional.
+The journey begins when a customer navigates to a professional's public profile, rendered by `src/app/p/[slug]/page.tsx`. This page is a Next.js Server Component, meaning it fetches data directly on the server before rendering, which benefits SEO and initial page load performance.
 
-The page also retrieves associated `reviews` from the `reviews` table, joining with the `clients` table to display client names alongside their ratings and comments. Related professionals, sharing the same `profession`, are also fetched and displayed, offering alternative options to the customer. For logged-in users, the system checks if the visitor is the professional themselves (`isOwner`) or an existing client, pre-filling the booking form with known client data from the `clients` table if available.
+Upon loading, the page queries the `professionals` table using the `slug` from the URL to retrieve the professional's details. If the professional is not found or is inactive, the `notFound()` helper from Next.js is invoked. The page also checks if the logged-in user is the owner of the profile (`isOwner`), which subtly alters the navigation links and displays an informational banner.
 
-## Slot Selection and Availability
+For logged-in users who are not the professional, the system attempts to pre-fill the booking form with their existing client data by querying the `clients` table using their `userId`. This enhances user experience by reducing data entry.
 
-The interactive core of the booking experience is the `BookingWidget` (`src/app/p/[slug]/booking-widget.tsx`). This client-side component presents a calendar for date selection and then dynamically loads available time slots.
+The page further enriches the professional's profile by fetching:
+*   Related professionals from the `professionals` table based on the same `profession`.
+*   Reviews from the `reviews` table, joining with `clients` to display client names, and calculates an average rating and total review count.
 
-When a date is selected, the widget makes a `GET` request to `/api/booking`. This API route queries the database for two key pieces of information:
-1.  **Availability Rules**: It fetches the professional's defined working hours from the `availability` table, which specifies `dayOfWeek`, `startTime`, and `endTime`.
-2.  **Existing Appointments**: It retrieves all confirmed or pending appointments for the selected professional and date from the `appointments` table, excluding those with `status` "rejected" or "cancelled".
+All this information is then presented to the user, including the professional's name, profession, session duration, price, bio, welcome message, and location details via the `ProfessionalLocationCard`.
 
-The `generateSlots` utility function (`src/lib/slots.ts`) then takes these rules and existing appointments to compute the actual available time slots. It iterates through potential start times, considering the professional's `sessionDuration`, and filters out any slots that are in the past, overlap with existing bookings, or fall outside the defined availability rules. The resulting slots are then grouped into "morning," "afternoon," and "evening" for a user-friendly display in the widget.
+## Slot Selection
+
+The interactive part of the booking process is handled by the `BookingWidget` component in `src/app/p/[slug]/booking-widget.tsx`. This is a Client Component, allowing for dynamic interactions like date selection and real-time slot updates without full page reloads.
+
+When a customer selects a date on the calendar, the `useEffect` hook within `BookingWidget` triggers a `GET` request to `/api/booking`. This request includes the professional's `slug` and the `date` selected.
+
+The `GET` handler in `src/app/api/booking/route.ts` then performs two crucial database queries in parallel using `Promise.all`:
+1.  It fetches the professional's `availability` rules for the given `professionalId`. These rules specify the `dayOfWeek`, `startTime`, and `endTime` for when the professional is generally available.
+2.  It retrieves `existingAppointments` for that professional on the selected date, filtering out `rejected` or `cancelled` appointments. Importantly, this query only selects `startsAt` and `endsAt` to avoid leaking sensitive appointment details.
+
+The results of these queries (`rules` and `existingAppointments`) are then passed to the `generateSlots` utility function in `src/lib/slots.ts`. This function takes the professional's `sessionDuration` and iterates through potential time slots within the defined availability rule for the selected day. For each potential slot, it checks if it overlaps with any `existingAppointments` or if it's in the past relative to the current time. Only non-conflicting, future slots are returned to the `BookingWidget`, which then groups them into "Manhã", "Tarde", and "Noite" for display.
 
 ## Booking Submission
 
-Once a client selects a slot and fills in their details, the `BookingWidget` sends a `POST` request to `/api/booking`. This endpoint is a critical server-side component responsible for processing and validating the booking.
+Once a customer selects a date and time slot, they proceed to a form to enter their details. This form is validated client-side using Zod and `react-hook-form` with `clientSchema`. A `POST` request is then sent to `/api/booking`.
 
-The process begins with a rate limit check using `getBookingLimiter()`, which allows for 5 booking attempts per IP address every 10 minutes, preventing abuse. A subtle but important detail is the `respondAfterFloor` function, which introduces a minimum response time of 250ms. This measure helps mitigate timing attacks, where an attacker might try to infer information about existing client records based on slight differences in response times between database lookups and insertions.
+The `POST` handler in `src/app/api/booking/route.ts` is designed with several considerations:
 
-The incoming data is rigorously validated using `zod` against the `bookingSchema`, ensuring fields like `slug`, `startsAt`, `clientName`, and `clientPhone` meet the required criteria. A "honeypot" field, `website`, is included in the form and schema; if this hidden field is populated, the request is silently dropped, effectively thwarting naive bots without alerting them to the trap.
+1.  **Rate Limiting**: The `getBookingLimiter()` from `src/lib/ratelimit.ts` is applied, restricting booking attempts to 5 per IP address every 10 minutes (`rl:booking`). This helps prevent abuse and denial-of-service attacks.
+2.  **Timing Oracle Mitigation**: A response-time floor of 250ms is implemented. This means the server will wait at least 250ms before responding, regardless of how quickly the database operations complete. This design choice aims to obscure timing differences between database operations (e.g., selecting an existing client vs. inserting a new one), making it harder for attackers to infer information about existing clients through timing attacks.
+3.  **Zod Validation**: The incoming request body is validated against `bookingSchema` to ensure data integrity and prevent malformed requests.
+4.  **Honeypot**: A hidden `website` field is included in the form. If a bot populates this field, the server silently drops the submission and returns a fake success response. This effectively traps naive bots without alerting them that their submission was rejected.
+5.  **Professional Lookup**: The professional is retrieved from the `professionals` table using the provided `slug`.
+6.  **Plan Limits**: The system checks the professional's `effectivePlan` against `PLANS` defined in `src/lib/stripe`. It verifies if the professional has reached their `clients` limit or `appointmentsPerMonth` limit. If a limit is hit and the client is new, the booking is rejected with a 403 status.
+7.  **Atomic Transaction**: The most critical part of the booking submission is the database transaction. The `db.transaction` block, configured with `isolationLevel: "serializable"`, ensures that the conflict check, client upsert, and appointment insertion happen atomically. This prevents race conditions where two simultaneous booking requests for the same slot might both pass an initial conflict check before one of them commits. If a conflict is detected (either by the explicit `SLOT_TAKEN` check or a `40001` serialization error from Postgres), the transaction is rolled back, and a 409 Conflict status is returned.
+    *   **Conflict Check**: The transaction first checks the `appointments` table for any existing appointments that overlap with the proposed `startsAt` and `endsAt` times, excluding `rejected` or `cancelled` statuses.
+    *   **Client Upsert**: It then attempts to find an existing client in the `clients` table based on `clientPhone` or `clientEmail` for the given `professionalId`. If found, the client's email is updated if it was previously null. If no client is found, a new entry is inserted into the `clients` table.
+    *   **Appointment Insert**: Finally, a new appointment is inserted into the `appointments` table with a `status` of `confirmed` if `professional.autoConfirm` is true, or `pending_confirmation` otherwise. The `paymentStatus` is initially set to `none`.
 
-Before creating the appointment, the system checks the professional's plan limits. The `effectivePlan` function determines the active plan, and if limits are in place (e.g., `clients` or `appointmentsPerMonth`), the system verifies that the professional has not exceeded them. If a new client would push the professional over their client limit, the booking is rejected unless the client already exists. Similarly, if the professional has reached their monthly appointment limit, the booking is denied.
+## Confirmation and Follow-up
 
-The core of the booking logic resides within a database transaction with `isolationLevel: "serializable"`. This is a crucial design choice to prevent race conditions. Inside this transaction:
-1.  **Conflict Check**: The system first checks for any overlapping appointments for the professional within the proposed `startsAt` and `endsAt` times, excluding "rejected" or "cancelled" appointments. If a conflict is found, the transaction is rolled back, and a `SLOT_TAKEN` error is thrown, resulting in a `409 Conflict` response.
-2.  **Client Upsert**: The system attempts to find an existing client record in the `clients` table using the provided `clientPhone` or `clientEmail` (if available) for the specific professional. If a client is found, their `email` is updated if it was previously null. If no client is found, a new record is inserted into the `clients` table.
-3.  **Appointment Insertion**: Finally, a new appointment is inserted into the `appointments` table, linking it to the professional and client. The `status` is set to "confirmed" if the professional has `autoConfirm` enabled, otherwise it defaults to "pending_confirmation". The `paymentStatus` is initially set to "none".
+After a successful booking, the system initiates several follow-up actions:
 
-Following a successful booking, a series of notifications are dispatched:
-*   An in-app notification is created in the `notifications` table for the professional.
-*   A WhatsApp message (`msgBookingRequest`) is sent to the professional's `phone`.
-*   An email (`sendBookingRequestEmailToProfessional`) is sent to the professional's `email` if available.
+*   **Notifications**: A new entry is added to the `notifications` table, alerting the professional about the new booking. The type and title of the notification depend on whether the appointment was `autoConfirm`ed.
+*   **WhatsApp Messages**: Depending on the `autoConfirm` status, different WhatsApp messages are sent using `sendWhatsApp` from `src/lib/whatsapp`.
+    *   If confirmed: `msgBookingConfirmed` is sent to the client (as a receipt and reminder anchor) and `msgBookingConfirmedReceipt` is sent to the professional.
+    *   If pending: `msgBookingRequest` is sent to the professional, prompting them to confirm or reject the booking from their dashboard.
+*   **Email Notifications**: If the professional has an email address, an email notification is sent using `sendBookingRequestEmailToProfessional` or `sendBookingConfirmedEmailToClient`/`sendBookingRejectedEmailToClient` from `src/lib/email`.
+*   **Analytics**: Funnel events (`booking_received_server`) are captured using PostHog, attributing the booking to the professional and setting a `first_booking_at` property for cohort analysis.
+*   **Success Response**: The API returns a generic `success: true` response, intentionally omitting sensitive appointment details to prevent information leakage.
 
-Analytics events, `booking_received_server` and `first_booking_at`, are captured using Posthog, attributing the booking to the professional's `id`. The response to the client is a simple `success: true`, intentionally omitting sensitive appointment details to maintain privacy and prevent information leakage.
-
-## Appointment Management
-
-While the initial booking is handled by `/api/booking`, the subsequent management of appointments (e.g., confirming, rejecting, cancelling, marking as paid or completed) is managed through the `/api/appointments/[id]` API route. This `PATCH` endpoint allows authenticated users (either the professional or the client, depending on the action) to update an appointment's `status` or `paymentStatus`. This separation of concerns ensures that the initial booking process is streamlined, while post-booking actions are handled by a dedicated, permission-controlled endpoint.
+On the client side, the `BookingWidget` transitions to a "success" step, displaying a confirmation message. If the `paymentType` is not "after" and a `pixKey` is available, a `PixQR` component is shown for immediate payment. For unauthenticated users, a prompt to create a free account is displayed, with pre-filled registration links using the submitted client data.
 
 ## Design Decisions
 
-Several key design decisions shape the booking flow:
-
-*   **Data Minimization in GET Requests**: The `GET /api/booking` endpoint, which fetches availability, explicitly selects only `id` and `sessionDuration` from the `professionals` table. This was a deliberate choice to prevent the accidental leakage of sensitive professional data (like `email`, `phone`, `userId`, `plan`, `trialEndsAt`, `stripeCustomerId`, `stripeSubscriptionId`) to unauthenticated visitors, which was a vulnerability in a previous iteration. The `BookingWidget` already receives `sessionDuration` as a prop, making the `sessionDuration` fetch in the API redundant, but the `id` is still necessary for subsequent queries.
-
-*   **Atomic Transaction for Booking POST**: The `POST /api/booking` endpoint wraps the conflict check, client upsert, and appointment insertion in a Drizzle `transaction` with `isolationLevel: "serializable"`. This is critical for data integrity. Without it, two simultaneous booking requests for the same slot could both pass an initial conflict check and then both attempt to insert, leading to double-bookings. The serializable isolation level forces the database to detect and prevent such "phantom reads," ensuring only one booking succeeds for a given slot.
-
-*   **Honeypot and Response-Time Floor for Spam/Security**: The inclusion of a hidden `website` field (honeypot) in the `bookingSchema` and its server-side check is an effective, low-cost measure against automated spam bots. By returning a `200 OK` with `success: true` for bot submissions, the system avoids signaling to the bot that the field is a trap. The `respondAfterFloor` function, which delays the response to a minimum of 250ms, further enhances security by blunting timing attacks. This prevents attackers from distinguishing between existing and non-existing client records based on minute differences in database query times.
-
-*   **Client Upsert Logic**: The booking `POST` intelligently handles client records. It first attempts to find an existing client associated with the professional using either `clientPhone` or `clientEmail`. If found, it updates the client's email if it was previously null. If no matching client exists, a new client record is created. This prevents duplicate client entries and maintains a clean client list for the professional.
-
-*   **Decoupled Notifications**: The system uses a "fire-and-forget" approach for sending WhatsApp messages and emails (`.catch(console.warn)`). This design ensures that a failure in a notification service does not prevent a successful booking from being recorded. While this prioritizes booking completion, it means notification failures are logged but not retried automatically within this flow.
+*   **Server-Side Rendering for Profile (`page.tsx`)**: Using a Next.js Server Component for the professional's profile page allows for better SEO and faster initial load times, as the content is rendered on the server and sent as HTML. This is crucial for public-facing pages that benefit from search engine indexing.
+*   **Client-Side Interactivity for Widget (`booking-widget.tsx`)**: The `BookingWidget` is a Client Component, enabling rich, dynamic user interactions like calendar date selection and real-time slot filtering without requiring full page reloads. This provides a smoother user experience for the interactive booking process.
+*   **Zod for Validation**: Zod is used for both client-side and server-side validation (`bookingSchema`, `clientSchema`). This provides a single source of truth for schema definitions, reducing the chance of discrepancies and improving developer experience.
+*   **Honeypot for Bot Mitigation**: The inclusion of a hidden `website` field in the booking form is a simple yet effective technique to filter out spam bots. By returning a fake success response, it prevents bots from learning that the field is a trap, making them less likely to adapt.
+*   **Rate Limiting (`getBookingLimiter`)**: Implementing rate limiting via Upstash Redis (`@upstash/ratelimit`) on the `POST /api/booking` route is a pragmatic choice to protect against brute-force attacks and resource exhaustion. The limit of 5 requests per IP every 10 minutes (`rl:booking`) is a reasonable balance between preventing abuse and allowing legitimate users to correct errors.
+*   **Atomic Transaction for Booking**: Wrapping the conflict check, client upsert, and appointment insertion in a `serializable` database transaction is a critical design decision. This guarantees data consistency and prevents race conditions, ensuring that two users cannot simultaneously book the same slot. The explicit `SLOT_TAKEN` error and handling of Postgres's `40001` serialization error provide clear feedback in such scenarios.
+*   **Timing Oracle Mitigation**: The `respondAfterFloor` function introduces a minimum response time for the `POST` request. This is a security measure to prevent attackers from using subtle differences in response times (e.g., faster response for existing clients vs. new clients) to infer information about the database contents.
+*   **Selective Column Fetching in GET**: The `GET /api/booking` route explicitly selects only `id` and `sessionDuration` from the `professionals` table, and `startsAt`/`endsAt` from `appointments`. This minimizes data exposure, preventing sensitive professional or appointment details from being leaked to unauthenticated users who might query the API directly.
+*   **Branching Logic for `autoConfirm`**: The system's behavior (sending confirmation vs. request messages) is dynamically adjusted based on the `professional.autoConfirm` setting. This allows professionals flexibility in how they manage new bookings, either instantly confirming or requiring manual approval.
+*   **Equalized POST Response**: The `POST /api/booking` route returns a simple `{ success: true }` without including the newly created appointment details. This prevents an attacker from using the response body to infer information about the client or appointment, further enhancing security.
 
 ## Potential Improvements
 
-1.  **Redundant `sessionDuration` Fetch**: The `BookingWidget` (`src/app/p/[slug]/booking-widget.tsx`) already receives `sessionDuration` as a prop from `src/app/p/[slug]/page.tsx`. However, the `GET /api/booking` route still queries the `professionals` table to fetch `sessionDuration` again. The `BookingWidget` could pass its `sessionDuration` prop directly to the `generateSlots` function, eliminating the need for the API to fetch it, thereby reducing database load and API response time.
-
-2.  **Integrated Payment Processing**: The `appointments` table includes `paymentStatus` and `stripePaymentIntentId`, and the `BookingWidget` displays `PixQR` for immediate payment. However, the `POST /api/booking` currently sets `paymentStatus: "none"`. This suggests that actual payment capture (e.g., via Stripe or confirming a Pix payment) is not directly integrated into the initial booking submission. An improvement would be to integrate a payment intent creation or confirmation step within the booking transaction, updating `paymentStatus` to "pending" or "authorized" and storing `stripePaymentIntentId` immediately, rather than relying on an out-of-band process.
-
-3.  **Robust Notification Delivery**: The current notification sending (`sendWhatsApp`, `sendBookingRequestEmailToProfessional`) uses `.catch(console.warn)`, which means notification failures are logged but not retried. For critical notifications, such as booking confirmations, implementing a dedicated queueing system (e.g., using a message broker or a simple database table for pending notifications) with retry logic would significantly improve reliability and ensure messages are eventually delivered, even if external services are temporarily unavailable.
+1.  **Enhanced Client Email Update Logic**: In `src/app/api/booking/route.ts`, within the atomic transaction, the logic to update a client's email (`if (!client.email && clientEmail)`) only updates the `email` column if it is currently `null`. This means if a client previously provided an email, and then books again with a *different* email, the `clients.email` field will not be updated. This could lead to stale or incorrect email addresses being stored for existing clients, potentially causing communication issues. A more robust approach might involve updating the email if a new one is provided, or at least logging a discrepancy.
+2.  **Granular Error Feedback in `BookingWidget.tsx`**: The `BookingWidget` currently uses a generic `toast.error("Erro ao realizar agendamento. Tente novamente.")` for all `POST /api/booking` failures. The API route, however, provides specific error messages for scenarios like `SLOT_TAKEN` (status 409) or plan limits (status 403). The `BookingWidget` could parse the `res.json()` from the API response and display these more specific, user-friendly error messages (e.g., "Este horário acabou de ser preenchido por outra pessoa. Por favor, escolha outro horário.") to guide the user more effectively.
+3.  **Explicit Timezone Handling**: The current implementation in `src/lib/slots.ts` and `src/app/api/booking/route.ts` relies on `Date` objects and `date-fns` functions like `startOfDay`, `endOfDay`, `toLocaleDateString`, and `toLocaleTimeString`. These functions operate based on the local timezone of the environment where the code is executed (server or client). The `availability` table stores `startTime` and `endTime` as `text` (e.g., "09:00"), which are inherently timezone-agnostic. This implicit timezone handling can lead to inconsistencies if the server's timezone differs from the professional's or the client's, potentially causing slots to be generated or booked incorrectly. Implementing explicit timezone handling, such as storing all times in UTC and converting to the professional's preferred timezone for display and slot generation, would prevent these issues.
+4.  **Linking Unauthenticated Bookings to User Accounts**: When a client books an appointment without being logged in, their `clients.userId` remains `null`. If this client later registers an account using the same phone number or email, the system does not automatically link their new `userId` to their existing `clients` entry. This can result in duplicate client records for the same individual (one with `userId` and one without) and prevent the client from seeing their past bookings when logged into their account. The `BookingWidget` does offer a registration link with pre-filled data, but the `POST /api/booking` route does not perform the linking. A post-registration process or an update within the booking transaction could check for an existing `clients` entry by phone/email and update its `userId` if a match is found.
 
 ## References
 
@@ -84,4 +104,4 @@ Several key design decisions shape the booking flow:
 *   `src/app/p/[slug]/booking-widget.tsx`
 *   `src/lib/slots.ts`
 *   `src/lib/ratelimit.ts`
-*   `src/app/api/appointments/[id]/route.ts`
+*   `src/lib/db/schema.ts` (for `professionals`, `availability`, `appointments`, `clients`, `notifications` tables)
