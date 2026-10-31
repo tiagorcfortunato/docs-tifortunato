@@ -1,113 +1,124 @@
 ---
 title: Database Schema
-description: The 10 tables in detail
+description: The 11 tables in detail
 ---
 
 # Database Schema
 
-The `odys` application relies on a well-structured PostgreSQL database to manage its core entities and relationships. This document delves into the design of the database schema, defined using Drizzle ORM in `src/lib/db/schema.ts`, explaining the purpose of each table and its columns, the rationale behind specific data types, and the relationships that bind them together. Understanding this schema is fundamental to grasping how data flows and is persisted within the application.
+The Odys application relies on a PostgreSQL database to manage all its core data, from professional profiles and client information to appointment schedules and communication logs. This document provides a deep dive into the 11 tables that constitute the Odys schema, explaining their purpose, the rationale behind their structure, and how they interrelate. Understanding this schema is fundamental to comprehending how Odys organizes and persists information, enabling its various features for professionals and clients.
 
 ## Overview
 
-The `odys` database schema comprises a total of 10 tables, meticulously designed to support the interactions between professionals and their clients. At its heart, the schema revolves around the `professionals` table, which serves as the central entity for service providers. Related tables like `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, `reviews`, and `notifications` extend this core, managing everything from scheduling and client management to communication and feedback. Each table is equipped with a `uuid` primary key, often defaulting to a randomly generated value, and many include `createdAt` and `updatedAt` timestamps to track record lifecycle.
+The Odys database schema is designed to support a platform connecting professionals with clients for various services. At its heart are the `professionals` and `clients` tables, representing the two primary user types. These entities are linked through various transactional tables such as `appointments`, `messages`, and `reviews`, which capture the interactions and services provided. Supporting these core interactions are tables like `availability` for professional scheduling, `recurringSchedules` for ongoing appointments, and `clientNotes` for private professional records. Finally, `follows`, `notifications`, and `agentMetrics` provide additional functionality for user engagement, communication, and system telemetry.
+
+The schema uses `uuid` for primary keys across all tables, ensuring globally unique identifiers. Many relationships are enforced with foreign keys, often employing `onDelete: "cascade"` to simplify data cleanup when parent records are removed.
 
 ## Professionals
 
-The `professionals` table is arguably the most critical, representing the service providers within the `odys` ecosystem. It's a comprehensive table with 24 columns, capturing a wide array of information about each professional.
+The `professionals` table is central to the application, storing comprehensive details about each service provider. With 32 columns, it's the largest table, reflecting the extensive information required for a professional's profile and operational settings.
 
-Each professional is uniquely identified by an `id` (a `uuid` with a `defaultRandom()` value) and linked to an external authentication system via `userId` (a `text` column, `notNull` and `unique`). The `slug` column, also `text`, `notNull`, and `unique`, is designed to create user-friendly public profile URLs, such as `odys.com.br/p/dr-ana`. Essential contact information like `name`, `phone`, and `email` are stored, with `email` being nullable, suggesting it might not always be required for initial setup.
+Each professional is identified by a `uuid` `id` and linked to an external authentication system via `userId` (a `text` column, implying an external identity provider like Supabase). A `slug` column provides a human-readable, unique URL path for public profiles, like `odys.com.br/p/dr-ana`. Essential contact information includes `name`, `phone`, and `email`.
 
-The `profession` column (a `text` field) categorizes the professional's specialty, while `bio` and `avatarUrl` provide descriptive and visual elements for their profile. Operational details include `sessionDuration` and `sessionPrice`, both `integer` types with sensible `default` values of 50 minutes and 0 cents, respectively.
+Operational details are extensive: `profession` (e.g., "psychologist"), `bio`, `avatarUrl`, `sessionDuration` (defaulting to 50 minutes), and `sessionPrice` (defaulting to 0 cents). The `plan` column tracks their subscription level ("free", "pro", "premium"), while `paymentType` and `paymentPercentage` define how they receive payments from clients. For direct payments, `pixKeyType` and `pixKey` store Brazilian Pix details. Integration with Stripe is managed via `stripeCustomerId` and `stripeSubscriptionId`.
 
-The table also manages subscription and payment configurations:
-*   `plan` (a `text` field defaulting to "free") tracks the professional's subscription tier.
-*   `paymentType` (a `text` field defaulting to "upfront") indicates how professionals prefer to receive payments from clients.
-*   `paymentPercentage` (an `integer` defaulting to 100) specifies the percentage charged upfront if `paymentType` is "percentage".
-*   `pixKeyType` and `pixKey` (both `text` and nullable) store details for Pix payments.
-*   `stripeCustomerId` and `stripeSubscriptionId` (both `text` and nullable) integrate with Stripe for payment processing.
+The table also includes fields for managing professional availability and service delivery: `trialEndsAt`, `welcomeMessage`, and `autoConfirm` for appointment automation. Location-based services are supported by `serviceType` ("in_person", "online", "both") and detailed address fields (`addressLine`, `neighborhood`, `city`, `state`, `postalCode`), along with `latitude` and `longitude` for geocoding. Finally, `active` indicates profile visibility, and `createdAt` and `updatedAt` track record lifecycle.
 
-Finally, `trialEndsAt` (a nullable `timestamp`), `welcomeMessage` (nullable `text`), `autoConfirm` (a `boolean` defaulting to `false`), and `active` (a `boolean` defaulting to `true`) manage trial periods, client onboarding, appointment confirmation preferences, and account status. Standard `createdAt` and `updatedAt` `timestamp` columns, both `notNull` and `defaultNow()`, track the record's lifecycle.
+Indexes on `profession` and `city` are defined to optimize searches for professionals based on their specialty or location, which are common filtering criteria for clients.
 
 ## Availability
 
-The `availability` table, with its 5 columns, defines when a professional is available for appointments. It links directly to the `professionals` table via `professionalId` (a `uuid` foreign key with `onDelete: "cascade"`), meaning that if a professional's record is deleted, all their availability slots are automatically removed.
+The `availability` table stores the regular working hours for each professional. It has 5 columns, capturing specific time slots a professional is generally available.
 
-Each entry specifies a `dayOfWeek` (an `integer` where 0 is Sunday and 6 is Saturday), and `startTime` and `endTime` (both `text` fields, e.g., "09:00" and "18:00"). The use of `text` for time allows for flexible formatting but relies on application-level parsing. An index on `professionalId` (`availability_professional_id_idx`) is defined to optimize queries for a professional's schedule.
+Each record includes an `id`, a `professionalId` (referencing `professionals.id` with `onDelete: "cascade"`), `dayOfWeek` (an integer from 0 for Sunday to 6 for Saturday), `startTime`, and `endTime`. The `startTime` and `endTime` are stored as `text` (e.g., "09:00"), which simplifies storage but requires careful parsing and validation in the application layer.
+
+An index on `professionalId` ensures efficient retrieval of a professional's schedule.
 
 ## Clients
 
-The `clients` table, with 8 columns, stores information about the individuals who book appointments with professionals. Like `professionals`, it uses a `uuid` `id` with `defaultRandom()`.
+The `clients` table, with 8 columns, stores information about individuals who book appointments with professionals.
 
-A client can optionally be linked to an external authentication system via `userId` (a nullable `text` field), allowing for clients to book without necessarily having an `odys` account. Each client is associated with a specific professional through `professionalId` (a `uuid` foreign key with `onDelete: "cascade"`), ensuring client records are removed if their professional is deleted.
+Similar to professionals, clients have a `uuid` `id` and an optional `userId` (a `text` column, indicating they might have an external account or be guest users). Each client is associated with a specific `professionalId` (referencing `professionals.id` with `onDelete: "cascade"`), reflecting that clients are managed within the context of a professional's practice. Key client details include `name`, `phone`, `email`, and `avatarUrl`. The `createdAt` timestamp tracks when the client record was created.
 
-Basic client details include `name`, `phone` (both `notNull` `text`), `email`, and `avatarUrl` (both nullable `text`). A `createdAt` `timestamp` with `defaultNow()` tracks when the client record was created. Indexes are provided on `professionalId` (`clients_professional_id_idx`) and `userId` (`clients_user_id_idx`) to facilitate efficient lookups.
+Indexes on `professionalId` and `userId` facilitate quick lookups of clients by their associated professional or external user ID.
 
 ## Client Notes
 
-The `clientNotes` table, with 6 columns, provides a private space for professionals to record observations about their clients. These notes are strictly visible only to the professional who created them.
+The `clientNotes` table provides a private space for professionals to record observations about their clients. This table has 6 columns.
 
-Each note has its own `id` (`uuid` with `defaultRandom()`) and is linked to both the `professionalId` and `clientId` (both `uuid` foreign keys with `onDelete: "cascade"`). The actual content of the note is stored in the `content` column (a `notNull` `text` field). `createdAt` and `updatedAt` `timestamp` columns track the note's creation and last modification.
+Each note has an `id`, `professionalId` (referencing `professionals.id` with `onDelete: "cascade"`), `clientId` (referencing `clients.id` with `onDelete: "cascade"`), and the `content` of the note. `createdAt` and `updatedAt` track the note's lifecycle. The `onDelete: "cascade"` ensures that if a professional or client record is removed, their associated notes are also deleted, maintaining data integrity.
 
 ## Recurring Schedules
 
-The `recurringSchedules` table, with 9 columns, manages appointments that happen on a regular basis, such as weekly therapy sessions. It uses a `uuid` `id` with `defaultRandom()`.
+The `recurringSchedules` table manages appointments that repeat over time, such as weekly therapy sessions. It contains 9 columns.
 
-It links to `professionalId` and `clientId` (both `uuid` foreign keys with `onDelete: "cascade"`). The `frequency` column (a `notNull` `text` field) describes the recurrence pattern (e.g., "weekly", "biweekly", "twice_weekly"). `dayOfWeek` and `secondDayOfWeek` (both nullable `integer` fields) specify the days, with 0-6 representing Sunday to Saturday. The `time` column (a `notNull` `text` field, e.g., "14:00") indicates the time of the recurring appointment. An `active` `boolean` column, defaulting to `true`, allows for enabling or disabling a recurring schedule without deleting it. A `createdAt` `timestamp` with `defaultNow()` records the creation time.
+A recurring schedule is identified by an `id`, linked to a `professionalId` and `clientId` (both with `onDelete: "cascade"`). The `frequency` column (e.g., "weekly", "biweekly", "twice_weekly") defines the recurrence pattern. `dayOfWeek` and `secondDayOfWeek` (both nullable integers) specify the days, accommodating different frequencies. The `time` column stores the appointment time (e.g., "14:00"). An `active` boolean flag controls whether the schedule is currently generating appointments, and `createdAt` records its creation.
 
 ## Appointments
 
-The `appointments` table, with 13 columns, is central to the booking system, tracking individual sessions between professionals and clients. It uses a `uuid` `id` with `defaultRandom()`.
+The `appointments` table is a core transactional table, detailing every scheduled interaction between a professional and a client. It has 13 columns.
 
-Each appointment is tied to a `professionalId` and `clientId` (both `uuid` foreign keys with `onDelete: "cascade"`). It can also be optionally linked to a `recurringScheduleId` (a nullable `uuid` foreign key), indicating if it's part of a recurring series.
+Each appointment has an `id`, `professionalId`, and `clientId` (both with `onDelete: "cascade"`). It can optionally be linked to a `recurringScheduleId`. The `startsAt` and `endsAt` timestamps define the appointment duration. The `status` column tracks the appointment's lifecycle ("pending_confirmation", "confirmed", "rejected", "completed", "cancelled", "no_show"), while `paymentStatus` tracks payment progress ("none", "authorized", "captured", "refunded"). `stripePaymentIntentId` stores the ID for Stripe transactions.
 
-The core of an appointment is defined by `startsAt` and `endsAt` (both `notNull` `timestamp` fields). The `status` column (a `notNull` `text` field defaulting to "pending_confirmation") tracks the appointment's lifecycle, moving through states like `pending_confirmation`, `confirmed`, `rejected`, `completed`, `cancelled`, or `no_show`. Similarly, `paymentStatus` (a `notNull` `text` field defaulting to "none") tracks payment states: `none`, `authorized`, `captured`, or `refunded`. `stripePaymentIntentId` (nullable `text`) stores the ID from Stripe for payment tracking.
+The table also includes `reminderSent24h` and `reminderSent1h` boolean flags to manage automated reminders. A `notes` field allows for specific details about the appointment, and `createdAt` marks its creation.
 
-To manage client engagement, `reminderSent24h` and `reminderSent1h` (both `boolean` fields defaulting to `false`) track whether reminders have been dispatched. A nullable `notes` `text` field allows for additional details, and `createdAt` (`timestamp` with `defaultNow()`) records the appointment's creation. Multiple indexes are defined for efficient querying: `appointments_professional_id_idx`, `appointments_client_id_idx`, `appointments_starts_at_idx`, and `appointments_status_idx`.
+Several indexes are defined to optimize common queries: `professionalId`, `clientId`, `startsAt`, and `status`. A particularly important design choice is the `appointments_pro_starts_at_active_uidx` unique partial index on `professionalId` and `startsAt`. This index is filtered to only apply to appointments with statuses *not* in ('rejected', 'cancelled'). This "defense-in-depth" mechanism prevents double-booking by ensuring that no two active appointments can exist for the same professional at the exact same start time, even if application-level checks fail in a concurrent scenario.
 
 ## Messages
 
-The `messages` table, with 9 columns, facilitates communication between professionals and clients. It uses a `uuid` `id` with `defaultRandom()`.
+The `messages` table facilitates communication between professionals and clients, containing 9 columns.
 
-Messages are linked to `professionalId` and `clientId` (both `uuid` foreign keys with `onDelete: "cascade"`). The `sender` column (a `notNull` `text` field) indicates whether the message came from the `professional` or `client`. The `type` column (a `notNull` `text` field defaulting to "text") specifies the message format (e.g., `text`, `link`, `pdf`). The actual message content is in the `content` column (a `notNull` `text` field), and `fileUrl` (nullable `text`) is used for attachments like PDFs. `readAt` (a nullable `timestamp`) tracks when a message was viewed. `createdAt` (`timestamp` with `defaultNow()`) records the message's creation. An index on `professionalId` and `clientId` (`messages_professional_client_idx`) optimizes conversation retrieval. A comment in the code notes an application-level rule: "Cliente só pode enviar 1 mensagem por vez — libera após profissional ler/responder." This is an important business rule not enforced by the schema itself.
+Each message has an `id`, `professionalId`, and `clientId` (both with `onDelete: "cascade"`). The `sender` column identifies who sent the message ("professional" or "client"). The `type` column (defaulting to "text") allows for different message formats ("text", "link", "pdf"). The `content` holds the message body, and `fileUrl` is used for attachments like PDFs. `readAt` tracks when the message was viewed, and `createdAt` records its timestamp.
+
+An index on `professionalId` and `clientId` optimizes retrieving message threads between a specific professional and client.
 
 ## Follows
 
-The `follows` table, with 4 columns, records when a client (identified by their `userId`) chooses to follow a professional. It uses a `uuid` `id` with `defaultRandom()`.
+The `follows` table tracks when a client (identified by `userId`) expresses interest in a professional. It has 4 columns.
 
-It links a `userId` (a `notNull` `text` field) to a `professionalId` (a `uuid` foreign key with `onDelete: "cascade"`). A `createdAt` `timestamp` with `defaultNow()` tracks when the follow relationship was established. Indexes on `professionalId` (`follows_professional_id_idx`) and `userId` (`follows_user_id_idx`) support efficient querying of followers and followed professionals.
+Each record includes an `id`, the `userId` of the follower, and the `professionalId` of the followed professional (with `onDelete: "cascade"`). `createdAt` marks when the follow relationship was established.
+
+Indexes on `professionalId` and `userId` allow for efficient querying of who a professional is followed by, or which professionals a user follows.
 
 ## Reviews
 
-The `reviews` table, with 7 columns, stores client feedback after an appointment. It uses a `uuid` `id` with `defaultRandom()`.
+The `reviews` table stores feedback provided by clients after an appointment. It has 7 columns.
 
-Each review is associated with a `professionalId`, `clientId`, and `appointmentId` (all `uuid` foreign keys with `onDelete: "cascade"`). The `appointmentId` is also `unique`, ensuring that only one review can be submitted per appointment. The `rating` (a `notNull` `integer` field, presumably 1-5) captures the numerical score, and `comment` (nullable `text`) allows for qualitative feedback. `createdAt` (`timestamp` with `defaultNow()`) records when the review was submitted. An index on `professionalId` (`reviews_professional_id_idx`) helps retrieve reviews for a specific professional.
+A review has an `id`, `professionalId`, `clientId`, and `appointmentId` (all with `onDelete: "cascade"`). The `appointmentId` is also unique, ensuring only one review per appointment. `rating` (an integer from 1-5) and an optional `comment` capture the feedback. `createdAt` records when the review was submitted.
+
+An index on `professionalId` allows for easy aggregation of reviews for a given professional.
 
 ## Notifications
 
-The `notifications` table, with 8 columns, handles system-generated alerts for users. It uses a `uuid` `id` with `defaultRandom()`.
+The `notifications` table manages alerts and updates for both professionals and clients. It has 8 columns.
 
-Notifications are directed to a `recipientId` (a `notNull` `text` field, likely a Supabase user ID) and categorized by `recipientType` (a `notNull` `text` field, either `professional` or `client`). The `type` column (a `notNull` `text` field) specifies the nature of the notification (e.g., `booking_request`, `reminder_24h`, `new_message`). Each notification has a `title` and `body` (both `notNull` `text` fields) for display. A `read` `boolean` column, defaulting to `false`, tracks whether the notification has been viewed. `createdAt` (`timestamp` with `defaultNow()`) records the notification's generation time. An index on `recipientId` (`notifications_recipient_id_idx`) optimizes fetching notifications for a specific user.
+Each notification has an `id`, a `recipientId` (a `text` column, likely an external user ID), and `recipientType` ("professional" or "client") to distinguish the target. The `type` column categorizes the notification (e.g., "booking_request", "booking_confirmed", "new_message"). `title` and `body` provide the notification content. A `read` boolean flag tracks whether the notification has been viewed, and `createdAt` records its timestamp.
+
+An index on `recipientId` allows for efficient retrieval of all notifications for a specific user.
+
+## Agent Metrics
+
+The `agentMetrics` table is dedicated to telemetry for the WhatsApp intake agent, capturing performance and outcome data for each conversation turn. It has 12 columns.
+
+Each metric record has an `id`, a `traceId` to link related turns, and `conversationPhone` to identify the client. `promptVersion` and `promptHash` track the AI model's configuration. `totalCostUsd` and `totalCostBrl` (both `numeric` with specified precision and scale) record the monetary cost of the turn. `totalLatencyMs` and `toolCallCount` measure performance. `providersUsed` is an array of `text` to list the AI services engaged. The `outcome` column (e.g., "booked", "cancelled", "searched", "help") categorizes the result of the interaction, crucial for conversion analysis. `createdAt` marks when the metric was recorded.
+
+Indexes on `traceId`, `createdAt`, and `outcome` support analytical queries on agent performance and conversation flows.
 
 ## Design decisions
 
-The schema design in `src/lib/db/schema.ts` reflects several deliberate choices to balance flexibility, data integrity, and performance:
+The schema reflects several deliberate design choices:
 
-*   **UUID Primary Keys**: The consistent use of `uuid("id").primaryKey().defaultRandom()` across all 10 tables provides globally unique identifiers. This is a common practice in distributed systems, avoiding potential ID collisions and simplifying data merging or replication compared to auto-incrementing integers. The `defaultRandom()` ensures that the database automatically generates these IDs upon insertion, reducing application-side overhead.
-*   **Foreign Keys with `onDelete: "cascade"`**: Many relationships, such as `availability.professionalId` referencing `professionals.id`, `clients.professionalId` referencing `professionals.id`, and `clientNotes.clientId` referencing `clients.id`, utilize `onDelete: "cascade"`. This design choice ensures referential integrity by automatically deleting dependent records when a parent record is removed. For instance, deleting a `professional` will automatically clean up all their `availability`, `clients`, `clientNotes`, `recurringSchedules`, `appointments`, `messages`, `follows`, and `reviews`. This simplifies application logic for deletion but requires careful consideration to avoid unintended data loss. The `appointments.recurringScheduleId` is an exception, lacking `onDelete: "cascade"`, which implies that a recurring schedule can be deleted without affecting past or future individual appointments generated from it.
-*   **Flexible `text` Types for Enum-like Fields**: Columns like `professionals.profession`, `professionals.plan`, `professionals.paymentType`, `appointments.status`, `appointments.paymentStatus`, `messages.sender`, `messages.type`, `notifications.recipientType`, and `notifications.type` are all defined as `text`. While Drizzle ORM supports `pgEnum` for PostgreSQL, using `text` offers flexibility to add new categories without requiring schema migrations. The trade-off is that type enforcement and validation must occur at the application layer, rather than being enforced by the database itself.
-*   **Timestamp Management**: The `createdAt` and `updatedAt` columns, where present, are `timestamp` types with `notNull().defaultNow()`. This is a standard and robust way to automatically track the creation and last modification times of records, crucial for auditing and data synchronization.
-*   **Indexing Strategy**: Specific indexes, such as `availability_professional_id_idx` on `availability.professionalId` and `appointments_starts_at_idx` on `appointments.startsAt`, are defined. These are strategically placed on frequently queried foreign keys or date fields to optimize read performance for common access patterns, like fetching a professional's schedule or appointments within a date range.
-*   **Nullable Fields for Optional Data**: Fields like `professionals.email`, `professionals.bio`, `clients.userId`, `clients.email`, `appointments.recurringScheduleId`, and `reviews.comment` are explicitly marked as nullable. This design accommodates scenarios where certain pieces of information might not always be available or required, such as a client booking without a full user account or a review without a detailed comment.
+*   **UUID Primary Keys**: The consistent use of `uuid("id").primaryKey().defaultRandom()` across all tables provides globally unique identifiers, simplifying distributed system concerns and preventing ID collisions.
+*   **External User IDs**: Instead of a single `users` table within this schema, `professionals.userId` and `clients.userId` are `text` columns, strongly suggesting integration with an external authentication service (like Supabase, as noted in comments). This decouples authentication from core application data, allowing the external service to manage user accounts while Odys manages profiles and relationships.
+*   **`onDelete: "cascade"` for Core Relationships**: Many foreign key relationships, such as `availability.professionalId` referencing `professionals.id`, use `onDelete: "cascade"`. This is a pragmatic choice for data integrity, ensuring that when a parent record (e.g., a professional) is deleted, all dependent records (e.g., their availability, clients, appointments) are automatically removed. This simplifies application logic for cleanup but requires careful consideration to avoid accidental data loss.
+*   **`text` for Enumerated Values**: Many columns like `professionals.profession`, `professionals.plan`, `appointments.status`, `messages.sender`, and `notifications.type` are defined as `text`. While flexible, this choice defers validation of allowed values to the application layer rather than enforcing them at the database level with PostgreSQL `ENUM` types.
+*   **Timestamp Defaults**: `createdAt` columns consistently use `defaultNow()`, and `updatedAt` columns also default to `defaultNow()`, ensuring automatic timestamping for record creation and modification.
+*   **Partial Unique Index for Concurrency**: The `appointments_pro_starts_at_active_uidx` on the `appointments` table is a sophisticated use of a partial unique index. By applying the uniqueness constraint only to appointments that are not yet in a terminal state (`'rejected'`, `'cancelled'`), it provides a database-level guarantee against double-booking for active appointments, complementing application-level concurrency controls.
+*   **`numeric` for Financial Data**: `agentMetrics.totalCostUsd` and `totalCostBrl` use the `numeric` type with explicit precision and scale. This is the correct choice for storing monetary values, avoiding floating-point inaccuracies that can arise with `doublePrecision`.
+*   **Array Type for `providersUsed`**: The `agentMetrics.providersUsed` column is defined as `text().array()`, directly leveraging PostgreSQL's native array type. This is an efficient way to store multiple values (e.g., a list of AI providers) within a single column without needing a separate join table.
 
 ## Potential improvements
 
-The current schema is functional and well-structured, but there are several areas where it could be enhanced for stronger data integrity, better type safety, or improved query capabilities:
-
-1.  **Introduce `pgEnum` for categorical `text` fields**: Many columns like `professionals.profession`, `professionals.plan`, `professionals.paymentType`, `appointments.status`, `appointments.paymentStatus`, `messages.sender`, `messages.type`, `notifications.recipientType`, and `notifications.type` currently use `text`. While flexible, this means the database doesn't enforce valid values. Migrating these to Drizzle's `pgEnum` (e.g., `pgEnum("profession_type", ["psychologist", "personal_trainer"])`) would provide database-level validation, improve type safety in the application, and make the schema's intent clearer. This would be a significant improvement for data consistency. (See `professionals.profession` in `src/lib/db/schema.ts`).
-2.  **Refine time and date storage**: The `availability.startTime` and `availability.endTime` columns, as well as `recurringSchedules.time`, are stored as `text`. While this works, it relies on application-level parsing and validation. Using a dedicated `time` type (if Drizzle's `pg-core` offered one directly, or by using a custom type) or enforcing a strict `HH:MM` format with a check constraint would improve data integrity and potentially simplify time-based calculations. (See `availability.startTime` in `src/lib/db/schema.ts`).
-3.  **Add unique constraints for `follows` and `reviews`**: The `follows` table allows a `userId` to follow a `professionalId`. While `id` is unique, it's possible for a user to follow the same professional multiple times, creating redundant records. A unique constraint on the combination of `userId` and `professionalId` would prevent this. Similarly, for `reviews`, while `appointmentId` is unique, a unique constraint on `professionalId` and `clientId` could be considered if the business rule was that a client can only review a professional once, regardless of appointment. (See `follows` table in `src/lib/db/schema.ts`).
-4.  **Consider `varchar` with length limits for `text` fields**: Many `text` columns, such as `professionals.name`, `professionals.phone`, `clients.name`, `clients.phone`, `messages.content`, `notifications.title`, and `notifications.body`, could benefit from explicit length constraints using `varchar(length)`. This would prevent excessively long strings from being stored where not intended, potentially saving storage space and improving data quality, especially for fields like names and phone numbers. (See `professionals.name` in `src/lib/db/schema.ts`).
-
-## References
-
-*   `src/lib/db/schema.ts`
+1.  **Introduce Database Enums for Fixed-Value `text` Columns**: Many `text` columns, such as `professionals.profession`, `professionals.plan`, `professionals.paymentType`, `appointments.status`, `appointments.paymentStatus`, `recurringSchedules.frequency`, `messages.sender`, `messages.type`, `notifications.recipientType`, `notifications.type`, and `agentMetrics.outcome`, represent a finite set of predefined values. Converting these to PostgreSQL `ENUM` types would enforce data integrity at the database level, prevent invalid values from being inserted, and improve type safety in the application code. For example, `professionals.profession` could be an enum `('psychologist', 'personal_trainer', 'nutritionist')`.
+2.  **Centralize User Management with a `users` Table**: The current schema uses `userId` (a `text` column) in both `professionals` and `clients` tables, implying an external authentication system. While functional, introducing a dedicated `users` table within the Odys schema, with `id` as a `uuid` and `userId` as a foreign key to this new `users` table, could centralize user identity management. This would allow for a single point of reference for all users, regardless of whether they are professionals or clients, and enable more explicit relationships and potentially shared user attributes. The `clients.userId` column is currently nullable, which could be a point of divergence in user identity management.
+3.  **Add Missing Foreign Key Indexes**: While many foreign keys are indexed, some are not. For instance, the `clientNotes` table has `clientId` as a foreign key to `clients.id`, but there is no explicit index defined on `clientNotes.clientId`. Similarly, `recurringSchedules` has `clientId` as a foreign key, but no index is defined on `recurringSchedules.clientId`. Adding indexes to these foreign key columns would significantly improve query performance when joining or filtering on these relationships, which is a common access pattern.
+4.  **Refine Polymorphic Association in `notifications`**: The `notifications` table uses `recipientId` (text) and `recipientType` (text) to point to either a professional or a client. This is a common pattern for polymorphic associations but means the database cannot enforce referential integrity. If the number of recipient types is small and stable, consider creating separate notification tables for each recipient type (e.g., `professionalNotifications`, `clientNotifications`) or using a more advanced pattern like a `users` table with a single foreign key.
