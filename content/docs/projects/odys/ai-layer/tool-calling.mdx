@@ -1,79 +1,79 @@
 ---
 title: AI Tool Calling
-description: "Tool-calling pattern: schema definition, dispatch, error handling"
+description: Tool-calling pattern for Odys AI agents, covering schema definition, dispatch, and error handling.
 ---
 
 # AI Tool Calling
 
-The Odys platform leverages advanced AI tool-calling capabilities to enhance both client interactions and professional insights. This documentation delves into the architecture and implementation of the AI layer, specifically focusing on how Large Language Models (LLMs) are integrated to perform specific actions by calling predefined functions, often referred to as "tools." We'll explore two distinct applications of this pattern: an AI WhatsApp Intake Agent for client scheduling and a Professional AI Chat Assistant for business analytics.
+The Odys platform incorporates artificial intelligence through two distinct agents, each designed to serve different user needs: the WhatsApp Concierge and the Professional Assistant. Both agents leverage a sophisticated tool-calling pattern, allowing them to interact with the underlying Odys system and external services to fulfill user requests. This document delves into the architecture of these AI agents, explaining how tools are defined, implemented, and dispatched, along with the considerations for error handling and potential areas for enhancement.
 
 ## Overview
 
-At its core, the AI tool-calling mechanism in Odys follows a "two-pass" pattern when interacting with the LLM. In the first pass, the LLM analyzes the user's request and determines if any of the available tools are relevant. If a tool is identified, the LLM provides the necessary arguments. In the second pass, the system executes the identified tool(s) and then feeds the results back to the LLM, allowing it to generate a coherent, context-aware response to the user. This separation ensures that the LLM focuses on intent and response generation, while the application handles the actual data retrieval and manipulation.
+Odys employs a multi-agent architecture where specialized AI personas handle specific domains. The WhatsApp Concierge, defined in `src/lib/ai-intake.ts`, acts as a public-facing agent, assisting clients in discovering professionals, browsing schedules, and booking appointments across the entire marketplace. In contrast, the Professional Assistant, implemented in `src/app/api/ai/chat/route.ts`, provides internal support to professionals, offering insights into their appointments, clients, and revenue.
 
-Both AI implementations utilize the `Groq` SDK, specifically interacting with the `llama-3.3-70b-versatile` model, chosen for its capabilities in understanding and generating human-like text and its support for tool-calling. The system interacts with a Drizzle ORM-backed PostgreSQL database, which includes 10 tables such as `professionals`, `appointments`, `clients`, `availability`, and `notifications`, to manage all relevant business data.
+Both agents follow a "two-pass tool-calling" mechanism:
+1.  The Large Language Model (LLM) first analyzes the user's query and decides if a tool call is necessary. If so, it suggests one or more tools and their parameters.
+2.  The application executes the suggested tools, feeding their results back to the LLM.
+3.  The LLM then generates a final, human-readable response, incorporating the tool outputs into the conversation context.
 
-The two primary files demonstrating this pattern are:
+This separation of concerns allows the LLM to focus on natural language understanding and generation, while the application layer handles the precise execution of business logic and data retrieval.
 
-*   `src/lib/ai-intake.ts`: This module powers the AI WhatsApp Intake Agent, designed to automate client scheduling and information retrieval.
-*   `src/app/api/ai/chat/route.ts`: This API route provides the Professional AI Chat Assistant, offering business analytics and insights to professionals.
+## Tool Definitions
 
-### AI WhatsApp Intake Agent (`src/lib/ai-intake.ts`)
+The tools available to each AI agent are explicitly defined using an OpenAI-compatible schema, which facilitates interoperability with various LLM providers like Groq, Cerebras, and Gemini via the `chatWithFallback` utility. The descriptions for these tools are intentionally kept terse to minimize token usage, as the full `TOOLS` array is sent with every LLM request.
 
-The `ai-intake.ts` module is responsible for processing incoming WhatsApp messages from clients. Its main goal is to facilitate appointment booking and provide information about the professional's availability.
+### WhatsApp Concierge Tools (`src/lib/ai-intake.ts`)
 
-#### Tool Definitions and Implementations
+The WhatsApp Concierge is equipped with nine distinct tools, enabling a wide range of client interactions:
 
-The agent defines three specific tools that the LLM can invoke:
+*   `search_professionals`: Used to find professionals based on criteria such as `profession`, `city`, `name`, and `service_type` (e.g., "online" or "in_person"). This tool is crucial for the initial discovery phase.
+*   `list_professions`: Provides a dynamic list of professions that currently have active professionals on the platform, preventing the AI from suggesting unavailable services.
+*   `select_professional`: Allows the AI to "focus" the conversation on a specific professional by setting their `professional_id`.
+*   `get_professional_info`: Retrieves detailed information about a selected professional, including their `bio`, `address`, `schedule`, `rating`, and `payment_policy`.
+*   `get_available_slots`: Fetches real-time appointment slots for a given `professional_id` and `date`, with an optional `time_preference`. It also proactively suggests alternative dates if the requested date has no availability.
+*   `book_appointment`: Facilitates the booking of an appointment, requiring `professional_id`, `date`, `time`, `client_name`, and `client_phone`.
+*   `list_my_appointments`: Shows future appointments for the current client.
+*   `cancel_appointment`: Enables the cancellation of an existing appointment using its `appointment_id`.
+*   `reschedule_appointment`: Allows modification of an appointment's `new_date` and `new_time`.
 
-1.  **`get_available_slots`**: This tool's description explicitly states its purpose: "Retorna horários disponíveis para agendamento em uma data específica. Use SEMPRE antes de sugerir horários." It requires a `date` parameter in `YYYY-MM-DD` format. The corresponding `getAvailableSlots` function queries the `professionals` table for session duration and the `availability` table for the professional's working hours on a given `dayOfWeek`. It then checks the `appointments` table to identify existing bookings that conflict with potential slots, ensuring that only truly available times are returned. The logic also accounts for the São Paulo timezone (UTC-3) to accurately determine the day of the week and format times.
-2.  **`book_appointment`**: Described as "Cria um agendamento. Use SOMENTE após confirmar data, horário e nome do cliente," this tool is critical for the agent's primary function. It requires `date`, `time`, `client_name`, and `client_phone`. The `bookAppointment` function executes a Drizzle `db.transaction` with a `serializable` isolation level. This is a crucial design choice to prevent race conditions: if two clients attempt to book the same slot simultaneously, the database will detect the conflict (a "phantom read") and abort one transaction, returning a "SLOT_TAKEN" error. Inside the transaction, it first checks for appointment conflicts, then upserts the client into the `clients` table (creating a new entry if the `normalizedBrazilianPhone` isn't found), and finally inserts the new appointment into the `appointments` table. Upon successful booking, it triggers `notifications` to the professional, sends a WhatsApp message via `sendWhatsApp` using the `msgBookingRequest` template, and an email via `sendBookingRequestEmailToProfessional` if the professional has an `email` configured.
-3.  **`get_professional_info`**: This tool, described as "Retorna informações do profissional: nome, profissão, duração e preço da sessão, e horários de atendimento," provides general details about the professional. The `getProfessionalInfo` function retrieves data from the `professionals` table and combines it with availability rules from the `availability` table to present a comprehensive overview.
+### Professional Assistant Tools (`src/app/api/ai/chat/route.ts`)
 
-#### Conversation Management and Context
+The Professional Assistant, accessed via the `/api/ai/chat` route, offers three tools focused on business analytics for the professional:
 
-The `handleIncomingMessage` function manages the conversation state using `getConversation` and `saveConversation`. It maintains a history of messages and a `context` object that can store temporary information like `pendingDate` or `pendingSlot`. A notable feature is the handling of `options?.outboundContext?.appointmentId`. If an incoming message is a reply to a recent transactional notification (e.g., a reminder), this context is used to seed the LLM with information about the referenced appointment, allowing it to better understand follow-up requests like "preciso remarcar."
+*   `get_stats`: Provides a comprehensive summary of the last six months, including global and month-by-month breakdowns of total appointments, no-shows, completion rates, and revenue.
+*   `get_upcoming`: Lists appointments scheduled for the next seven days, showing client names, dates, and statuses.
+*   `get_no_show_clients`: Ranks clients by their no-show count over the last six months, along with their total sessions and individual no-show rates.
 
-### Professional AI Chat Assistant (`src/app/api/ai/chat/route.ts`)
+## Tool Implementations and Dispatch
 
-The `ai/chat/route.ts` API endpoint provides an internal chat assistant for professionals, allowing them to query their business data using natural language.
+The implementation of these tools involves direct interaction with the Drizzle ORM and various utility functions.
 
-#### Tool Definitions and Implementations
+In `src/lib/ai-intake.ts`, the `searchProfessionalsTool` queries the `professionals` table, applying filters and then enriching results with `getProStats` for `avgRating`, `reviewCount`, and `completedCount`. It uses `geocodeCity` and `distanceKm` to calculate proximity to a city centroid, influencing the `rankScore` for sorting results. The `bookAppointment` function is particularly complex, executing within a Drizzle `transaction` with a `serializable` isolation level to prevent race conditions. It performs checks for past dates and duplicate bookings, creates new clients if necessary, and handles notifications via `sendWhatsApp` and email utilities, branching logic based on the professional's `autoConfirm` setting. Date and time handling is localized to São Paulo (UTC-3) using custom helpers like `saoPauloDate` and `formatSaoPauloTime`, and `date-fns` for manipulations.
 
-This assistant offers three tools focused on business analytics:
+The `src/app/api/ai/chat/route.ts` API route handles the dispatch for the Professional Assistant. After receiving user messages, it constructs a `SYSTEM_PROMPT` to guide the LLM's behavior. The `POST` handler first calls `chatWithFallback` to determine if a tool is needed. If `choice.tool_calls` are present, it iterates through them, executing the corresponding `getStats`, `getUpcoming`, or `getNoShowClients` function. These functions perform Drizzle queries against the `appointments` and `clients` tables, using aggregation functions and `date-fns` utilities like `startOfMonth` and `subMonths` to generate the required analytical data. The results are then stringified and sent back to the LLM for the second pass, allowing it to formulate the final reply.
 
-1.  **`get_stats`**: Described as "Retorna estatísticas dos últimos 6 meses: resumo global (total, no-shows, taxa, receita) + detalhamento mês a mês," this tool is used for various summary requests. The `getStats` function queries all `appointments` for the last six months, then processes this data to calculate total appointments, completed sessions, no-shows, cancelled appointments, and estimated revenue per month and globally. It uses `startOfMonth`, `endOfMonth`, and `subMonths` from `date-fns` for date range calculations.
-2.  **`get_upcoming`**: This tool, "Retorna os agendamentos dos próximos 7 dias com nome do cliente, data e horário," provides a quick overview of immediate future appointments. The `getUpcoming` function joins `appointments` with `clients` to fetch relevant details for the next seven days, ordered by `startsAt`.
-3.  **`get_no_show_clients`**: Described as "Retorna o ranking dos clientes que mais faltaram nos últimos 6 meses, com número de faltas, total de sessões e taxa individual," this tool identifies clients with high no-show rates. The `getNoShowClients` function performs a grouped query on `appointments` and `clients` to count total appointments and no-shows per client over the last six months, then calculates individual no-show rates.
+## Error Handling
 
-#### System Prompt and Guardrails
-
-The `SYSTEM_PROMPT` for the chat assistant is highly prescriptive, guiding the LLM to respond in Portuguese, use tools for data, format values in BRL, and adhere to specific output formats for "Taxa de no-show" and "Resumo do mês." This ensures consistent and useful responses.
-
-The route also implements important guardrails:
-
-*   **Authentication and Authorization**: It verifies the `user` and `professional` identity using `getUser` and `getProfessional`.
-*   **Rate Limiting**: A `getAiChatLimiter` (defined in `src/lib/ratelimit.ts`) is applied per authenticated `user.id` with a `prefix` of `rl:ai-chat`, allowing 20 requests within a 1-hour `window`. This prevents a single user from incurring excessive Groq costs.
-*   **Plan Guard**: The `canUseFeature` utility checks if the professional's `plan` (e.g., `Pro` or `Premium`) or `trialEndsAt` date allows access to the "assistant" feature, ensuring feature gating based on subscription.
+Both agents incorporate error handling at various levels. Within tool implementations, specific error objects (e.g., `{ error: string }` or `{ success: false, reason: string }`) are returned to the LLM, allowing it to communicate issues to the user in natural language. For instance, `bookAppointment` explicitly returns `SLOT_TAKEN` or Drizzle-specific error codes like `40001` (serialization failure) or `23505` (unique violation) to indicate booking conflicts. The `chat/route.ts` API also includes general error handling with `serverError` for unexpected issues during the AI interaction.
 
 ## Design Decisions
 
-The architectural choices in the AI tool-calling layer reflect a balance between leveraging LLM capabilities and maintaining control over data integrity and business logic.
+The current design reflects several deliberate choices:
 
-1.  **Two-Pass LLM Interaction**: This pattern was chosen to clearly separate the LLM's role in understanding intent and generating natural language from the application's role in executing business logic and data access. This makes the system more predictable, easier to debug, and allows for robust error handling within the tool implementations themselves, rather than relying solely on the LLM to interpret complex database errors.
-2.  **Dedicated, Granular Tools**: Instead of a single, broad tool, specific functions like `get_available_slots` or `book_appointment` are defined. This provides the LLM with clear, unambiguous actions it can take, reducing hallucination and improving the reliability of tool calls. Each tool's parameters are precisely defined, guiding the LLM to extract the correct information from user prompts.
-3.  **Serializable Transactions for Critical Operations**: The `bookAppointment` function's use of a `db.transaction` with `serializable` isolation is a critical decision for data consistency. It directly addresses the challenge of concurrent booking requests, ensuring that the system can reliably prevent double-bookings by detecting and resolving race conditions at the database level. This is a robust approach to maintaining data integrity in a multi-user environment.
-4.  **Explicit Timezone Handling**: The inclusion of `saoPauloDate` and `formatSaoPauloTime`/`formatSaoPauloDate` helpers in `ai-intake.ts` demonstrates a conscious decision to handle timezone complexities explicitly. Given that Brazil abolished DST in 2019, fixing São Paulo to UTC-3 simplifies calculations but requires careful implementation to avoid off-by-one day or hour errors, especially when converting between local time and UTC for database storage.
-5.  **Per-User Rate Limiting**: Implementing `getAiChatLimiter().limit(user.id)` for the `ai/chat` endpoint is a pragmatic choice to manage operational costs associated with LLM API calls. By limiting requests per authenticated user rather than per IP address, it prevents a single user from monopolizing resources or incurring excessive charges, while still allowing multiple users from the same network to use the service independently.
-6.  **Contextual System Prompts**: Both `buildSystemPrompt` and `SYSTEM_PROMPT` are carefully crafted to guide the LLM's behavior, tone, and output format. This is essential for maintaining brand consistency and ensuring the AI assistant provides helpful, relevant, and appropriately formatted responses, especially for analytical data.
+*   **Specialized Agents**: Creating two distinct AI agents, the WhatsApp Concierge and the Professional Assistant, allows for highly tailored prompts and toolsets, optimizing each agent for its specific domain and user base. This avoids a monolithic AI that would struggle with context switching between client-facing and professional-facing tasks.
+*   **Terse Tool Descriptions**: The decision to keep tool descriptions short in the `TOOLS` array minimizes token consumption on every LLM call. The expectation is that the main system prompt provides sufficient context for the LLM to understand when and how to use each tool, making verbose descriptions redundant and costly.
+*   **Two-Pass Tool Calling**: This pattern separates tool invocation from final response generation. It provides a clear boundary between the LLM's reasoning and the application's execution, making the system more predictable and debuggable. It also allows the LLM to synthesize multiple tool results into a coherent narrative.
+*   **Drizzle ORM and `date-fns`**: The use of Drizzle for database interactions provides a type-safe and expressive way to query the `professionals`, `availability`, `appointments`, `clients`, `notifications`, `reviews`, and `agentMetrics` tables. `date-fns` is chosen for its comprehensive and immutable date manipulation capabilities, essential for handling complex scheduling logic and time zone considerations (e.g., São Paulo's UTC-3).
+*   **`serializable` Transaction Isolation**: For critical operations like `bookAppointment`, using a `serializable` isolation level ensures the highest degree of data consistency, preventing concurrent bookings from clashing. While this can introduce retries, it prioritizes data integrity for financial and scheduling accuracy.
+*   **Dynamic Profession Listing**: The `listProfessionsTool` and `resolveProfessionAlias` ensure that the AI only suggests professions that are actually available on the platform and can understand common Portuguese aliases, improving user experience and reducing dead ends.
+*   **Professional Ranking**: The `rankScore` function in `searchProfessionalsTool` combines multiple factors (rating, review count, completed appointments, plan tier, and optional distance) to present the most relevant professionals first, enhancing the quality of search results.
 
 ## Potential Improvements
 
-1.  **Centralized Timezone Utility**: The timezone helper functions (`saoPauloDate`, `formatSaoPauloTime`, `formatSaoPauloDate`) are duplicated and hardcoded within `src/lib/ai-intake.ts`. Creating a shared utility module for timezone conversions, perhaps configurable for different professional locations, would improve maintainability and reduce redundancy.
-2.  **Enhanced Tool Argument Validation**: While `getAvailableSlots` includes a basic regex check for `date` format, tool arguments could benefit from more comprehensive validation *before* being passed to the underlying business logic. This could involve Zod schemas or similar validation libraries applied directly to the `args` object parsed from `call.function.arguments`, providing clearer error messages to the LLM and preventing invalid data from reaching the database layer.
-3.  **Standardized Tool Error Reporting**: In `src/lib/ai-intake.ts`, tool implementations return objects like `{ error: "..." }` or `{ success: false, reason: "..." }`. In `src/app/api/ai/chat/route.ts`, the `else` branch for unknown tools simply returns `{ error: "Ferramenta desconhecida" }`. A more consistent and structured error object across all tools, perhaps including error codes or types, could allow the LLM to generate more nuanced and helpful error messages to the end-user, or for the application to handle specific error types programmatically.
-4.  **Dynamic System Prompt Context**: The `handleIncomingMessage` function in `src/lib/ai-intake.ts` manually injects `clientName` and `senderPhone` into the LLM messages. While effective, this could be abstracted into a more dynamic context builder that automatically includes relevant user or professional details, reducing boilerplate and ensuring all necessary context is consistently provided to the LLM.
-5.  **Tool Output Schema Definition**: Although `JSON.stringify(result)` is used to pass tool outputs back to the LLM, explicitly defining the expected JSON schema for each tool's output (similar to how input parameters are defined) could further improve the LLM's ability to parse and utilize the results accurately, especially for complex data structures like those returned by `getStats`.
+1.  **Centralized Tool Dispatch**: The `if/else if` chain for tool dispatch in `src/app/api/ai/chat/route.ts` and `src/lib/ai-intake.ts` can become unwieldy as more tools are added. A more maintainable approach would be to create a `Map<string, Function>` that maps tool names to their respective implementation functions. This would simplify the dispatch logic and make it easier to add or remove tools.
+2.  **Standardized Tool Output Schema**: While tools return structured data, the error handling is somewhat ad-hoc (e.g., `{ error: string }` vs. `{ success: false, reason: string }`). Defining a consistent output schema for all tools, especially for error conditions, could make it easier for the LLM to reliably parse and interpret tool results, leading to more consistent and accurate AI responses.
+3.  **Caching for Static Data**: Functions like `listProfessionsTool` and `getProStats` (which is called in `searchProfessionalsTool` and `getProfessionalInfo`) query data that changes infrequently. Implementing a caching layer (e.g., Redis or an in-memory cache with a short TTL) for these results could significantly reduce database load and improve response times for frequently accessed information.
+4.  **Enhanced Location Search**: The `searchProfessionalsTool` currently uses `geocodeCity` to find a city centroid for ranking. While effective, it could be improved by allowing users to specify a `neighborhood` or a more precise `near` parameter, which would then be used as the reference point for `distanceKm`, providing more accurate local search results.
 
 ## References
 
