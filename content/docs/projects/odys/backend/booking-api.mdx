@@ -1,106 +1,74 @@
 ---
 title: Booking API
-description: Internals of the booking GET and POST endpoints for scheduling appointments.
+description: Booking GET + POST endpoint internals
 ---
 
 # Booking API
 
-The `/api/booking` endpoint serves as the central hub for managing appointment scheduling within Odys. It exposes both `GET` and `POST` methods, allowing clients to query a professional's availability and to submit new appointment requests. This API is critical for the core functionality of the platform, connecting clients with professionals and orchestrating the initial steps of the service delivery workflow.
+The `/api/booking` endpoint serves as a central hub for managing appointment scheduling within the Odys platform. It allows clients to view a professional's available slots and subsequently book appointments. This endpoint is critical for the core functionality of the platform, bridging the gap between a professional's defined availability and a client's desire to schedule a session.
 
 ## Overview
 
-This API route, defined in `src/app/api/booking/route.ts`, orchestrates the complex logic required for appointment management. The `GET` request provides a read-only view of a professional's schedule, combining their defined availability rules with existing appointments to show what slots are open. The `POST` request handles the creation of new appointments, involving several steps: input validation, bot detection, professional lookup, plan limit checks, client upsertion, atomic appointment creation, and multi-channel notifications.
+The `src/app/api/booking/route.ts` file defines a Next.js API route that handles both `GET` and `POST` requests for the `/api/booking` path. The `GET` method is responsible for retrieving a professional's availability and existing appointments for a specific date, enabling clients to see open slots. The `POST` method facilitates the creation of new appointments, incorporating robust validation, plan-based limits, and concurrency control to ensure data integrity.
 
-The system interacts with several Drizzle ORM-managed tables:
-*   `professionals`: To retrieve professional details like `sessionDuration`, `autoConfirm`, `plan`, and contact information for notifications.
-*   `availability`: To fetch the professional's weekly working hours.
-*   `appointments`: To check for existing bookings and to insert new ones.
-*   `clients`: To manage client records, either by finding an existing client or creating a new one.
-*   `notifications`: To send in-app alerts to professionals about new bookings.
+This endpoint interacts with several key database tables: `professionals`, `availability`, `appointments`, `clients`, and `notifications`. It uses Drizzle ORM for all database operations, ensuring type safety and a consistent data access layer. Beyond database interactions, the route integrates with external services for communication, sending WhatsApp messages via `sendWhatsApp` and emails via `sendBookingRequestEmailToProfessional`. It also incorporates rate limiting using `getBookingLimiter` to prevent abuse and analytics tracking with `capture` and `setOnce` for business insights.
 
-## GET Request: Fetching Availability
+## Retrieving Availability (GET)
 
-The `GET` method for `/api/booking` allows any visitor to query a professional's available slots for a specific date. It expects two URL search parameters: `slug` to identify the professional and `date` to specify the day for which availability is requested.
+The `GET` handler in `src/app/api/booking/route.ts` is designed to provide clients with the necessary information to choose an appointment slot. It expects two query parameters: `slug`, which identifies the professional, and `date`, specifying the day for which availability is requested.
 
-Upon receiving a request, the system first validates these parameters, returning a `400` status if they are missing. It then queries the `professionals` table using the provided `slug`. A crucial design choice here is the explicit selection of only the `id` and `sessionDuration` columns. This was a deliberate security enhancement; an earlier version returned all columns (`SELECT *`), which inadvertently exposed sensitive professional data like `email`, `phone`, `userId`, `plan`, `trialEndsAt`, `stripeCustomerId`, and `stripeSubscriptionId` to unauthenticated users. By limiting the selection, the API now only exposes the minimum necessary information for scheduling, preventing data leakage. If no professional is found, a `404` error is returned.
+If `slug` or `date` query parameters are missing, a `400` error is returned. Upon receiving a request, the system first queries the `professionals` table to find the professional associated with the provided `slug`. Crucially, it only selects the `id` and `sessionDuration` columns. This is a deliberate security measure to prevent sensitive professional data, such as `email`, `phone`, `userId`, `plan`, `trialEndsAt`, `stripeCustomerId`, or `stripeSubscriptionId`, from being exposed to unauthenticated users. If no professional is found, a `404` error is returned. Any other unexpected errors during the `GET` request processing are caught by `serverError` and result in a `500 Internal Server Error`.
 
-Once the professional is identified, the API performs two concurrent database queries using `Promise.all` for efficiency:
-1.  It fetches all `availability` rules for the professional, which define their regular working hours for each `dayOfWeek`, specified by `startTime` and `endTime`.
-2.  It retrieves all existing `appointments` for that professional within the requested `date`'s `dayStart` and `dayEnd`. Importantly, it filters out appointments with `status` of `rejected` or `cancelled`, as these slots are effectively free.
+Next, the handler performs two parallel database queries using `Promise.all` for efficiency. It fetches the professional's general `availability` rules from the `availability` table, which define their working hours for each `dayOfWeek`. Concurrently, it retrieves all existing `appointments` for that professional within the specified `date` range, specifically from `startOfDay` to `endOfDay`. Appointments with a `status` of `rejected` or `cancelled` are explicitly excluded, as these slots are considered available.
 
-The response combines these `rules` and `existingAppointments`, allowing the frontend to calculate and display the actual available time slots to the client. Any unexpected errors during this process are caught and handled by the `serverError` utility, returning a generic `500` status.
+The response then combines these two sets of data: the `rules` (general availability) and `existingAppointments` (occupied slots), allowing the client-side logic to calculate and display the truly available time slots.
 
-## POST Request: Creating a Booking
+## Creating Appointments (POST)
 
-The `POST` method to `/api/booking` is responsible for creating new appointments. This is a more complex operation, involving several layers of validation, business logic, and side effects.
+The `POST` handler is responsible for processing new appointment requests. It begins by applying a rate limit using `getBookingLimiter` based on the client's IP address, returning a `429 Too Many Requests` if the limit is exceeded.
 
-### Rate Limiting and Timing Oracle Mitigation
+A notable design choice here is the `respondAfterFloor` function, which introduces a minimum response time of 250ms. This is a countermeasure against timing oracle attacks, where an attacker might infer information (e.g., whether a client already exists) by observing subtle differences in response times between database operations. By normalizing the response time, this signal is effectively blunted.
 
-Before processing the request, a rate limit is applied using `getBookingLimiter`. This helps prevent abuse and ensures fair usage of the API. If the limit is exceeded, a `429 Too Many Requests` response is returned.
+The incoming request body is validated using `bookingSchema`, a Zod schema that ensures `slug`, `startsAt`, `clientName`, and `clientPhone` are present and correctly formatted. If validation fails, a `400` error is returned with details about the invalid fields. An optional `clientEmail` is also validated. The schema includes a `website` field, which acts as a honeypot: if this hidden field is populated by a bot, the request is silently dropped, returning a fake success response to mislead the bot without interacting with the database.
 
-A subtle but important security measure is the `respondAfterFloor` function. This introduces a minimum response time of 250ms for all `POST` requests. This design choice aims to blunt a potential "timing oracle" attack. Without it, an attacker could submit booking requests with various client phone numbers and emails, and by precisely timing the responses, infer whether a given client already exists in the database for that professional. The transaction is inherently faster when a client row exists (a `SELECT` followed by an `UPDATE`) than when it doesn't (a `SELECT` followed by an `INSERT`). By flooring the response time, this timing difference becomes negligible compared to network jitter, making such an attack impractical without noticeably degrading the user experience for legitimate users.
+After validation, the system retrieves the professional's full details from the `professionals` table using the `slug`. If the professional is not found, a `404` error is returned.
 
-### Input Validation and Honeypot
+Before proceeding with the booking, the system checks the professional's subscription plan limits. It uses `effectivePlan` to determine the active plan (e.g., `basic`, `pro`, `premium`) and then consults the `PLANS` configuration, defaulting to `PLANS.free` if the effective plan does not map to a defined plan. It verifies if the professional has exceeded their `clients` limit or `appointmentsPerMonth` limit. If the client limit is reached, it checks if the current booking client is already an existing client of that professional. If limits are exceeded for a new client or monthly appointments, a `403 Forbidden` error is returned.
 
-The incoming request body is validated against the `bookingSchema` using Zod. This schema ensures that `slug`, `startsAt`, `clientName`, and `clientPhone` are present and correctly formatted. `clientEmail` is optional.
+The core of the booking logic resides within a Drizzle `db.transaction` block, configured with a `serializable` isolation level. This is crucial for preventing race conditions. Inside the transaction:
+1.  **Conflict Check**: The system first checks for any existing `appointments` that would overlap with the proposed `startsAt` and `endsAt` times, excluding `rejected` or `cancelled` appointments. If an overlap is detected, it throws a `SLOT_TAKEN` error, which is then caught and translated into a `409 Conflict` response.
+2.  **Client Upsert**: It attempts to find an existing client in the `clients` table for the professional using either the `clientPhone` or `clientEmail`. If a client is found, it's used; otherwise, a new client record is inserted. If an existing client is found but their `email` is null and a `clientEmail` is provided in the request, the client's email is updated.
+3.  **Appointment Insert**: Finally, a new record is inserted into the `appointments` table with the professional's ID, client's ID, start and end times, and a `status` determined by the professional's `autoConfirm` setting (either `confirmed` or `pending_confirmation`). The `paymentStatus` is initially set to `none`.
 
-A clever bot detection mechanism is implemented using a `website` field in the schema. This field is intended to be a "honeypot" – a hidden form field that only automated bots would typically fill. If the `website` field is present and non-empty in the submission, the API immediately returns a fake success response (`{ success: true }`) with a `200 OK` status, without ever touching the database. This makes the bot believe its submission was successful, preventing it from learning that the field is a trap and discouraging further attempts.
+Following a successful transaction, the system dispatches various notifications. A new entry is added to the `notifications` table for the professional, alerting them of the new booking. Depending on whether the appointment was `autoConfirm`ed, different WhatsApp messages are sent: a confirmation to the client and a receipt to the professional if confirmed, or a booking request to the professional if pending. An email notification is also sent to the professional if their `email` is configured.
 
-### Professional Lookup and Plan Limits
-
-After validation, the professional is retrieved from the `professionals` table using the `slug`. If not found, a `404` is returned.
-
-Next, the system checks if the professional's current plan imposes any limits on clients or appointments. The `effectivePlan` utility determines the professional's active plan (considering `trialEndsAt`), and `PLANS` provides the associated limits.
-*   If `plan.limits.clients` is not `Infinity`, the system counts existing clients for the professional. If the `clientCount` exceeds the limit and the incoming `clientPhone` does not match an existing client, a `403 Forbidden` error is returned.
-*   Similarly, if `plan.limits.appointmentsPerMonth` is not `Infinity`, the system counts appointments within the current month. If `monthlyCount` exceeds the limit, a `403 Forbidden` error is returned.
-
-### Atomic Appointment Creation
-
-The core logic for creating the appointment is wrapped in a Drizzle ORM `transaction` with `isolationLevel: "serializable"`. This is a critical design choice for data integrity. In a highly concurrent environment, multiple clients might attempt to book the same time slot simultaneously. Without a serializable transaction, both requests could pass an initial conflict check and then both attempt to insert an appointment, leading to a double-booking.
-
-The serializable transaction ensures that:
-1.  **Conflict Check**: Inside the transaction, the system first checks the `appointments` table for any existing appointments that would overlap with the proposed `startDate` and `endDate` for the professional, excluding `rejected` or `cancelled` appointments. If a conflict is found, it throws a custom `SLOT_TAKEN` error.
-2.  **Client Upsert**: The system then attempts to find an existing client for the professional based on `clientPhone` or `clientEmail`. If a client is found, their record is updated (e.g., if an email was provided but missing from the existing record). If no client is found, a new entry is inserted into the `clients` table.
-3.  **Appointment Insert**: Finally, a new appointment is inserted into the `appointments` table, linking it to the professional and client. The `status` is set to `confirmed` if `professional.autoConfirm` is true, otherwise `pending_confirmation`. The `paymentStatus` defaults to `none`.
-
-If the `SLOT_TAKEN` error is thrown, or if the database detects a serialization failure (SQLSTATE `40001`), the transaction is rolled back, and the API returns a `409 Conflict` response, informing the user that the slot was just taken.
-
-### Notifications and Analytics
-
-After a successful booking, several side effects are triggered:
-*   An entry is inserted into the `notifications` table to alert the professional within the application.
-*   A WhatsApp message is sent to the professional's `phone` using the `msgBookingRequest` template, providing details of the new booking. This is handled asynchronously to avoid blocking the response.
-*   If the professional has an `email` configured, an email notification is sent via `sendBookingRequestEmailToProfessional`, also asynchronously.
-
-Finally, analytics events are captured using `capture` and `setOnce`. The `booking_received_server` event tracks each booking, attributing it to the `professional.id`. The `setOnce` event records the `first_booking_at` timestamp for the professional, which is useful for funnel analysis without needing to re-query the database for this specific metric.
-
-The `POST` request concludes by returning an equalized success response (`{ success: true }`) after the response-time floor, intentionally omitting any details about the newly created appointment to prevent information leakage that could aid attackers.
+Finally, analytics events (`booking_received_server` and `first_booking_at`) are captured to track booking activity. The `POST` endpoint concludes by returning a generic `success: true` response, again equalized by `respondAfterFloor`, to avoid leaking any specific client or appointment details that could be exploited. Any other unexpected errors during the `POST` request processing are caught by `serverError` and result in a `500 Internal Server Error`.
 
 ## Design decisions
 
-The design of the booking API reflects a careful balance between functionality, security, and performance:
+The design of the booking API prioritizes several key aspects:
 
-*   **Security by Default**: The `GET` endpoint's explicit column selection (`id`, `sessionDuration`) for `professionals` is a direct response to a potential data leakage vulnerability, prioritizing privacy. Similarly, the `POST` endpoint incorporates a `respondAfterFloor` mechanism to mitigate timing oracle attacks and a `website` honeypot field for bot detection, demonstrating a proactive approach to security.
-*   **Data Integrity with Transactions**: The use of a Drizzle `transaction` with `isolationLevel: "serializable"` for the `POST` request is fundamental. It ensures that concurrent booking attempts for the same slot are correctly handled, preventing double-bookings and maintaining the consistency of the `appointments` table. This is a trade-off for potentially higher latency during peak concurrency but is essential for correctness.
-*   **User Experience through Clear Feedback**: The API provides specific error messages for common scenarios like invalid parameters (`400`), professional not found (`404`), plan limits exceeded (`403`), and slot conflicts (`409`). This allows the frontend to give meaningful feedback to the user.
-*   **Multi-channel Notifications**: By sending notifications via in-app alerts, WhatsApp, and email, the system aims to ensure professionals are promptly informed of new bookings, catering to different communication preferences and increasing reliability.
-*   **Analytics for Business Insights**: Integrating `capture` and `setOnce` analytics events directly into the booking flow provides valuable data for understanding professional engagement, conversion funnels, and overall platform usage.
+*   **Security by Default**: The `GET` endpoint explicitly selects only the `id` and `sessionDuration` columns from the `professionals` table. This prevents accidental exposure of sensitive professional data to unauthenticated clients, adhering to the principle of least privilege.
+*   **Concurrency Safety with Serializable Transactions**: The `POST` endpoint wraps its critical operations—conflict checking, client upsert, and appointment insertion—within a Drizzle `db.transaction` with a `serializable` isolation level. This is a strong guarantee that prevents race conditions where two simultaneous booking requests might otherwise successfully book the same slot. If a conflict occurs, one transaction will fail with a `40001` SQLSTATE, which the application translates into a user-friendly `409 Conflict` message.
+*   **Timing Oracle Mitigation**: The `respondAfterFloor` utility on the `POST` endpoint adds a minimum delay to all responses. This design choice aims to obscure any timing differences that might arise from database operations (e.g., a faster lookup for an existing client versus an insert for a new one), making it harder for attackers to infer information about the system's state.
+*   **Bot Detection with Honeypot**: The `website` field in the `bookingSchema` acts as a simple yet effective honeypot. Bots often fill all available form fields, including hidden ones. By checking if this field is populated, the system can identify and silently discard bot submissions, returning a fake success to prevent the bot from learning the trap.
+*   **Plan-based Feature Gating**: The integration with `effectivePlan` and `PLANS` allows the system to dynamically enforce business rules, such as limits on the number of clients or monthly appointments, based on the professional's subscription tier. This is a fundamental aspect of the platform's monetization strategy.
+*   **Unified Notification Flow**: The logic for sending WhatsApp and email notifications is centralized within the `POST` handler. This ensures that regardless of whether an appointment is auto-confirmed or pending, the correct sequence of communications is triggered, providing a consistent experience for both clients and professionals.
 
 ## Potential improvements
 
-1.  **Availability Time Representation**: The `availability` table stores `startTime` and `endTime` as `text` columns. While functional, using a dedicated `time` type (if supported by the database and Drizzle) or storing times as integer minutes from midnight could simplify time-based calculations, comparisons, and prevent potential parsing issues or inconsistencies. This would make the logic for determining available slots in the `GET` request more robust and less prone to errors.
-2.  **Client Upsert Logic Refinement**: In the `POST` request, the client upsert logic uses `or(...clientConditions)` to find an existing client by `phone` OR `email`. If a client exists with a phone number but a different email is provided, the existing client's email is updated. This might not always be the desired behavior, especially if `email` is intended to be a unique identifier for a distinct client. A more explicit strategy, such as prioritizing `phone` as the primary unique identifier for upsert, or requiring a `userId` for logged-in clients, could prevent unintended client record merging.
-3.  **Internationalization of Date/Time Formats**: The `POST` endpoint hardcodes date and time formatting for notifications using `toLocaleDateString("pt-BR")` and `toLocaleTimeString("pt-BR")`. This assumes all professionals and clients prefer Brazilian Portuguese locale. For a global platform, these formats should be configurable based on the professional's or client's locale settings, or a standardized, locale-agnostic format should be used for internal messages.
-4.  **Granular Error Handling**: The `serverError` utility provides a generic `500` response for unexpected errors. While useful as a catch-all, more specific error types or codes could be returned for certain known failure modes (e.g., external API failures for WhatsApp/email, database connection issues). This would allow for more targeted error handling on the client side and better observability for debugging.
+1.  **Availability Time Representation**: In the `availability` table, `startTime` and `endTime` are stored as `text`. While this works, using a dedicated `time` type (if supported by the database and Drizzle) or storing them as integers representing minutes from midnight could offer better type safety, easier comparison, and prevent potential parsing issues or inconsistencies if different text formats are used. This would affect the `availability` table schema and the logic within the `GET` handler that processes these times.
+2.  **Refined Client Upsert Logic**: The current client upsert logic in the `POST` handler searches for an existing client by `phone` OR `email`. If a client is found by phone but has no email, and the booking request provides an email, that email is added to the existing client. This might lead to scenarios where a professional intends to have two distinct clients (e.g., a client with phone A and no email, and a new client with phone A and email B) but they are merged. Consider if `phone` should be the primary unique identifier for a client, or if a more explicit "find or create" strategy is needed that prioritizes `phone` and only creates a new client if no match is found by phone, regardless of email. This would involve reviewing the `clientConditions` array and the subsequent `if (!client)` and `else if (!client.email && clientEmail)` blocks.
+3.  **Centralized Error Handling for Transactions**: The `POST` handler explicitly catches `SLOT_TAKEN` and the `40001` SQLSTATE for serializable transaction failures. While effective, other potential transaction-related errors might not be caught as specifically. A more centralized error handling strategy for Drizzle transactions could involve a dedicated utility function that maps common Drizzle/Postgres error codes to specific HTTP responses and user-friendly messages, reducing repetition and ensuring all transaction failures are handled gracefully. This would primarily impact the `catch (err)` block surrounding the `db.transaction`.
 
 ## References
 
 *   `src/app/api/booking/route.ts`
 *   `src/lib/db/schema.ts`
 *   `src/lib/whatsapp.ts`
-*   `src/lib/stripe.ts`
-*   `src/lib/plan-guard.ts`
 *   `src/lib/email.ts`
 *   `src/lib/ratelimit.ts`
 *   `src/lib/api.ts`
 *   `src/lib/analytics.ts`
+*   `src/lib/stripe.ts`
+*   `src/lib/plan-guard.ts`
