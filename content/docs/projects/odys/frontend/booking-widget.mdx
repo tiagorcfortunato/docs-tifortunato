@@ -1,39 +1,101 @@
 ---
-title: "Booking Widget Internals"
-description: "3-step state machine, react-hook-form, slot computation"
+title: Booking Widget
+description: "Booking widget internals: 3-step state machine, react-hook-form, slot computation"
 ---
 
-# Booking Widget Internals
+# Booking Widget
 
-The booking widget is the core client-facing component for scheduling appointments in Odys. It orchestrates user interaction, form validation, time slot generation, and backend communication—all within a streamlined, three-step flow. Understanding its internals reveals how Odys balances usability, performance, and spam resistance in a real-world scheduling context.
+The `BookingWidget` component, located at `src/app/p/[slug]/booking-widget.tsx`, is a core piece of the Odys frontend, enabling clients to schedule appointments with professionals. It provides a guided, multi-step user experience for selecting a date and time, providing client details, and confirming the booking. This document delves into its internal workings, covering its state machine, form management, and the logic behind generating available time slots.
 
 ## Overview
 
-The widget is a React Client Component powered by `react-hook-form` and `zod` for form management and validation. It integrates with a backend API (`/api/booking`) to fetch availability and submit bookings, leveraging the `availability`, `professionals`, and `appointments` database tables. The state machine drives the UX through three phases: picking a date and time, entering client details, and displaying success. Slot computation happens client-side using rules derived from the `availability` table and existing `appointments`, ensuring real-time responsiveness.
+The booking widget orchestrates a client's journey through three distinct steps:
+1.  **Pick**: The client selects an available date and time slot from a calendar interface.
+2.  **Form**: The client provides their personal information (name, phone, email) to finalize the booking request.
+3.  **Success**: A confirmation message is displayed, potentially including payment instructions via Pix, and options to register or view existing appointments.
 
-## State Machine and User Flow
+This sequential flow is managed by a simple state machine driven by the `step` state variable. The component relies heavily on React's `useState` and `useEffect` hooks for managing UI state and data fetching, `react-hook-form` with Zod for robust form validation, and a custom utility function, `generateSlots`, for calculating available appointment times.
 
-The widget uses a simple but effective state machine with three states: `"pick"`, `"form"`, and `"success"`. This pattern keeps the UI focused and reduces cognitive load. The transition from date selection to form submission is gated by `selectedDate` and `selectedSlot`, ensuring data integrity before proceeding. The success screen not only confirms the booking but also conditionally renders a Pix QR code for immediate payment, based on `paymentType` and `pixKey`—a key feature for Brazil’s financial landscape.
+## Booking Flow Internals
 
-## Slot Generation and Availability Logic
+### State Management and the 3-Step Flow
 
-Slot computation is handled by `generateSlots` in `src/lib/slots.ts`, a pure function that takes a date, availability rules, existing appointments, and session duration. It generates time slots in `HH:mm` format, skipping those in the past or conflicting with existing appointments. The logic respects `sessionDuration` from the `professionals` table and uses `availability.startTime` and `endTime` to define the working window. This client-side approach reduces server load and enables instant feedback when users navigate the calendar. Additionally, the calendar UI itself prevents selection of past dates via the `disabled` prop (`src/app/p/[slug]/booking-widget.tsx:204`), ensuring users cannot even attempt to pick a historical day.
+The `BookingWidget` component uses several `useState` hooks to manage its internal state, most notably `step`, which dictates the currently displayed view: `"pick"`, `"form"`, or `"success"`.
+
+*   `selectedDate`: Stores the date chosen by the user from the `Calendar` component.
+*   `selectedSlot`: Holds the specific time slot (e.g., "09:00") selected for the `selectedDate`.
+*   `slots`: An array of available time strings for the `selectedDate`, fetched from the backend.
+*   `loadingSlots`: A boolean flag indicating if slots for the `selectedDate` are currently being fetched.
+*   `loading`: A general loading indicator, primarily used during the booking submission process.
+*   `submittedData`: Stores the client's form data after a successful submission, used to pre-fill registration links or display confirmation details.
+
+The UI conditionally renders different sections based on the `step` variable. For instance, when `step` is `"pick"`, the calendar and slot selection interface are shown. Transitioning to `"form"` displays the client details input, and `"success"` presents the booking confirmation.
+
+### Slot Generation and API Interaction
+
+When a `selectedDate` is chosen or changes, a `useEffect` hook triggers an asynchronous operation to fetch available slots. It constructs a GET request to the `/api/booking` route, passing the professional's `slug` and the formatted `selectedDate`.
+
+The `/api/booking` endpoint (GET method) is responsible for retrieving the professional's `availability` rules and any `existingAppointments` for the given date. These raw data points are then passed to the client-side utility function `generateSlots` located in `src/lib/slots.ts`.
+
+The `generateSlots` function is crucial for determining which time slots are genuinely available. It takes:
+*   The `date` selected by the client.
+*   `rules`: An array of `AvailabilityRule` objects, typically sourced from the `availability` table, defining the professional's working hours for each `dayOfWeek` with `startTime` and `endTime` strings.
+*   `existingAppointments`: An array of `ExistingAppointment` objects, representing already booked slots from the `appointments` table, each with `startsAt` and `endsAt` timestamps.
+*   `sessionDuration`: The standard duration of a session for the professional, retrieved from the `professionals` table.
+
+This function iterates through potential time slots within the professional's defined availability for the given day. For each potential slot, it checks two conditions:
+1.  It must be in the future relative to the current time (`isAfter(current, now)`).
+2.  It must not conflict with any `existingAppointments` (`isBefore(current, aptEnd) && isAfter(slotEnd, aptStart)`).
+
+Only slots that pass both checks are returned, formatted as "HH:mm" strings, and then grouped into "Manhã", "Tarde", and "Noite" categories for display in the UI.
+
+### Client Form and Submission
+
+The second step of the booking process involves collecting client information. This is handled using `react-hook-form` combined with `zodResolver` for schema validation. The `clientSchema` defines the expected structure and validation rules for the client's `name`, `phone`, `email`, and a hidden `website` honeypot field.
+
+A notable inclusion in the form is a "honeypot" field named `website`. This input is visually hidden and inaccessible to human users but is present in the DOM. Its purpose is to catch automated spam bots that typically fill out all available form fields. If this field contains any value upon submission, the server-side `/api/booking` (POST method) is designed to silently drop the booking request, effectively filtering out spam without alerting the bot.
+
+Upon successful validation and submission via `handleSubmit(onSubmit)`, the `onSubmit` function is invoked. This function constructs a POST request to the `/api/booking` API route, sending the professional's `slug`, the calculated `startsAt` timestamp, and the client's `name`, `phone`, `email`, and the honeypot `website` field.
+
+If the booking request is successful, a `booking_created` event is captured using PostHog for analytics, and the `step` transitions to `"success"`. In case of an error, a `toast.error` notification is displayed to the user. The `/api/booking` route is subject to a rate limit of 5 requests per 10 minutes, identified by the `booking` prefix.
+
+### Success Confirmation and Payment
+
+The final `"success"` step provides a confirmation message. If the professional's `paymentType` is not `"after"` (meaning payment is required upfront or partially) and a `pixKey` is configured in the `professionals` table, the `PixQR` component is rendered. This component displays a QR code for a Pix payment, calculating the `pixAmount` based on the `sessionPrice` and `paymentPercentage` from the professional's profile.
+
+For clients who are not logged in, the success screen also presents options to create a free account or log in. The "Criar conta grátis" link dynamically pre-fills the registration form with the `submittedData` (name, email, phone) to streamline the onboarding process.
 
 ## Design Decisions
 
-The use of a honeypot field (`website`) in the form is a lightweight anti-bot measure—simple yet effective. By positioning it off-screen and dropping submissions server-side if filled, it avoids CAPTCHA friction. The two-column layout on larger screens (`grid-cols-1 md:grid-cols-2`) prioritizes the calendar and slots, aligning with user goals. Grouping slots into morning, afternoon, and evening improves scannability, even though it’s not required by the data model.
+### Three-Step Booking State Machine
+
+The decision to implement the booking process as a three-step state machine (`"pick"`, `"form"`, `"success"`) aims to simplify the user experience. By breaking down the booking into distinct, sequential stages, the interface remains uncluttered, guiding the user through one decision at a time. This approach reduces cognitive load and potential errors compared to a single, monolithic form. The explicit `step` state variable makes the current UI context clear and easy to manage within the component.
+
+### Client-Side Slot Generation
+
+The `generateSlots` function is implemented on the client side (`src/lib/slots.ts`), receiving availability rules and existing appointments from the `/api/booking` endpoint. This design choice offloads the computational logic for slot calculation from the server to the client.
+*   **Trade-off**: While it reduces server load per request, it means the client must download and execute this logic. It also requires the client to have all necessary data (`rules`, `existingAppointments`, `sessionDuration`) to perform the calculation accurately. Any discrepancies between client and server time or logic could lead to inconsistencies.
+
+### `react-hook-form` with Zod for Form Management
+
+The use of `react-hook-form` with `zodResolver` provides a robust and efficient way to handle form state, validation, and submission. Zod schemas (`clientSchema`) offer strong type safety and clear validation rules, which are automatically applied by `react-hook-form`. This combination minimizes boilerplate, optimizes re-renders, and provides a consistent validation experience, improving developer productivity and user feedback.
+
+### Honeypot Field for Spam Prevention
+
+The inclusion of a hidden `website` input field as a honeypot is a pragmatic approach to combat automated spam submissions without requiring complex CAPTCHAs or other user-facing challenges. It leverages the common behavior of naive bots to fill all available form fields.
+*   **Trade-off**: While effective against simple bots, more sophisticated spam mechanisms might bypass it. It's a low-cost, low-friction solution that adds a layer of defense.
 
 ## Potential Improvements
 
-1. **`BookingWidget` — Avoid re-fetching slots on every render**: The `useEffect` in `BookingWidget` correctly fetches slots when `selectedDate` changes. While `slug` and `sessionDuration` are static props and included in the dependency array, they do not cause unnecessary re-execution of the effect.
+1.  **Server-Side Slot Pre-computation**: The `generateSlots` logic currently runs on the client after fetching raw data. Moving this logic to the `/api/booking` GET endpoint would allow the server to return only the *already computed* available slots. This could improve initial load performance for the widget, reduce client-side JavaScript bundle size, and centralize business logic, making it less susceptible to client-side tampering or inconsistencies. The `sessionDuration` from the `professionals` table is a key input that could be used directly on the server.
 
-2. **`generateSlots` — Cache or memoize results**: Since `generateSlots` is called on every date change and performs array filtering and date math, it could benefit from memoization, especially on low-end devices. Caching by `date.toISOString()` and `sessionDuration` would prevent recomputation when users toggle back and forth.
+2.  **Optimized Slot Fetching**: The `useEffect` hook fetches slots for only one `selectedDate` at a time. To enhance user experience, especially when browsing dates, the widget could pre-fetch slots for a range of dates (e.g., the next 7 or 30 days) when the calendar first loads or when the month changes. This would reduce the number of API calls to `/api/booking` and eliminate the "Carregando horários..." delay when a new date is selected within the pre-fetched range.
 
-3. **`SlotButton` — Accessibility enhancement**: The time buttons lack `aria-pressed` or role attributes. Adding `aria-pressed={selected}` would improve screen reader experience, making it clear which slot is selected without relying solely on visual cues.
+3.  **Enhanced Payment Integration**: While the `PixQR` component displays payment information, the current `BookingWidget` does not actively *process* or *verify* the payment status. The `appointments` table includes `paymentStatus` and `stripePaymentIntentId` columns, suggesting a more integrated payment flow is possible. An improvement could involve adding a mechanism to check the payment status after the QR code is displayed, perhaps polling a server endpoint or using webhooks, to provide immediate feedback to the client and update the `paymentStatus` in the `appointments` table.
 
 ## References
 
-- `src/app/p/[slug]/booking-widget.tsx`
-- `src/app/p/[slug]/page.tsx`
-- `src/lib/slots.ts`
-- `src/lib/db/schema.ts` (for `availability`, `appointments`, `professionals`)
+*   `src/app/p/[slug]/booking-widget.tsx`
+*   `src/app/p/[slug]/page.tsx`
+*   `src/lib/slots.ts`
+*   `/api/booking` (API route)

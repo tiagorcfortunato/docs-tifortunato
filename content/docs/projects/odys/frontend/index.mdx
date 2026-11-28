@@ -1,64 +1,77 @@
 ---
-title: Frontend Overview
-description: An in-depth look at the Odys frontend architecture, built with Next.js 16 App Router, React Server Components, Tailwind CSS, and shadcn/ui.
+title: Frontend
+description: "Frontend overview: Next.js 16 App Router, RSC patterns, Tailwind + shadcn"
 ---
 
-# Frontend Overview
+# Frontend
 
-The Odys frontend is a modern web application built on the Next.js 16 App Router, leveraging the power of React Server Components (RSC) to deliver a fast and interactive user experience. This document explores the core architectural choices, styling methodologies, and key third-party integrations that define the Odys user interface.
+The Odys frontend represents a modern web application built on the Next.js 16 framework, leveraging its App Router architecture to deliver a performant and engaging user experience. This section delves into the core structural choices, the underlying technologies, and the design philosophies that shape the client-facing aspects of the Odys platform. From server-side rendering with React Server Components to a utility-first styling approach, the frontend is engineered for efficiency and maintainability.
 
 ## Overview
 
-The frontend application is structured around Next.js's App Router, which enables a hybrid approach to rendering, combining server-side rendering (SSR), static site generation (SSG), and client-side rendering (CSR) as needed. This architecture is designed to optimize initial page load performance and improve SEO. Styling is handled by Tailwind CSS, a utility-first framework, complemented by shadcn/ui components for a consistent and accessible design system.
+The Odys frontend is a Next.js application, specifically utilizing version `16.2.4` and React `19.2.5`. This choice positions the application to take full advantage of the App Router, enabling a component-driven architecture that prioritizes React Server Components (RSC). This paradigm allows for data fetching and rendering to occur on the server, significantly reducing the JavaScript payload sent to the client and improving initial page load times.
 
-The application interacts with a comprehensive backend API, exposing 23 distinct routes, including endpoints for booking, client management, messaging, and payment processing via Stripe. Data persistence is managed through a Drizzle ORM schema comprising 10 tables, which the frontend indirectly accesses through these API routes. Key integrations include Supabase for authentication and database services, Stripe for payment processing, and Groq SDK for AI-powered features, such as the `/api/ai/chat` endpoint.
+Styling is managed through a combination of Tailwind CSS and `shadcn/ui` components. Tailwind provides a utility-first CSS framework, allowing for rapid styling directly within JSX, while `shadcn/ui` offers a collection of pre-built, accessible, and customizable UI components that integrate seamlessly with Tailwind. This approach fosters consistency and accelerates UI development.
 
-## Next.js App Router and Layouts
+The application integrates with several external services to provide its full functionality. Supabase (`^2.100.1`) is used for authentication and database interactions, while Stripe (`^22.1.0`) handles payment processing. For analytics and performance monitoring, Odys employs a multi-faceted strategy, incorporating PostHog (`^1.372.1`) for product usage insights, and Vercel's `Analytics` (`^2.0.1`) and `SpeedInsights` (`^2.0.0`) for anonymous page view tracking and Core Web Vitals monitoring, respectively.
 
-The foundation of the Odys frontend is the `src/app/layout.tsx` file, which defines the root layout for the entire application. As a React Server Component, this layout renders on the server, providing the initial HTML structure before any client-side JavaScript loads.
+## Root Layout and Global Configuration
 
-The `metadata` object within `src/app/layout.tsx` is crucial for SEO and social media sharing. It defines the application's title, description, `openGraph` properties (including `siteName`, `locale`, `type`, `authors`, and `publishedTime`), and `twitter` card details. This centralized metadata management ensures consistent branding and discoverability across various platforms. The `metadataBase` is set to `https://odys.com.br`, establishing the base URL for all relative metadata paths.
+The `src/app/layout.tsx` file serves as the foundational root layout for the entire application. It defines the overarching structure, global metadata, and integrates essential third-party providers that wrap the application's content. The root `html` element is configured with `lang="pt-BR"` and utility classes `h-full` and `antialiased`.
 
-Two distinct fonts, `Plus_Jakarta_Sans` and `Montserrat`, are loaded from `next/font/google`. These are configured as CSS variables (`--font-sans` and `--font-montserrat`) and applied to the `html` element, ensuring consistent typography throughout the application. The use of variable fonts allows for efficient loading and flexible styling.
+The `metadata` object within this file is crucial for Search Engine Optimization (SEO) and social media sharing. It specifies the application's `title` as "Odys — Agenda online para profissionais de saúde e bem-estar" and a `description` highlighting its core value proposition. The `metadataBase` is set to `https://odys.com.br`, providing a base URL for relative metadata paths. Open Graph (`openGraph`) and Twitter (`twitter`) specific metadata are also defined, ensuring consistent presentation when links to Odys are shared across platforms. Notably, the `openGraph` configuration includes `siteName`, `locale` (`pt_BR`), `type` (`article`), `authors` (`Tiago Fortunato`), and a `publishedTime` of `2026-03-29T00:00:00.000Z`.
 
-## Styling with Tailwind CSS and shadcn/ui
+Two distinct fonts, `Plus_Jakarta_Sans` and `Montserrat`, are loaded using `next/font/google`. These fonts are configured with specific weights: `Plus_Jakarta_Sans` (400-800) and `Montserrat` (700-900) and assigned CSS variables (`--font-sans` and `--font-montserrat`) for easy application throughout the stylesheet. This method ensures optimal font loading performance by self-hosting and subsetting fonts.
 
-Odys adopts a utility-first CSS approach using Tailwind CSS, as indicated by the `tailwindcss` dependency in `package.json` and the inclusion of `globals.css`. This methodology promotes rapid UI development and maintainability by composing styles directly in JSX.
+Global styles are imported from `./globals.css`, which likely contains Tailwind's base directives and any custom global CSS rules. To enhance user experience, an inline script is embedded directly in the `<head>` of the HTML. This script checks `localStorage` for a saved theme preference (`odys-theme`) and applies it to the `documentElement` before the page renders, defaulting to `dark` mode if no preference is found. This technique effectively prevents a "flash of unstyled content" (FOUC) when users have a dark theme preference.
 
-Complementing Tailwind CSS, the application integrates `shadcn/ui` components. Examples visible in `src/app/layout.tsx` include the `Toaster` component for displaying notifications and the `CookieBanner` for managing user consent. These components are built on top of Tailwind CSS and Radix UI, providing pre-styled, accessible, and customizable UI primitives that accelerate development while maintaining a cohesive design language.
+The `body` element applies `min-h-full`, `flex`, `flex-col`, and `font-sans` utility classes.
 
-An inline script is embedded in the `<head>` of `src/app/layout.tsx` to prevent a "flash of unstyled content" (FOUC) when applying the user's saved theme preference. This script checks `localStorage` for `'odys-theme'` and immediately adds the `dark` class to the `documentElement` if the dark theme is preferred, ensuring the correct theme is applied before the page renders.
+Accessibility is considered with the inclusion of a "Pular para o conteúdo" (Skip to content) link. This link is visually hidden by default (`sr-only`) but becomes visible on keyboard focus, allowing users navigating with assistive technologies to bypass repetitive navigation elements on every page.
 
-## Analytics and Performance Monitoring
+The `RootLayout` component wraps `children`, `Toaster`, and `CookieBanner` with `PostHogProvider`.
+*   `PostHogProvider`: Initializes PostHog for detailed product analytics, tracking user interactions and events.
 
-The frontend incorporates several tools for monitoring user behavior and application performance:
+Finally, `Analytics` and `SpeedInsights` from Vercel are included at the end of the `<body>`. These components are no-cookie, providing anonymous page view counts and real-user Core Web Vitals, complementing PostHog's product event tracking.
 
-*   **PostHog**: Integrated via `PostHogProvider`, this tool is used for product analytics, allowing the team to understand user interactions and feature adoption.
-*   **Vercel Analytics**: The `<Analytics />` component from `@vercel/analytics/next` provides anonymous page-view counts, offering insights into overall traffic patterns without tracking individual user data.
-*   **Vercel Speed Insights**: The `<SpeedInsights />` component from `@vercel/speed-insights/next` collects real-user Core Web Vitals (such as LCP, INP, CLS). This data is crucial for identifying and resolving performance bottlenecks, ensuring a smooth user experience.
+## Core Dependencies and Tooling
 
-This combination of tools provides a comprehensive view of both product usage and technical performance, allowing for data-driven improvements.
+The `package.json` file outlines the extensive set of dependencies and development tools that power the Odys frontend.
 
-## Accessibility Considerations
+Key dependencies include:
+*   **Frameworks**: `next` (`16.2.4`), `react` (`19.2.5`), and `react-dom` (`19.2.5`) form the core of the application.
+*   **Database & ORM**: `drizzle-orm` (`^0.45.2`) is used as the TypeScript ORM for interacting with the PostgreSQL database (`postgres` `^3.4.9`). `drizzle-kit` (`^0.31.10`) facilitates schema generation and migrations.
+*   **Authentication & Backend Integration**: `@supabase/supabase-js` (`^2.100.1`) and `@supabase/ssr` (`^0.10.2`) integrate with Supabase for user management and server-side rendering contexts.
+*   **Payments**: `stripe` (`^22.1.0`) and `@stripe/stripe-js` (`^9.3.1`) are essential for handling payment processing through Stripe.
+*   **UI & Styling**: `tailwindcss` (`^4`) is the primary styling framework, supported by `class-variance-authority`, `clsx`, `tailwind-merge`, and `tw-animate-css` for utility-first styling and animations. `shadcn` (`^4.4.0`) provides a library of accessible UI components. `lucide-react` (`^1.11.0`) is used for icons, and `next-themes` (`^0.4.6`) manages theme switching.
+*   **Forms & Validation**: `react-hook-form` (`^7.73.1`) is paired with `@hookform/resolvers` (`^5.2.2`) and `zod` (`^4.3.6`) for robust form management and schema-based validation.
+*   **Utilities**: `date-fns` (`^4.1.0`) simplifies date manipulation, `sonner` (`^2.0.7`) provides toast notifications, and `qrcode.react` (`^4.2.0`) generates QR codes.
+*   **Analytics & Monitoring**: In addition to Vercel's tools, `posthog-js` (`^1.372.1`) and `posthog-node` (`^5.30.4`) are used for comprehensive product analytics, and `@sentry/nextjs` (`^10.50.0`) for error tracking.
+*   **Rate Limiting**: `@upstash/ratelimit` (`^2.0.8`) and `@upstash/redis` (`^1.37.0`) are employed for API rate limiting.
+*   **Communication**: `resend` (`^6.12.2`) is used for sending emails.
+*   **AI**: `openai` (`^6.34.0`) is included, indicating integration with AI services, likely for features like the `api/ai/chat` route.
 
-A "Skip to main content" link is included at the beginning of the `<body>` in `src/app/layout.tsx`. This accessibility feature, styled to be `sr-only` (screen-reader only) by default, becomes visible on keyboard focus. It allows users navigating with keyboards or screen readers to bypass repetitive navigation elements and jump directly to the main content of any page, significantly improving usability for assistive technology users.
+Development dependencies include `eslint` for linting, `typescript` (`^6`) for type safety, `vitest` (`^3.2.4`) for testing, and `husky` (`^9.1.7`) with `lint-staged` (`^16.4.0`) for Git hooks to enforce code quality standards.
 
-## Design decisions
+## Design Decisions
 
-The choice of Next.js 16 with the App Router was driven by the desire to leverage React Server Components for improved initial load performance and better SEO. By rendering components on the server, the application can deliver fully formed HTML to the client, reducing the amount of JavaScript needed for the initial paint. This also simplifies data fetching patterns, as server components can directly access backend resources or API routes without client-side data fetching libraries.
+The architectural choices for the Odys frontend reflect a deliberate strategy to balance performance, developer velocity, and user experience.
 
-Tailwind CSS was selected for its utility-first philosophy, which promotes consistency and reduces the need for custom CSS. Paired with `shadcn/ui`, it provides a powerful combination for building a visually appealing and functional UI rapidly. `shadcn/ui` components offer a strong foundation of accessible and customizable elements, allowing developers to focus on application logic rather than re-implementing common UI patterns.
+The adoption of **Next.js App Router** is a foundational decision. This architecture allows Odys to leverage React Server Components (RSC), which enables rendering components on the server and streaming HTML to the client. This significantly reduces the amount of JavaScript that needs to be downloaded and parsed by the browser, leading to faster initial page loads and improved perceived performance. The trade-off is a slightly more complex mental model for data fetching and state management compared to traditional client-side rendering.
 
-The decision to include multiple analytics tools (PostHog, Vercel Analytics, Speed Insights) reflects a nuanced approach to data collection. PostHog focuses on detailed product usage, while Vercel's tools provide high-level page views and critical performance metrics. This separation allows for specialized insights without overburdening any single analytics platform. The inline script for theme application is a pragmatic solution to a common UI problem, prioritizing user experience by eliminating a potential visual flicker.
+The combination of **Tailwind CSS and `shadcn/ui`** for styling is a pragmatic choice. Tailwind's utility-first approach allows developers to style components rapidly without leaving their JSX, promoting consistency and reducing the need for custom CSS files. `shadcn/ui` builds upon this by providing a set of pre-built, accessible, and customizable components that are easily integrated and styled with Tailwind. This accelerates UI development and ensures a cohesive design language across the application. The trade-off is a steeper learning curve for developers unfamiliar with utility-first CSS and a potentially verbose JSX if not managed with component abstraction.
 
-## Potential improvements
+The use of **multiple analytics providers**—PostHog, Vercel Analytics, and Vercel Speed Insights—demonstrates a layered approach to data collection. PostHog is likely chosen for its detailed product analytics, allowing for deep insights into user behavior and feature adoption. Vercel Analytics provides simple, anonymous page view counts, while Vercel Speed Insights focuses specifically on Core Web Vitals to monitor real-user performance. This separation allows each tool to specialize, providing distinct types of data without significant overlap in their primary functions. The trade-off is increased bundle size and the overhead of managing multiple integrations.
 
-1.  **Implement `(auth)/layout.tsx`**: The `src/app/(auth)/layout.tsx` file is currently missing. Implementing this layout would provide a dedicated structure for authentication-related pages, allowing for consistent branding, navigation, and potentially shared authentication logic or context providers specific to the authentication flow. This would centralize common elements for routes like login, registration, and password reset.
-2.  **Centralize Metadata Configuration**: The `title` and `description` fields are duplicated across the main `metadata` object, `openGraph`, and `twitter` objects in `src/app/layout.tsx`. While Next.js handles this, centralizing these values into a single constant or utility function would reduce redundancy and make future updates easier to manage. For example, defining `const defaultTitle = "Odys — Agenda online para profissionais de saúde e bem-estar";` and reusing it.
-3.  **Integrate Sentry for Error Monitoring**: The `package.json` lists `@sentry/nextjs` as a dependency, but it's not explicitly configured or used in `src/app/layout.tsx`. Integrating Sentry into the root layout or a dedicated error boundary component would enable comprehensive error tracking for both server and client components, providing valuable insights into production issues and improving application stability.
+The **inline script for theme application** in `src/app/layout.tsx` is a critical user experience optimization. By executing a small JavaScript snippet in the `<head>` to read the user's theme preference from `localStorage` and apply it before the rest of the page renders, the application prevents a noticeable "flash of unstyled content" (FOUC). This ensures that users always see the correct theme from the very first paint, enhancing visual continuity.
+
+## Potential Improvements
+
+1.  **Consolidate Analytics Providers**: The current setup in `src/app/layout.tsx` includes `PostHogProvider`, `Analytics`, and `SpeedInsights`. While each serves a purpose, maintaining three separate analytics integrations can increase bundle size and configuration complexity. It would be beneficial to evaluate if PostHog's capabilities could be extended to cover the basic page view tracking provided by Vercel Analytics, or if custom instrumentation within PostHog could capture performance metrics similar to Speed Insights. This consolidation could simplify the codebase and potentially reduce client-side overhead.
+2.  **Centralize Font Loading Configuration**: The `Plus_Jakarta_Sans` and `Montserrat` fonts are loaded with explicit `weight` arrays in `src/app/layout.tsx`. If these fonts and their specific weights are used consistently across the application, consider abstracting this configuration into a dedicated font utility file or a custom hook. This would reduce repetition, make it easier to modify font weights or introduce new fonts, and improve maintainability by centralizing font-related logic.
+3.  **Refine Metadata Management**: The `metadata` object in `src/app/layout.tsx` duplicates `title` and `description` fields across the base, `openGraph`, and `twitter` properties. While Next.js provides some intelligent defaults, explicitly duplicating these can lead to inconsistencies if updates are not applied uniformly. A utility function could be introduced to generate these derived metadata fields from a single source of truth, ensuring consistency and reducing the potential for errors during content updates.
 
 ## References
 
 *   `src/app/layout.tsx`
 *   `package.json`
-*   `src/app/globals.css`
